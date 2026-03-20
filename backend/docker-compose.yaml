@@ -1,0 +1,100 @@
+networks:
+  dns_monitor_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
+services:
+
+  # ─────────────────────────────────────────────
+  # TimescaleDB (PostgreSQL 15 + TimescaleDB 2.x)
+  # ─────────────────────────────────────────────
+  postgres:
+    image: timescale/timescaledb:latest-pg15
+    container_name: dns_monitor_db
+    restart: unless-stopped
+    networks:
+      dns_monitor_net:
+        ipv4_address: 172.20.0.10
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-dnsmonitor}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD no .env}
+      POSTGRES_DB: ${POSTGRES_DB:-dns_monitor}
+      TZ: America/Sao_Paulo
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - /etc/localtime:/etc/localtime:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dnsmonitor} -d ${POSTGRES_DB:-dns_monitor}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─────────────────────────────────────────────
+  # Backend FastAPI
+  # ─────────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dns_monitor_api
+    restart: unless-stopped
+    networks:
+      dns_monitor_net:
+        ipv4_address: 172.20.0.11
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-dnsmonitor}:${POSTGRES_PASSWORD}@172.20.0.10:5432/${POSTGRES_DB:-dns_monitor}
+      AGENT_TOKEN: ${AGENT_TOKEN:?Defina AGENT_TOKEN no .env}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      TZ: America/Sao_Paulo
+      # Thresholds (opcionais — os defaults já são sensatos)
+      THRESH_CPU_WARNING: ${THRESH_CPU_WARNING:-80}
+      THRESH_CPU_CRITICAL: ${THRESH_CPU_CRITICAL:-95}
+      THRESH_RAM_WARNING: ${THRESH_RAM_WARNING:-85}
+      THRESH_RAM_CRITICAL: ${THRESH_RAM_CRITICAL:-95}
+      THRESH_DISK_WARNING: ${THRESH_DISK_WARNING:-80}
+      THRESH_DISK_CRITICAL: ${THRESH_DISK_CRITICAL:-90}
+      THRESH_DNS_LATENCY_WARNING: ${THRESH_DNS_LATENCY_WARNING:-200}
+      THRESH_DNS_LATENCY_CRITICAL: ${THRESH_DNS_LATENCY_CRITICAL:-1000}
+      THRESH_OFFLINE_MINUTES: ${THRESH_OFFLINE_MINUTES:-10}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ─────────────────────────────────────────────
+  # Grafana
+  # ─────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    container_name: dns_monitor_grafana
+    restart: unless-stopped
+    networks:
+      dns_monitor_net:
+        ipv4_address: 172.20.0.12
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:?Defina GRAFANA_PASSWORD no .env}
+      GF_SERVER_ROOT_URL: http://localhost:3000
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      TZ: America/Sao_Paulo
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ../grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - postgres
+
+volumes:
+  pgdata:
+  grafana_data:

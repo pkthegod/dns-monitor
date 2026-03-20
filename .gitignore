@@ -1,0 +1,78 @@
+# =============================================================================
+# DNS Monitor — .gitignore
+# =============================================================================
+
+# ── Segredos e configuração local ────────────────────────────────────────────
+# NUNCA versionar — contém senhas, tokens e IPs internos
+backend/.env
+agent/agent.conf
+agent/env
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.Python
+
+# Virtualenvs
+agent/venv/
+backend/venv/
+venv/
+.venv/
+env/
+
+# Distribuição / build
+dist/
+build/
+*.egg-info/
+*.egg
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.coveragerc
+
+# mypy / type checkers
+.mypy_cache/
+.dmypy.json
+
+# ── Docker ───────────────────────────────────────────────────────────────────
+# Dados persistidos localmente pelos volumes
+backend/grafana-data/
+backend/pgdata/
+
+# ── Grafana ──────────────────────────────────────────────────────────────────
+# Banco interno do Grafana (gerado em runtime)
+grafana/grafana.db
+grafana/data/
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+/var/log/
+
+# ── Sistema operacional ───────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+desktop.ini
+
+# ── Editores e IDEs ───────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.bak
+
+# ── Temporários ───────────────────────────────────────────────────────────────
+*.tmp
+*.temp
+/tmp/

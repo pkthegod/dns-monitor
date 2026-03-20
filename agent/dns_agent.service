@@ -1,0 +1,36 @@
+[Unit]
+Description=DNS Monitor Agent
+Documentation=https://github.com/pkthegod/dns-monitor
+After=network-online.target
+Wants=network-online.target
+StartLimitBurst=5
+StartLimitIntervalSec=120s
+
+[Service]
+Type=simple
+User=dns-agent
+Group=dns-agent
+
+WorkingDirectory=/opt/dns-agent
+ExecStart=/opt/dns-agent/venv/bin/python3 /opt/dns-agent/dns_agent.py
+
+# Segredos injetados via arquivo de ambiente — não aparecem no repositório
+# Crie /etc/dns-agent/env com as 3 variáveis abaixo
+EnvironmentFile=/etc/dns-agent/env
+
+Restart=on-failure
+RestartSec=10s
+
+# Hardening básico
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/log/dns-agent
+
+# Logs vão para journald automaticamente
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dns-agent
+
+[Install]
+WantedBy=multi-user.target

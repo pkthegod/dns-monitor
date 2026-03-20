@@ -1,0 +1,298 @@
+-- =============================================================================
+-- dns-monitor: schemas.sql
+-- Cria todas as tabelas a partir do contrato de dados definido pelo agente.
+-- Execute como superusuário (postgres) ou usuário com CREATE privileges.
+-- =============================================================================
+
+-- Extensão TimescaleDB (necessária antes de qualquer hypertable)
+CREATE EXTENSION IF NOT EXISTS timescaledb;
+
+-- =============================================================================
+-- 1. HEARTBEATS
+-- Sinal de vida enviado pelo agente a cada 5 min (payload type="heartbeat").
+-- Usado pelo backend para detectar agentes offline.
+-- Chunk pequeno (1h) pois o volume é alto e as queries são sempre recentes.
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS agent_heartbeats (
+    ts          TIMESTAMPTZ     NOT NULL,
+    hostname    TEXT            NOT NULL,
+    agent_version TEXT
+);
+
+SELECT create_hypertable(
+    'agent_heartbeats', 'ts',
+    chunk_time_interval => INTERVAL '1 hour',
+    if_not_exists       => TRUE
+);
+
+CREATE INDEX IF NOT EXISTS idx_hb_hostname_ts
+    ON agent_heartbeats (hostname, ts DESC);
+
+-- Retenção: 30 dias são suficientes para calcular uptime e detectar offline
+SELECT add_retention_policy('agent_heartbeats', INTERVAL '30 days', if_not_exists => TRUE);
+
+-- =============================================================================
+-- 2. MÉTRICAS DO SISTEMA
+-- Enviadas em todo ciclo (check) e heartbeat.
+-- Uma linha por agente por envio — normalizado por tipo de recurso.
+-- =============================================================================
+
+-- CPU (payload: system.cpu)
+CREATE TABLE IF NOT EXISTS metrics_cpu (
+    ts              TIMESTAMPTZ NOT NULL,
+    hostname        TEXT        NOT NULL,
+    cpu_percent     NUMERIC(5,1),
+    cpu_count       SMALLINT,
+    freq_mhz        NUMERIC(8,1),
+    load_1m         NUMERIC(6,2),
+    load_5m         NUMERIC(6,2),
+    load_15m        NUMERIC(6,2)
+);
+
+SELECT create_hypertable(
+    'metrics_cpu', 'ts',
+    chunk_time_interval => INTERVAL '6 hours',
+    if_not_exists       => TRUE
+);
+
+CREATE INDEX IF NOT EXISTS idx_cpu_hostname_ts
+    ON metrics_cpu (hostname, ts DESC);
+
+SELECT add_retention_policy('metrics_cpu', INTERVAL '1 year', if_not_exists => TRUE);
+
+
+-- RAM (payload: system.ram)
+CREATE TABLE IF NOT EXISTS metrics_ram (
+    ts              TIMESTAMPTZ NOT NULL,
+    hostname        TEXT        NOT NULL,
+    ram_percent     NUMERIC(5,1),
+    ram_used_mb     NUMERIC(10,1),
+    ram_total_mb    NUMERIC(10,1),
+    swap_percent    NUMERIC(5,1),
+    swap_used_mb    NUMERIC(10,1),
+    swap_total_mb   NUMERIC(10,1)
+);
+
+SELECT create_hypertable(
+    'metrics_ram', 'ts',
+    chunk_time_interval => INTERVAL '6 hours',
+    if_not_exists       => TRUE
+);
+
+CREATE INDEX IF NOT EXISTS idx_ram_hostname_ts
+    ON metrics_ram (hostname, ts DESC);
+
+SELECT add_retention_policy('metrics_ram', INTERVAL '1 year', if_not_exists => TRUE);
+
+
+-- Disco (payload: system.disk[] — uma linha por mountpoint por envio)
+CREATE TABLE IF NOT EXISTS metrics_disk (
+    ts              TIMESTAMPTZ NOT NULL,
+    hostname        TEXT        NOT NULL,
+    mountpoint      TEXT        NOT NULL,
+    device          TEXT,
+    fstype          TEXT,
+    disk_percent    NUMERIC(5,1),
+    used_gb         NUMERIC(10,2),
+    free_gb         NUMERIC(10,2),
+    total_gb        NUMERIC(10,2),
+    alert_level     TEXT        -- 'ok' | 'warning' | 'critical'
+);
+
+SELECT create_hypertable(
+    'metrics_disk', 'ts',
+    chunk_time_interval => INTERVAL '6 hours',
+    if_not_exists       => TRUE
+);
+
+CREATE INDEX IF NOT EXISTS idx_disk_hostname_ts
+    ON metrics_disk (hostname, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_disk_hostname_mount
+    ON metrics_disk (hostname, mountpoint, ts DESC);
+
+SELECT add_retention_policy('metrics_disk', INTERVAL '1 year', if_not_exists => TRUE);
+
+
+-- I/O de disco (payload: system.io — contadores acumulados desde o boot)
+CREATE TABLE IF NOT EXISTS metrics_io (
+    ts              TIMESTAMPTZ NOT NULL,
+    hostname        TEXT        NOT NULL,
+    read_bytes      BIGINT,
+    write_bytes     BIGINT,
+    read_count      BIGINT,
+    write_count     BIGINT,
+    read_time_ms    BIGINT,
+    write_time_ms   BIGINT
+);
+
+SELECT create_hypertable(
+    'metrics_io', 'ts',
+    chunk_time_interval => INTERVAL '6 hours',
+    if_not_exists       => TRUE
+);
+
+CREATE INDEX IF NOT EXISTS idx_io_hostname_ts
+    ON metrics_io (hostname, ts DESC);
+
+SELECT add_retention_policy('metrics_io', INTERVAL '1 year', if_not_exists => TRUE);
+
+
+-- =============================================================================
+-- 3. CHECKS DNS
+-- Resultado de cada teste de resolução (payload: dns_checks[]).
+-- Uma linha por domínio por ciclo por agente.
+-- Chunk de 1 dia: 4 checks/dia × 50 agentes × N domínios = volume controlado.
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS dns_checks (
+    ts              TIMESTAMPTZ NOT NULL,
+    hostname        TEXT        NOT NULL,
+    domain          TEXT        NOT NULL,
+    resolver        TEXT,           -- IP do resolver consultado ou 'system'
+    success         BOOLEAN     NOT NULL,
+    latency_ms      NUMERIC(8,2),   -- NULL em caso de falha
+    response_ips    TEXT[],         -- IPs retornados (array)
+    error_code      TEXT,           -- 'TIMEOUT' | 'NXDOMAIN' | 'NO_NAMESERVERS' | NULL
+    attempts        SMALLINT
+);
+
+SELECT create_hypertable(
+    'dns_checks', 'ts',
+    chunk_time_interval => INTERVAL '1 day',
+    if_not_exists       => TRUE
+);
+
+CREATE INDEX IF NOT EXISTS idx_dns_hostname_ts
+    ON dns_checks (hostname, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_dns_domain_ts
+    ON dns_checks (domain, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_dns_success
+    ON dns_checks (success, ts DESC);
+
+SELECT add_retention_policy('dns_checks', INTERVAL '1 year', if_not_exists => TRUE);
+
+
+-- =============================================================================
+-- 4. STATUS DO SERVIÇO DNS
+-- Detectado em cada envio (payload: dns_service).
+-- Registra se unbound/bind9 estava ativo no momento da coleta.
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS dns_service_status (
+    ts              TIMESTAMPTZ NOT NULL,
+    hostname        TEXT        NOT NULL,
+    service_name    TEXT,           -- 'unbound' | 'bind9' | 'named' | 'unknown'
+    active          BOOLEAN,
+    version         TEXT
+);
+
+SELECT create_hypertable(
+    'dns_service_status', 'ts',
+    chunk_time_interval => INTERVAL '1 day',
+    if_not_exists       => TRUE
+);
+
+CREATE INDEX IF NOT EXISTS idx_dns_svc_hostname_ts
+    ON dns_service_status (hostname, ts DESC);
+
+SELECT add_retention_policy('dns_service_status', INTERVAL '1 year', if_not_exists => TRUE);
+
+
+-- =============================================================================
+-- 5. ALERTAS GERADOS
+-- Histórico de alertas disparados pelo backend (para auditoria e dashboard).
+-- Não é hypertable — volume baixo, mas precisa de timestamp para ordenação.
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS alerts_log (
+    id              BIGSERIAL   PRIMARY KEY,
+    ts              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    hostname        TEXT        NOT NULL,
+    alert_type      TEXT        NOT NULL, -- 'dns_fail' | 'dns_latency' | 'cpu' | 'ram' | 'disk' | 'offline'
+    severity        TEXT        NOT NULL, -- 'warning' | 'critical'
+    metric_name     TEXT,
+    metric_value    NUMERIC,
+    threshold_value NUMERIC,
+    message         TEXT,
+    resolved_at     TIMESTAMPTZ,
+    notified_telegram BOOLEAN   DEFAULT FALSE
+);
+
+CREATE INDEX IF NOT EXISTS idx_alerts_hostname_ts
+    ON alerts_log (hostname, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_alerts_unresolved
+    ON alerts_log (resolved_at) WHERE resolved_at IS NULL;
+
+
+-- =============================================================================
+-- 6. REGISTRO DE AGENTES CONHECIDOS
+-- Tabela de controle: cadastro de todos os hostnames esperados.
+-- O backend usa isso para detectar agentes que nunca enviaram heartbeat.
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS agents (
+    hostname        TEXT        PRIMARY KEY,
+    display_name    TEXT,
+    location        TEXT,           -- Localização/rack/datacenter (livre)
+    dns_service     TEXT,           -- Serviço DNS esperado: 'unbound' | 'bind9'
+    registered_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen       TIMESTAMPTZ,
+    active          BOOLEAN     NOT NULL DEFAULT TRUE,
+    notes           TEXT
+);
+
+
+-- =============================================================================
+-- 7. VIEW: STATUS ATUAL DOS AGENTES (última leitura de cada hostname)
+-- Usada pelo Grafana no painel de visão geral.
+-- =============================================================================
+CREATE OR REPLACE VIEW v_agent_current_status AS
+SELECT
+    a.hostname,
+    a.display_name,
+    a.location,
+    a.dns_service          AS expected_dns_service,
+    a.last_seen,
+    CASE
+        WHEN a.last_seen IS NULL                              THEN 'never_seen'
+        WHEN a.last_seen < NOW() - INTERVAL '15 minutes'     THEN 'offline'
+        WHEN a.last_seen < NOW() - INTERVAL '10 minutes'     THEN 'stale'
+        ELSE                                                       'online'
+    END                    AS agent_status,
+    cpu.cpu_percent,
+    ram.ram_percent,
+    dns_svc.service_name   AS dns_service_name,
+    dns_svc.active         AS dns_service_active
+FROM agents a
+LEFT JOIN LATERAL (
+    SELECT cpu_percent FROM metrics_cpu
+    WHERE hostname = a.hostname
+    ORDER BY ts DESC LIMIT 1
+) cpu ON TRUE
+LEFT JOIN LATERAL (
+    SELECT ram_percent FROM metrics_ram
+    WHERE hostname = a.hostname
+    ORDER BY ts DESC LIMIT 1
+) ram ON TRUE
+LEFT JOIN LATERAL (
+    SELECT service_name, active FROM dns_service_status
+    WHERE hostname = a.hostname
+    ORDER BY ts DESC LIMIT 1
+) dns_svc ON TRUE;
+
+
+-- =============================================================================
+-- Compressão automática (TimescaleDB) após 7 dias
+-- Reduz tamanho em disco ~90% para dados históricos
+-- =============================================================================
+ALTER TABLE metrics_cpu           SET (timescaledb.compress, timescaledb.compress_segmentby = 'hostname');
+ALTER TABLE metrics_ram           SET (timescaledb.compress, timescaledb.compress_segmentby = 'hostname');
+ALTER TABLE metrics_disk          SET (timescaledb.compress, timescaledb.compress_segmentby = 'hostname');
+ALTER TABLE metrics_io            SET (timescaledb.compress, timescaledb.compress_segmentby = 'hostname');
+ALTER TABLE dns_checks            SET (timescaledb.compress, timescaledb.compress_segmentby = 'hostname');
+ALTER TABLE dns_service_status    SET (timescaledb.compress, timescaledb.compress_segmentby = 'hostname');
+ALTER TABLE agent_heartbeats      SET (timescaledb.compress, timescaledb.compress_segmentby = 'hostname');
+
+SELECT add_compression_policy('metrics_cpu',        INTERVAL '7 days', if_not_exists => TRUE);
+SELECT add_compression_policy('metrics_ram',        INTERVAL '7 days', if_not_exists => TRUE);
+SELECT add_compression_policy('metrics_disk',       INTERVAL '7 days', if_not_exists => TRUE);
+SELECT add_compression_policy('metrics_io',         INTERVAL '7 days', if_not_exists => TRUE);
+SELECT add_compression_policy('dns_checks',         INTERVAL '7 days', if_not_exists => TRUE);
+SELECT add_compression_policy('dns_service_status', INTERVAL '7 days', if_not_exists => TRUE);
+SELECT add_compression_policy('agent_heartbeats',   INTERVAL '7 days', if_not_exists => TRUE);
