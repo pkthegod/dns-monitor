@@ -166,11 +166,12 @@ class TestDetectDnsService:
             self._proc(1, "inactive\n"),     # unbound is-active → inactive
             self._proc(1),                   # unbound is-enabled → not found
             self._proc(0, "active\n"),       # bind9 is-active → active
-            self._proc(0, "BIND 9.18\n"),    # named -v
+            self._proc(0, "BIND 9.18\n"),    # named -v (alias resolvido)
         ]
         with patch("dns_agent.subprocess.run", side_effect=effects):
             result = da.detect_dns_service()
-        assert result["name"] == "bind9"
+        # bind9 é alias de named no Debian — SERVICE_ALIASES resolve para named
+        assert result["name"] == "named"
         assert result["active"] is True
 
     def test_service_installed_but_inactive(self):

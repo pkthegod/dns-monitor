@@ -158,6 +158,79 @@ async def alert_agent_recovered(hostname: str) -> bool:
     return await send_message(text)
 
 
+
+async def send_command_result(
+    hostname: str,
+    command: str,
+    status: str,
+    result: str,
+    issued_by: str = "admin",
+) -> bool:
+    """
+    Alerta disparado quando o agente reporta o resultado de um comando remoto.
+
+    Casos cobertos:
+      enable  + done    → serviço restabelecido
+      stop    + done    → serviço suspenso
+      disable + done    → serviço suspenso
+      purge   + done    → serviço removido (crítico)
+      qualquer + failed → comando falhou
+    """
+    ts = _ts_now()
+
+    if status == "done":
+        if command == "enable":
+            text = (
+                f"✅ <b>SERVIÇO DNS RESTABELECIDO</b>\n"
+                f"<b>Host:</b> <code>{hostname}</code>\n"
+                f"<b>Por:</b> {issued_by}\n"
+                f"<b>Hora:</b> {ts}"
+            )
+        elif command == "purge":
+            text = (
+                f"🚨 <b>SERVIÇO DNS REMOVIDO</b>\n"
+                f"<b>Host:</b> <code>{hostname}</code>\n"
+                f"<b>Por:</b> {issued_by}\n"
+                f"<b>Hora:</b> {ts}\n"
+                f"⚠️ O pacote DNS foi desinstalado desta máquina."
+            )
+        else:
+            # stop ou disable
+            acao = "parado" if command == "stop" else "desabilitado"
+            text = (
+                f"⏸️ <b>SERVIÇO DNS SUSPENSO</b>\n"
+                f"<b>Host:</b> <code>{hostname}</code>\n"
+                f"<b>Ação:</b> {command} ({acao})\n"
+                f"<b>Por:</b> {issued_by}\n"
+                f"<b>Hora:</b> {ts}"
+            )
+    else:
+        # failed
+        motivo = result[:200] if result else "sem detalhes"
+        text = (
+            f"⚠️ <b>COMANDO FALHOU</b>\n"
+            f"<b>Host:</b> <code>{hostname}</code>\n"
+            f"<b>Comando:</b> {command}\n"
+            f"<b>Erro:</b> <code>{motivo}</code>\n"
+            f"<b>Por:</b> {issued_by}\n"
+            f"<b>Hora:</b> {ts}"
+        )
+
+    return await send_message(text)
+
+
+async def send_new_agent_detected(hostname: str, version: str = "") -> bool:
+    """Alerta quando um novo agente faz o primeiro heartbeat."""
+    text = (
+        f"🆕 <b>NOVO AGENTE DETECTADO</b>\n"
+        f"<b>Host:</b> <code>{hostname}</code>\n"
+        f"<b>Versão:</b> {version or 'desconhecida'}\n"
+        f"<b>Hora:</b> {_ts_now()}\n"
+        f"ℹ️ Agente registrado automaticamente."
+    )
+    return await send_message(text)
+
+
 # ---------------------------------------------------------------------------
 # Relatório periódico (enviado 4×/dia junto com os ciclos)
 # ---------------------------------------------------------------------------

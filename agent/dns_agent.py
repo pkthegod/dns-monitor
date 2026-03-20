@@ -150,7 +150,11 @@ DNS_SERVICES = ["unbound", "bind9", "named"]
 def detect_dns_service() -> dict:
     """
     Detecta qual serviço DNS está instalado e qual seu status atual.
-    Retorna: { "name": "unbound", "active": True, "version": "1.17.0" }
+    Retorna: { "name": "named", "active": True, "version": "BIND 9.18" }
+
+    O nome retornado é o nome REAL do serviço (resolvido via SERVICE_ALIASES),
+    não o alias. Ex: no Debian, bind9 → named para que o banco reflita
+    o serviço que o systemctl realmente controla.
     """
     result = {"name": "unknown", "active": False, "version": None}
 
@@ -161,9 +165,10 @@ def detect_dns_service() -> dict:
                 capture_output=True, text=True, timeout=5
             )
             if status.returncode == 0 and status.stdout.strip() == "active":
-                result["name"] = service
-                result["active"] = True
-                result["version"] = _get_dns_version(service)
+                real_name = SERVICE_ALIASES.get(service, service)
+                result["name"]    = real_name
+                result["active"]  = True
+                result["version"] = _get_dns_version(real_name)
                 return result
 
             # Serviço existe mas pode estar inativo
@@ -172,9 +177,10 @@ def detect_dns_service() -> dict:
                 capture_output=True, text=True, timeout=5
             )
             if enabled.returncode == 0:
-                result["name"] = service
-                result["active"] = False
-                result["version"] = _get_dns_version(service)
+                real_name = SERVICE_ALIASES.get(service, service)
+                result["name"]    = real_name
+                result["active"]  = False
+                result["version"] = _get_dns_version(real_name)
                 return result
 
         except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -331,15 +337,45 @@ def _collect_ram() -> dict:
 
 
 def _collect_disk(cfg: configparser.ConfigParser) -> list:
-    """Coleta uso de cada partição montada (exclui tmpfs, devtmpfs)."""
+    """
+    Coleta uso de cada partição física montada (exclui tmpfs, devtmpfs).
+
+    Filtra duplicatas por device — quando um disco físico está montado em
+    múltiplos pontos (bind mounts, subvolumes), mantém apenas o mountpoint
+    mais representativo: preferencialmente '/', depois o mais curto.
+    """
     disk_warning = cfg.getint("thresholds", "disk_warning", fallback=80)
     disk_critical = cfg.getint("thresholds", "disk_critical", fallback=90)
-    partitions = []
+
+    # Sistemas de arquivo a ignorar — virtuais, sem dados reais de disco
+    IGNORE_FS = {"tmpfs", "devtmpfs", "squashfs", "overlay", "sysfs",
+                 "proc", "cgroup", "cgroup2", "pstore", "bpf", "tracefs"}
+
+    seen_devices: dict = {}  # device → melhor mountpoint já visto
 
     for part in psutil.disk_partitions(all=False):
-        # Ignora sistemas de arquivo virtuais
-        if part.fstype in ("tmpfs", "devtmpfs", "squashfs", "overlay"):
+        if part.fstype in IGNORE_FS:
             continue
+        if not part.device or part.device.startswith("none"):
+            continue
+        try:
+            usage = psutil.disk_usage(part.mountpoint)
+        except PermissionError:
+            continue
+
+        # Escolhe o mountpoint mais representativo por device físico:
+        # '/' tem prioridade, depois o caminho mais curto
+        if part.device in seen_devices:
+            prev = seen_devices[part.device]
+            if part.mountpoint == "/":
+                seen_devices[part.device] = part
+            elif prev.mountpoint != "/" and len(part.mountpoint) < len(prev.mountpoint):
+                seen_devices[part.device] = part
+        else:
+            seen_devices[part.device] = part
+
+    partitions = []
+    for part in seen_devices.values():
         try:
             usage = psutil.disk_usage(part.mountpoint)
         except PermissionError:
@@ -705,7 +741,7 @@ def poll_commands(cfg: configparser.ConfigParser, logger: logging.Logger) -> Non
 def setup_schedule(cfg: configparser.ConfigParser, logger: logging.Logger) -> None:
     """Configura os jobs agendados com base no agent.conf."""
     # Testes completos nos horários configurados
-    times_raw = cfg.get("schedule", "check_times", fallback="00:00,06:00,12:00,18:00")
+    times_raw = cfg.get("schedule", "check_times", fallback="00:00,02:00,04:00,06:00,08:00,10:00,12:00,14:00,16:00,18:00,20:00,22:00")
     check_times = [t.strip() for t in times_raw.split(",") if t.strip()]
 
     for t in check_times:

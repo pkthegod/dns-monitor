@@ -332,3 +332,77 @@ CREATE INDEX IF NOT EXISTS idx_cmd_hostname_status
 
 CREATE INDEX IF NOT EXISTS idx_cmd_issued_at
     ON agent_commands (issued_at DESC);
+
+-- ===========================================================================
+-- CONTINUOUS AGGREGATES — agrega dados históricos por hora
+-- Reduz disco em ~90% para dados com mais de 7 dias
+-- Atualiza automaticamente a cada 1h via política
+-- ===========================================================================
+
+-- CPU agregado por hora
+CREATE MATERIALIZED VIEW IF NOT EXISTS metrics_cpu_1h
+WITH (timescaledb.continuous) AS
+SELECT
+    time_bucket('1 hour', ts) AS bucket,
+    hostname,
+    ROUND(AVG(cpu_percent)::numeric, 1)  AS cpu_avg,
+    ROUND(MAX(cpu_percent)::numeric, 1)  AS cpu_max,
+    ROUND(AVG(load_1m)::numeric, 2)      AS load_avg
+FROM metrics_cpu
+GROUP BY bucket, hostname
+WITH NO DATA;
+
+SELECT add_continuous_aggregate_policy('metrics_cpu_1h',
+    start_offset => INTERVAL '3 days',
+    end_offset   => INTERVAL '1 hour',
+    schedule_interval => INTERVAL '1 hour'
+) WHERE NOT EXISTS (
+    SELECT 1 FROM timescaledb_information.jobs
+    WHERE application_name LIKE '%metrics_cpu_1h%'
+);
+
+-- RAM agregado por hora
+CREATE MATERIALIZED VIEW IF NOT EXISTS metrics_ram_1h
+WITH (timescaledb.continuous) AS
+SELECT
+    time_bucket('1 hour', ts) AS bucket,
+    hostname,
+    ROUND(AVG(ram_percent)::numeric, 1)  AS ram_avg,
+    ROUND(MAX(ram_percent)::numeric, 1)  AS ram_max,
+    ROUND(AVG(swap_percent)::numeric, 1) AS swap_avg
+FROM metrics_ram
+GROUP BY bucket, hostname
+WITH NO DATA;
+
+SELECT add_continuous_aggregate_policy('metrics_ram_1h',
+    start_offset => INTERVAL '3 days',
+    end_offset   => INTERVAL '1 hour',
+    schedule_interval => INTERVAL '1 hour'
+) WHERE NOT EXISTS (
+    SELECT 1 FROM timescaledb_information.jobs
+    WHERE application_name LIKE '%metrics_ram_1h%'
+);
+
+-- DNS latência agregada por hora
+CREATE MATERIALIZED VIEW IF NOT EXISTS dns_checks_1h
+WITH (timescaledb.continuous) AS
+SELECT
+    time_bucket('1 hour', ts) AS bucket,
+    hostname,
+    domain,
+    ROUND(AVG(latency_ms)::numeric, 1)   AS latency_avg,
+    ROUND(MAX(latency_ms)::numeric, 1)   AS latency_max,
+    COUNT(*)                              AS total_checks,
+    SUM(CASE WHEN success THEN 0 ELSE 1 END) AS failures
+FROM dns_checks
+GROUP BY bucket, hostname, domain
+WITH NO DATA;
+
+SELECT add_continuous_aggregate_policy('dns_checks_1h',
+    start_offset => INTERVAL '3 days',
+    end_offset   => INTERVAL '1 hour',
+    schedule_interval => INTERVAL '1 hour'
+) WHERE NOT EXISTS (
+    SELECT 1 FROM timescaledb_information.jobs
+    WHERE application_name LIKE '%dns_checks_1h%'
+);

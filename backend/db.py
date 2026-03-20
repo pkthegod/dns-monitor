@@ -68,16 +68,41 @@ async def apply_schema() -> None:
     logger.info("Schema aplicado (%d statements)", len(statements))
 
 
-async def upsert_agent(hostname: str, last_seen_ts: str) -> None:
+async def upsert_agent(
+    hostname: str,
+    last_seen_ts: str,
+    display_name: Optional[str] = None,
+    location: Optional[str] = None,
+    agent_version: Optional[str] = None,
+) -> dict:
+    """
+    Registra ou atualiza o agente.
+    Retorna {"is_new": True} se for o primeiro heartbeat deste hostname.
+    Usado pelo backend para disparar alerta de novo agente detectado.
+    """
+    ts = _parse_ts(last_seen_ts)
     async with get_conn() as conn:
+        # Verifica se já existe antes do upsert
+        existing = await conn.fetchrow(
+            "SELECT hostname, registered_at FROM agents WHERE hostname = $1",
+            hostname,
+        )
+        is_new = existing is None
+
         await conn.execute(
             """
-            INSERT INTO agents (hostname, registered_at, last_seen)
-            VALUES ($1, $2, $2)
-            ON CONFLICT (hostname) DO UPDATE SET last_seen = EXCLUDED.last_seen
+            INSERT INTO agents (hostname, registered_at, last_seen, display_name, location)
+            VALUES ($1, $2, $2, $3, $4)
+            ON CONFLICT (hostname) DO UPDATE SET
+                last_seen    = EXCLUDED.last_seen,
+                display_name = COALESCE(EXCLUDED.display_name, agents.display_name),
+                location     = COALESCE(EXCLUDED.location,     agents.location)
             """,
-            hostname, _parse_ts(last_seen_ts),
+            hostname, ts,
+            display_name or None,
+            location or None,
         )
+    return {"is_new": is_new}
 
 
 async def insert_heartbeat(hostname: str, ts: str, agent_version: Optional[str]) -> None:
@@ -437,6 +462,20 @@ async def insert_command(
             hostname, command, issued_by, confirm_token, expires_hours,
         )
         return row["id"]
+
+
+async def get_command_by_id(command_id: int):
+    """Retorna dados de um comando pelo ID — hostname, command, issued_by."""
+    async with get_conn() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, hostname, command, issued_by, status, result, executed_at
+            FROM agent_commands
+            WHERE id = $1
+            """,
+            command_id,
+        )
+        return dict(row) if row else None
 
 
 async def get_commands_history(hostname: str, limit: int = 50) -> list[dict]:

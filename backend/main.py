@@ -275,8 +275,17 @@ async def receive_metrics(payload: AgentPayload) -> JSONResponse:
     hostname = payload.hostname
     ts       = payload.timestamp
 
-    # Garante registro do agente
-    await db.upsert_agent(hostname, ts)
+    # Garante registro do agente — detecta novos automaticamente
+    agent_meta = await db.upsert_agent(
+        hostname,
+        ts,
+        display_name  = getattr(payload, "display_name", None),
+        location      = getattr(payload, "location", None),
+        agent_version = payload.agent_version,
+    )
+    if agent_meta.get("is_new"):
+        logger.info("Novo agente detectado: %s", hostname)
+        await tg.send_new_agent_detected(hostname, payload.agent_version or "")
 
     # Fingerprint — valida identidade do hardware
     if payload.fingerprint:
@@ -410,7 +419,21 @@ async def post_command_result(command_id: int, request: Request) -> JSONResponse
     result = body.get("result", "")
     if status not in ("done", "failed"):
         return JSONResponse({"error": "status deve ser 'done' ou 'failed'"}, status_code=422)
+
+    # Grava o resultado no banco
     await db.mark_command_done(command_id, status, result)
+
+    # Busca os dados do comando para montar a mensagem de alerta
+    cmd = await db.get_command_by_id(command_id)
+    if cmd:
+        await tg.send_command_result(
+            hostname  = cmd["hostname"],
+            command   = cmd["command"],
+            status    = status,
+            result    = result,
+            issued_by = cmd["issued_by"] or "admin",
+        )
+
     return JSONResponse({"status": "ok"})
 
 

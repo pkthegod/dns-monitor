@@ -1,0 +1,25 @@
+cd /opt/dns-monitor/backend
+
+# Copiar os novos dashboards para o servidor
+# (baixe overview.json e host-detail.json e substitua em /opt/dns-monitor/grafana/dashboards/)
+
+# Deletar os antigos e reimportar
+curl -s -u admin:'Mudar@123' -X DELETE \
+  http://localhost:3000/api/dashboards/uid/dns-overview
+
+curl -s -u admin:'Mudar@123' -X DELETE \
+  http://localhost:3000/api/dashboards/uid/dns-host-detail
+
+sleep 2
+
+curl -s -u admin:'Mudar@123' \
+  -X POST http://localhost:3000/api/dashboards/import \
+  -H "Content-Type: application/json" \
+  -d "{\"dashboard\": $(cat /opt/dns-monitor/grafana/dashboards/overview.json), \"overwrite\": true, \"folderId\": 0}"
+
+echo ""
+
+curl -s -u admin:'Mudar@123' \
+  -X POST http://localhost:3000/api/dashboards/import \
+  -H "Content-Type: application/json" \
+  -d "{\"dashboard\": $(cat /opt/dns-monitor/grafana/dashboards/host-detail.json), \"overwrite\": true, \"folderId\": 0}"

@@ -1,0 +1,20 @@
+A convenção do projeto já está estabelecida — cada teste fica junto do código que testa:
+dns-monitor/
+├── test_grafana.py        ← raiz — testa arquivos de grafana/ e backend/
+├── test_payload.py        ← raiz — utilitário de diagnóstico (não é teste automatizado)
+│
+├── agent/
+│   └── test_agent.py      ← junto do dns_agent.py que testa
+│
+└── backend/
+    └── test_backend.py    ← junto do main.py e db.py que testa
+Motivo prático: o PYTHONPATH de cada suite é diferente:
+bash# Agente precisa do PYTHONPATH apontando para agent/
+PYTHONPATH=agent pytest agent/test_agent.py
+
+# Backend precisa do PYTHONPATH apontando para backend/
+PYTHONPATH=backend pytest backend/test_backend.py
+
+# Grafana não precisa de PYTHONPATH — lê arquivos JSON/YAML direto
+pytest test_grafana.py
+Se colocar tudo na raiz, precisaria gerenciar os imports manualmente e os módulos dns_agent, main e db colidiriam. A estrutura atual está correta — não mude.

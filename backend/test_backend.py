@@ -873,6 +873,9 @@ class TestCommandEndpoints:
         import main as m_module
         import asyncio
 
+        cmd_data = {"id": 42, "hostname": "ns1", "command": "enable",
+                    "issued_by": "admin", "status": "done", "result": "OK", "executed_at": None}
+
         async def run():
             req = MagicMock()
             req.headers = {"authorization": "Bearer tok"}
@@ -880,7 +883,9 @@ class TestCommandEndpoints:
             with patch.dict("os.environ", {"AGENT_TOKEN": "tok"}):
                 with patch("main.require_token", AsyncMock(return_value=None)):
                     with patch("main.db.mark_command_done", AsyncMock()):
-                        resp = await m_module.post_command_result(42, req)
+                        with patch("main.db.get_command_by_id", AsyncMock(return_value=cmd_data)):
+                            with patch("main.tg.send_command_result", AsyncMock(return_value=True)):
+                                resp = await m_module.post_command_result(42, req)
             import json
             assert json.loads(resp.body)["status"] == "ok"
 
@@ -1015,6 +1020,164 @@ class TestAgentPayloadFingerprint:
             fingerprint="a" * 64
         )
         assert p.fingerprint == "a" * 64
+
+
+# ===========================================================================
+# TestSendCommandResult
+# ===========================================================================
+
+class TestSendCommandResult:
+    """Testa os alertas Telegram disparados pelo resultado de comandos remotos."""
+
+    def _run(self, coro):
+        import asyncio
+        return asyncio.get_event_loop().run_until_complete(coro)
+
+    def test_enable_done_sends_restabelecido(self):
+        import telegram_bot as tg
+        with patch("telegram_bot.send_message", AsyncMock(return_value=True)) as mock_send:
+            self._run(tg.send_command_result("ns1", "enable", "done", "enable named: OK"))
+        text = mock_send.call_args[0][0]
+        assert "RESTABELECIDO" in text
+        assert "ns1" in text
+
+    def test_stop_done_sends_suspenso(self):
+        import telegram_bot as tg
+        with patch("telegram_bot.send_message", AsyncMock(return_value=True)) as mock_send:
+            self._run(tg.send_command_result("ns1", "stop", "done", "stop named: OK"))
+        text = mock_send.call_args[0][0]
+        assert "SUSPENSO" in text
+        assert "stop" in text
+
+    def test_disable_done_sends_suspenso(self):
+        import telegram_bot as tg
+        with patch("telegram_bot.send_message", AsyncMock(return_value=True)) as mock_send:
+            self._run(tg.send_command_result("ns1", "disable", "done", "disable named: OK"))
+        text = mock_send.call_args[0][0]
+        assert "SUSPENSO" in text
+        assert "disable" in text
+
+    def test_purge_done_sends_removido(self):
+        import telegram_bot as tg
+        with patch("telegram_bot.send_message", AsyncMock(return_value=True)) as mock_send:
+            self._run(tg.send_command_result("ns1", "purge", "done", "Serviço removido"))
+        text = mock_send.call_args[0][0]
+        assert "REMOVIDO" in text
+        assert "🚨" in text
+
+    def test_failed_sends_falhou(self):
+        import telegram_bot as tg
+        with patch("telegram_bot.send_message", AsyncMock(return_value=True)) as mock_send:
+            self._run(tg.send_command_result("ns1", "stop", "failed", "Access denied"))
+        text = mock_send.call_args[0][0]
+        assert "FALHOU" in text
+        assert "Access denied" in text
+
+    def test_issued_by_included_in_message(self):
+        import telegram_bot as tg
+        with patch("telegram_bot.send_message", AsyncMock(return_value=True)) as mock_send:
+            self._run(tg.send_command_result("ns1", "stop", "done", "OK", issued_by="paulo"))
+        text = mock_send.call_args[0][0]
+        assert "paulo" in text
+
+    def test_long_result_truncated(self):
+        import telegram_bot as tg
+        long_result = "x" * 500
+        with patch("telegram_bot.send_message", AsyncMock(return_value=True)) as mock_send:
+            self._run(tg.send_command_result("ns1", "stop", "failed", long_result))
+        text = mock_send.call_args[0][0]
+        # Resultado deve ser truncado a 200 chars
+        assert "x" * 201 not in text
+
+
+# ===========================================================================
+# TestCommandResultEndpointWithAlert
+# ===========================================================================
+
+class TestCommandResultEndpointWithAlert:
+    """Testa que o endpoint dispara o alerta Telegram após gravar o resultado."""
+
+    def _run(self, coro):
+        import asyncio
+        return asyncio.get_event_loop().run_until_complete(coro)
+
+    def test_done_triggers_telegram_alert(self):
+        import main as m_module
+        import asyncio
+
+        cmd_data = {
+            "id": 1, "hostname": "ns1", "command": "enable",
+            "issued_by": "admin", "status": "done", "result": "OK", "executed_at": None
+        }
+
+        async def run():
+            req = MagicMock()
+            req.headers = {"authorization": "Bearer tok"}
+            req.json = AsyncMock(return_value={"status": "done", "result": "enable named: OK"})
+            with patch.dict("os.environ", {"AGENT_TOKEN": "tok"}),                  patch("main.require_token", AsyncMock(return_value=None)),                  patch("main.db.mark_command_done", AsyncMock()),                  patch("main.db.get_command_by_id", AsyncMock(return_value=cmd_data)),                  patch("main.tg.send_command_result", AsyncMock(return_value=True)) as mock_tg:
+                resp = await m_module.post_command_result(1, req)
+            mock_tg.assert_called_once()
+            call_kwargs = mock_tg.call_args[1]
+            assert call_kwargs["command"]  == "enable"
+            assert call_kwargs["hostname"] == "ns1"
+            assert call_kwargs["status"]   == "done"
+
+        asyncio.get_event_loop().run_until_complete(run())
+
+    def test_failed_triggers_telegram_alert(self):
+        import main as m_module
+        import asyncio
+
+        cmd_data = {
+            "id": 2, "hostname": "ns1", "command": "stop",
+            "issued_by": "admin", "status": "failed", "result": "Access denied", "executed_at": None
+        }
+
+        async def run():
+            req = MagicMock()
+            req.headers = {"authorization": "Bearer tok"}
+            req.json = AsyncMock(return_value={"status": "failed", "result": "Access denied"})
+            with patch.dict("os.environ", {"AGENT_TOKEN": "tok"}),                  patch("main.require_token", AsyncMock(return_value=None)),                  patch("main.db.mark_command_done", AsyncMock()),                  patch("main.db.get_command_by_id", AsyncMock(return_value=cmd_data)),                  patch("main.tg.send_command_result", AsyncMock(return_value=True)) as mock_tg:
+                resp = await m_module.post_command_result(2, req)
+            mock_tg.assert_called_once()
+            call_kwargs = mock_tg.call_args[1]
+            assert call_kwargs["status"]  == "failed"
+            assert call_kwargs["command"] == "stop"
+
+        asyncio.get_event_loop().run_until_complete(run())
+
+    def test_no_alert_if_command_not_found(self):
+        import main as m_module
+        import asyncio
+
+        async def run():
+            req = MagicMock()
+            req.headers = {"authorization": "Bearer tok"}
+            req.json = AsyncMock(return_value={"status": "done", "result": "OK"})
+            with patch.dict("os.environ", {"AGENT_TOKEN": "tok"}),                  patch("main.require_token", AsyncMock(return_value=None)),                  patch("main.db.mark_command_done", AsyncMock()),                  patch("main.db.get_command_by_id", AsyncMock(return_value=None)),                  patch("main.tg.send_command_result", AsyncMock()) as mock_tg:
+                await m_module.post_command_result(999, req)
+            # Se comando não existe no banco, não dispara alerta
+            mock_tg.assert_not_called()
+
+        asyncio.get_event_loop().run_until_complete(run())
+
+
+# ===========================================================================
+# TestGetCommandById
+# ===========================================================================
+
+class TestGetCommandById:
+
+    def test_get_command_by_id_is_async(self):
+        import inspect
+        import db
+        assert inspect.iscoroutinefunction(db.get_command_by_id)
+
+    def test_get_command_by_id_signature(self):
+        import inspect
+        import db
+        sig = inspect.signature(db.get_command_by_id)
+        assert "command_id" in sig.parameters
 
 
 # ===========================================================================
