@@ -1,6 +1,7 @@
 #!/bin/bash
 # install_agent.sh — Instala o dns-agent como serviço systemd
-# Execute como root: sudo bash install_agent.sh
+# Compatível com Debian 12+ e Ubuntu 22.04+
+# Execute como root: bash install_agent.sh
 set -euo pipefail
 
 INSTALL_DIR="/opt/dns-agent"
@@ -14,20 +15,68 @@ echo "================================================"
 echo "  DNS Monitor Agent — Instalação"
 echo "================================================"
 
+# ---------------------------------------------------------------------------
+# 0. Verificações iniciais
+# ---------------------------------------------------------------------------
+
 # Verifica root
 if [ "$(id -u)" -ne 0 ]; then
-    echo "ERRO: Execute como root (sudo bash install_agent.sh)"
+    echo "ERRO: Execute como root: bash install_agent.sh"
     exit 1
+fi
+
+# Verifica apt (Debian/Ubuntu)
+if ! command -v apt-get &>/dev/null; then
+    echo "ERRO: apt-get não encontrado. Este script é para Debian/Ubuntu."
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# 1. Dependências do sistema via apt
+# ---------------------------------------------------------------------------
+echo ""
+echo "1) Instalando dependências do sistema..."
+
+# sudo — pode não estar presente em instalações mínimas
+if ! command -v sudo &>/dev/null; then
+    echo "   sudo não encontrado — instalando..."
+    apt-get install -y --no-install-recommends sudo
+    echo "   sudo instalado."
+else
+    echo "   sudo já presente."
+fi
+
+# Python e pacotes necessários para o agente
+PKGS_NEEDED=()
+for pkg in python3 python3-venv python3-pip python3-pytest; do
+    if ! dpkg -s "$pkg" &>/dev/null; then
+        PKGS_NEEDED+=("$pkg")
+    fi
+done
+
+if [ ${#PKGS_NEEDED[@]} -gt 0 ]; then
+    echo "   Instalando: ${PKGS_NEEDED[*]}"
+    apt-get update -qq
+    apt-get install -y --no-install-recommends "${PKGS_NEEDED[@]}"
+    echo "   Pacotes instalados."
+else
+    echo "   Pacotes Python já presentes."
 fi
 
 # Verifica Python 3.8+
 if ! python3 -c "import sys; assert sys.version_info >= (3,8)" 2>/dev/null; then
-    echo "ERRO: Python 3.8+ necessário. Instale com: apt install python3"
+    echo "ERRO: Python 3.8+ necessário — versão instalada é muito antiga."
     exit 1
 fi
 
+PYTHON_VER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+echo "   Python $PYTHON_VER OK."
+
+# ---------------------------------------------------------------------------
+# 2. Usuário de serviço
+# ---------------------------------------------------------------------------
 echo ""
-echo "1) Criando usuário de serviço '$SERVICE_USER'..."
+echo "2) Criando usuário de serviço '$SERVICE_USER'..."
 if ! id "$SERVICE_USER" &>/dev/null; then
     useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
     echo "   Usuário criado."
@@ -35,36 +84,54 @@ else
     echo "   Usuário já existe."
 fi
 
+# ---------------------------------------------------------------------------
+# 3. Diretórios
+# ---------------------------------------------------------------------------
 echo ""
-echo "2) Criando diretórios..."
+echo "3) Criando diretórios..."
 mkdir -p "$INSTALL_DIR" "$CONFIG_DIR" "$LOG_DIR"
 chown "$SERVICE_USER:$SERVICE_USER" "$LOG_DIR"
+echo "   $INSTALL_DIR, $CONFIG_DIR, $LOG_DIR — OK."
 
+# ---------------------------------------------------------------------------
+# 4. Arquivos do agente
+# ---------------------------------------------------------------------------
 echo ""
-echo "3) Copiando arquivos..."
+echo "4) Copiando arquivos..."
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cp "$SCRIPT_DIR/dns_agent.py"    "$INSTALL_DIR/"
+cp "$SCRIPT_DIR/dns_agent.py"     "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/requirements.txt" "$INSTALL_DIR/"
 
-# Copia agent.conf apenas se não existir (preserva configuração existente)
+# agent.conf — preserva se já existir
 if [ ! -f "$CONFIG_DIR/agent.conf" ]; then
     cp "$SCRIPT_DIR/agent.conf" "$CONFIG_DIR/agent.conf"
     chmod 640 "$CONFIG_DIR/agent.conf"
     chown root:"$SERVICE_USER" "$CONFIG_DIR/agent.conf"
     echo "   agent.conf copiado para $CONFIG_DIR/agent.conf"
 else
-    echo "   agent.conf existente preservado em $CONFIG_DIR/agent.conf"
+    echo "   agent.conf existente preservado."
 fi
 
-# Link simbólico para o agente encontrar o conf
+# Link simbólico para o agente encontrar o conf no diretório de trabalho
 ln -sfn "$CONFIG_DIR/agent.conf" "$INSTALL_DIR/agent.conf"
 
-# Cria o arquivo env se não existir — sem ele o systemd não sobe o serviço
-if [ ! -f "$ENV_FILE" ]; then
-    echo "   Criando $ENV_FILE com template..."
+# Arquivo de segredos — prioridade:
+#   1. env na mesma pasta do install_agent.sh → copia (sempre atualiza)
+#   2. /etc/dns-agent/env já existe           → preserva
+#   3. nenhum encontrado                       → cria template
+ENV_COPIED=false
+if [ -f "$SCRIPT_DIR/env" ]; then
+    cp "$SCRIPT_DIR/env" "$ENV_FILE"
+    chmod 640 "$ENV_FILE"
+    chown root:"$SERVICE_USER" "$ENV_FILE"
+    ENV_COPIED=true
+    echo "   env copiado de $SCRIPT_DIR/env para $ENV_FILE"
+elif [ -f "$ENV_FILE" ]; then
+    echo "   $ENV_FILE existente preservado."
+else
     cat > "$ENV_FILE" << 'ENVEOF'
 # Segredos do agente DNS Monitor
-# Preencha os 3 valores abaixo antes de iniciar o serviço
+# Preencha os 3 valores antes de iniciar o serviço
 # Documentação: README.md → Instalação do Agente
 
 AGENT_HOSTNAME=TROQUE_PELO_HOSTNAME
@@ -73,17 +140,19 @@ AGENT_BACKEND=http://IP_DO_BACKEND:8000
 ENVEOF
     chmod 640 "$ENV_FILE"
     chown root:"$SERVICE_USER" "$ENV_FILE"
-    echo "   $ENV_FILE criado com template."
-else
-    echo "   $ENV_FILE existente preservado."
+    echo "   $ENV_FILE criado com template — preencha antes de iniciar."
 fi
 
+# ---------------------------------------------------------------------------
+# 5. Sudoers — controle remoto do serviço DNS
+# ---------------------------------------------------------------------------
 echo ""
-echo "4) Configurando permissões sudo para controle do serviço DNS..."
+echo "5) Configurando permissões sudo para controle remoto do DNS..."
 SUDOERS_FILE="/etc/sudoers.d/dns-agent"
 cat > "$SUDOERS_FILE" << 'SUDOEOF'
-# Permissões do dns-agent para controlar serviços DNS remotamente
+# dns-agent — permissões de controle remoto do serviço DNS
 # Gerado por install_agent.sh — não edite manualmente
+# Inclui bind9, named (alias Debian) e unbound
 Defaults:dns-agent !use_pty
 dns-agent ALL=(root) NOPASSWD: /usr/bin/systemctl stop bind9, \
                                 /usr/bin/systemctl stop named, \
@@ -102,30 +171,35 @@ dns-agent ALL=(root) NOPASSWD: /usr/bin/systemctl stop bind9, \
                                 /usr/bin/apt-get purge -y named
 SUDOEOF
 chmod 440 "$SUDOERS_FILE"
-# Validar sintaxe — se inválido, remove e continua sem sudo
 if visudo -c -f "$SUDOERS_FILE" &>/dev/null; then
-    echo "   Permissões sudo configuradas em $SUDOERS_FILE"
+    echo "   Sudoers configurado em $SUDOERS_FILE"
 else
     echo "   AVISO: falha ao validar sudoers — removendo regra"
     rm -f "$SUDOERS_FILE"
 fi
 
+# ---------------------------------------------------------------------------
+# 6. Virtualenv e dependências Python
+# ---------------------------------------------------------------------------
 echo ""
-echo "4) Criando virtualenv e instalando dependências..."
+echo "6) Criando virtualenv e instalando dependências..."
 python3 -m venv "$INSTALL_DIR/venv"
 "$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade pip
 "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
 echo "   Dependências instaladas."
 
+# ---------------------------------------------------------------------------
+# 7. Serviço systemd
+# ---------------------------------------------------------------------------
 echo ""
-echo "5) Instalando serviço systemd..."
+echo "7) Instalando serviço systemd..."
 cp "$SCRIPT_DIR/dns_agent.service" "$SERVICE_FILE"
 systemctl daemon-reload
 systemctl enable dns_agent
 echo "   Serviço instalado e habilitado."
 
 # ---------------------------------------------------------------------------
-# Verificação do arquivo env antes de encerrar
+# 8. Verificação do arquivo env
 # ---------------------------------------------------------------------------
 echo ""
 echo "================================================"
@@ -154,16 +228,24 @@ check_var "AGENT_TOKEN"
 check_var "AGENT_BACKEND"
 
 echo ""
-if [ "$ENV_OK" = true ]; then
-    echo "  Arquivo env OK — iniciando serviço..."
+if [ "$ENV_COPIED" = true ] && [ "$ENV_OK" != true ]; then
+    # env copiado da pasta mas ainda tem placeholders — arquivo incompleto
+    echo "  ╔══════════════════════════════════════════╗"
+    echo "  ║  env copiado mas com valores inválidos   ║"
+    echo "  ╚══════════════════════════════════════════╝"
     echo ""
+    echo "  O arquivo $SCRIPT_DIR/env ainda contém placeholders."
+    echo "  Edite e execute o instalador novamente:"
+    echo "    nano $SCRIPT_DIR/env"
+    echo "    bash $SCRIPT_DIR/install_agent.sh"
+    echo "================================================"
+elif [ "$ENV_OK" = true ]; then
     systemctl start dns_agent
-    echo ""
     echo "================================================"
     echo "  Instalação concluída e serviço iniciado!"
     echo ""
     echo "  Verifique os logs:"
-    echo "    sudo journalctl -u dns_agent -f"
+    echo "    journalctl -u dns_agent -f"
     echo "================================================"
 else
     echo "  ╔══════════════════════════════════════════╗"
@@ -171,17 +253,16 @@ else
     echo "  ╚══════════════════════════════════════════╝"
     echo ""
     echo "  Edite o arquivo de segredos:"
-    echo "    sudo nano $ENV_FILE"
+    echo "    nano $ENV_FILE"
     echo ""
     echo "  Preencha os 3 campos marcados com ✗ acima."
-    echo "  Os valores devem ser:"
     echo ""
     echo "    AGENT_HOSTNAME  — nome único desta máquina"
     echo "    AGENT_TOKEN     — token do backend (backend/.env → AGENT_TOKEN)"
     echo "    AGENT_BACKEND   — URL do servidor, ex: http://192.168.1.10:8000"
     echo ""
     echo "  Após preencher, inicie o serviço:"
-    echo "    sudo systemctl start dns_agent"
-    echo "    sudo journalctl -u dns_agent -f"
+    echo "    systemctl start dns_agent"
+    echo "    journalctl -u dns_agent -f"
     echo "================================================"
 fi

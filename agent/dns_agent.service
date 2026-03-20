@@ -1,6 +1,6 @@
 [Unit]
 Description=DNS Monitor Agent
-Documentation=https://github.com/seu-projeto/dns-monitor
+Documentation=https://github.com/pkthegod/dns-monitor
 After=network-online.target
 Wants=network-online.target
 StartLimitBurst=5
