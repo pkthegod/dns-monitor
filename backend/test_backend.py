@@ -736,6 +736,288 @@ class TestHealthEndpoint:
 
 
 # ===========================================================================
+# TestFingerprintDb
+# ===========================================================================
+
+class TestFingerprintDb:
+
+    def test_upsert_fingerprint_is_async(self):
+        import inspect
+        import db
+        assert inspect.iscoroutinefunction(db.upsert_fingerprint)
+
+    def test_upsert_fingerprint_signature(self):
+        import inspect
+        import db
+        sig = inspect.signature(db.upsert_fingerprint)
+        params = list(sig.parameters)
+        assert "hostname"    in params
+        assert "fingerprint" in params
+
+    def test_get_pending_commands_is_async(self):
+        import inspect
+        import db
+        assert inspect.iscoroutinefunction(db.get_pending_commands)
+
+    def test_mark_command_done_is_async(self):
+        import inspect
+        import db
+        assert inspect.iscoroutinefunction(db.mark_command_done)
+
+    def test_insert_command_is_async(self):
+        import inspect
+        import db
+        assert inspect.iscoroutinefunction(db.insert_command)
+
+    def test_get_commands_history_is_async(self):
+        import inspect
+        import db
+        assert inspect.iscoroutinefunction(db.get_commands_history)
+
+
+# ===========================================================================
+# TestInsertCommandValidation
+# ===========================================================================
+
+class TestInsertCommandValidation:
+    """Testa validações síncronas de insert_command via mock do pool."""
+
+    def _run(self, coro):
+        import asyncio
+        return asyncio.get_event_loop().run_until_complete(coro)
+
+    def test_invalid_command_raises_valueerror(self):
+        import db
+        import asyncio
+
+        async def run():
+            with patch("db._pool") as mock_pool:
+                mock_conn = AsyncMock()
+                mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+                mock_pool.acquire.return_value.__aexit__  = AsyncMock(return_value=False)
+                with pytest.raises(ValueError, match="Comando inválido"):
+                    await db.insert_command("host", "reboot", "admin")
+
+        asyncio.get_event_loop().run_until_complete(run())
+
+    def test_purge_without_token_raises_valueerror(self):
+        import db
+        import asyncio
+
+        async def run():
+            with pytest.raises(ValueError, match="confirm_token"):
+                await db.insert_command("host", "purge", "admin", confirm_token=None)
+
+        asyncio.get_event_loop().run_until_complete(run())
+
+    def test_valid_commands_accepted(self):
+        import db
+        assert "stop"    in db.VALID_COMMANDS
+        assert "disable" in db.VALID_COMMANDS
+        assert "enable"  in db.VALID_COMMANDS
+        assert "purge"   in db.VALID_COMMANDS
+
+    def test_invalid_commands_not_in_set(self):
+        import db
+        assert "reboot"     not in db.VALID_COMMANDS
+        assert "rm -rf"     not in db.VALID_COMMANDS
+        assert "shutdown"   not in db.VALID_COMMANDS
+
+
+# ===========================================================================
+# TestCommandEndpoints
+# ===========================================================================
+
+class TestCommandEndpoints:
+    """Testa os endpoints /commands via mocks do db."""
+
+    def _run(self, coro):
+        import asyncio
+        return asyncio.get_event_loop().run_until_complete(coro)
+
+    def test_get_commands_requires_auth(self):
+        import main as m_module
+        import asyncio
+
+        async def run():
+            req = MagicMock()
+            req.headers = {"authorization": "Bearer wrong-token"}
+            with patch.dict("os.environ", {"AGENT_TOKEN": "correct-token"}):
+                with pytest.raises(Exception):
+                    await m_module.get_commands("host1", req)
+
+        asyncio.get_event_loop().run_until_complete(run())
+
+    def test_get_commands_returns_pending(self):
+        import main as m_module
+        import asyncio
+
+        pending = [{"id": 1, "command": "stop", "confirm_token": None,
+                    "issued_at": "2026-01-01T00:00:00+00:00"}]
+
+        async def run():
+            req = MagicMock()
+            req.headers = {"authorization": "Bearer tok"}
+            with patch.dict("os.environ", {"AGENT_TOKEN": "tok"}):
+                with patch("main.require_token", AsyncMock(return_value=None)):
+                    with patch("main.db.get_pending_commands", AsyncMock(return_value=pending)):
+                        resp = await m_module.get_commands("ns1", req)
+            import json
+            data = json.loads(resp.body)
+            assert len(data) == 1
+            assert data[0]["command"] == "stop"
+
+        asyncio.get_event_loop().run_until_complete(run())
+
+    def test_post_command_result_done(self):
+        import main as m_module
+        import asyncio
+
+        async def run():
+            req = MagicMock()
+            req.headers = {"authorization": "Bearer tok"}
+            req.json = AsyncMock(return_value={"status": "done", "result": "OK"})
+            with patch.dict("os.environ", {"AGENT_TOKEN": "tok"}):
+                with patch("main.require_token", AsyncMock(return_value=None)):
+                    with patch("main.db.mark_command_done", AsyncMock()):
+                        resp = await m_module.post_command_result(42, req)
+            import json
+            assert json.loads(resp.body)["status"] == "ok"
+
+        asyncio.get_event_loop().run_until_complete(run())
+
+    def test_post_command_result_invalid_status(self):
+        import main as m_module
+        import asyncio
+
+        async def run():
+            req = MagicMock()
+            req.headers = {"authorization": "Bearer tok"}
+            req.json = AsyncMock(return_value={"status": "invalid", "result": ""})
+            with patch.dict("os.environ", {"AGENT_TOKEN": "tok"}):
+                with patch("main.require_token", AsyncMock(return_value=None)):
+                    with patch("main.db.mark_command_done", AsyncMock()):
+                        resp = await m_module.post_command_result(1, req)
+            assert resp.status_code == 422
+
+        asyncio.get_event_loop().run_until_complete(run())
+
+    def test_create_command_missing_fields(self):
+        import main as m_module
+        import asyncio
+
+        async def run():
+            req = MagicMock()
+            req.headers = {"authorization": "Bearer tok"}
+            req.json = AsyncMock(return_value={"hostname": "", "command": ""})
+            with patch.dict("os.environ", {"AGENT_TOKEN": "tok"}):
+                with patch("main.require_token", AsyncMock(return_value=None)):
+                    resp = await m_module.create_command(req)
+            assert resp.status_code == 422
+
+        asyncio.get_event_loop().run_until_complete(run())
+
+    def test_create_command_purge_generates_confirm_token(self):
+        import main as m_module
+        import asyncio
+
+        async def run():
+            req = MagicMock()
+            req.headers = {"authorization": "Bearer tok"}
+            req.json = AsyncMock(return_value={
+                "hostname": "ns1", "command": "purge", "issued_by": "admin"
+            })
+            with patch.dict("os.environ", {"AGENT_TOKEN": "tok"}):
+                with patch("main.require_token", AsyncMock(return_value=None)):
+                    with patch("main.db.insert_command", AsyncMock(return_value=99)):
+                        resp = await m_module.create_command(req)
+            import json
+            data = json.loads(resp.body)
+            assert resp.status_code == 201
+            assert "confirm_token" in data
+            assert "warning" in data
+            assert len(data["confirm_token"]) == 16
+
+        asyncio.get_event_loop().run_until_complete(run())
+
+    def test_create_command_stop_no_confirm_token(self):
+        import main as m_module
+        import asyncio
+
+        async def run():
+            req = MagicMock()
+            req.headers = {"authorization": "Bearer tok"}
+            req.json = AsyncMock(return_value={
+                "hostname": "ns1", "command": "stop", "issued_by": "admin"
+            })
+            with patch.dict("os.environ", {"AGENT_TOKEN": "tok"}):
+                with patch("main.require_token", AsyncMock(return_value=None)):
+                    with patch("main.db.insert_command", AsyncMock(return_value=1)):
+                        resp = await m_module.create_command(req)
+            import json
+            data = json.loads(resp.body)
+            assert resp.status_code == 201
+            assert "confirm_token" not in data
+
+        asyncio.get_event_loop().run_until_complete(run())
+
+    def test_create_command_invalid_command_returns_422(self):
+        import main as m_module
+        import asyncio
+
+        async def run():
+            req = MagicMock()
+            req.headers = {"authorization": "Bearer tok"}
+            req.json = AsyncMock(return_value={"hostname": "ns1", "command": "reboot"})
+            with patch.dict("os.environ", {"AGENT_TOKEN": "tok"}):
+                with patch("main.require_token", AsyncMock(return_value=None)):
+                    with patch("main.db.insert_command",
+                               AsyncMock(side_effect=ValueError("Comando inválido"))):
+                        resp = await m_module.create_command(req)
+            assert resp.status_code == 422
+
+        asyncio.get_event_loop().run_until_complete(run())
+
+
+# ===========================================================================
+# TestAgentPayloadFingerprint
+# ===========================================================================
+
+class TestAgentPayloadFingerprint:
+    """Testa que o modelo Pydantic aceita fingerprint opcional."""
+
+    def test_payload_accepts_fingerprint(self):
+        from main import AgentPayload
+        p = AgentPayload(
+            type="heartbeat",
+            hostname="ns1",
+            timestamp="2026-01-01T00:00:00+00:00",
+            fingerprint="abc123def456" + "0" * 52
+        )
+        assert p.fingerprint is not None
+
+    def test_payload_fingerprint_optional(self):
+        from main import AgentPayload
+        p = AgentPayload(
+            type="heartbeat",
+            hostname="ns1",
+            timestamp="2026-01-01T00:00:00+00:00"
+        )
+        assert p.fingerprint is None
+
+    def test_payload_fingerprint_stored_on_check(self):
+        """Fingerprint presente no payload não quebra o processamento."""
+        from main import AgentPayload
+        p = AgentPayload(
+            type="check",
+            hostname="ns1",
+            timestamp="2026-01-01T00:00:00+00:00",
+            fingerprint="a" * 64
+        )
+        assert p.fingerprint == "a" * 64
+
+
+# ===========================================================================
 # Entry point
 # ===========================================================================
 

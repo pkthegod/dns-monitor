@@ -296,3 +296,39 @@ SELECT add_compression_policy('metrics_io',         INTERVAL '7 days', if_not_ex
 SELECT add_compression_policy('dns_checks',         INTERVAL '7 days', if_not_exists => TRUE);
 SELECT add_compression_policy('dns_service_status', INTERVAL '7 days', if_not_exists => TRUE);
 SELECT add_compression_policy('agent_heartbeats',   INTERVAL '7 days', if_not_exists => TRUE);
+
+
+-- =============================================================================
+-- 8. FINGERPRINT E COMANDOS REMOTOS
+-- =============================================================================
+
+-- Coluna fingerprint na tabela agents
+-- SHA256(hostname + mac_address + /etc/machine-id) — identifica o hardware real
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS fingerprint TEXT;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS fingerprint_first_seen TIMESTAMPTZ;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS fingerprint_last_seen  TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS idx_agents_fingerprint ON agents (fingerprint);
+
+-- Tabela de comandos remotos
+-- O servidor insere, o agente consulta a cada poll e executa
+CREATE TABLE IF NOT EXISTS agent_commands (
+    id              BIGSERIAL       PRIMARY KEY,
+    hostname        TEXT            NOT NULL,
+    command         TEXT            NOT NULL,   -- 'stop'|'disable'|'enable'|'purge'
+    issued_by       TEXT,                       -- identificação de quem emitiu
+    issued_at       TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+    expires_at      TIMESTAMPTZ,               -- NULL = não expira
+    confirm_token   TEXT,                      -- obrigatório para 'purge'
+    executed_at     TIMESTAMPTZ,
+    status          TEXT            NOT NULL DEFAULT 'pending',
+                                               -- 'pending'|'done'|'failed'|'expired'
+    result          TEXT                       -- saída do comando ou mensagem de erro
+);
+
+CREATE INDEX IF NOT EXISTS idx_cmd_hostname_status
+    ON agent_commands (hostname, status)
+    WHERE status = 'pending';
+
+CREATE INDEX IF NOT EXISTS idx_cmd_issued_at
+    ON agent_commands (issued_at DESC);

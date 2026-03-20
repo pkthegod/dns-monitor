@@ -1,6 +1,6 @@
 [Unit]
 Description=DNS Monitor Agent
-Documentation=https://github.com/pkthegod/dns-monitor
+Documentation=https://github.com/seu-projeto/dns-monitor
 After=network-online.target
 Wants=network-online.target
 StartLimitBurst=5
@@ -22,10 +22,10 @@ Restart=on-failure
 RestartSec=10s
 
 # Hardening básico
-NoNewPrivileges=true
+# NoNewPrivileges desabilitado — o agente precisa de sudo para controlar serviços DNS
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/var/log/dns-agent
+ReadWritePaths=/var/log/dns-agent /run/sudo
 
 # Logs vão para journald automaticamente
 StandardOutput=journal

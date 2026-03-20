@@ -12,6 +12,10 @@ from typing import Optional
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
+import json
+import secrets
+from datetime import date, datetime
+from decimal import Decimal
 from pydantic import BaseModel, Field
 
 import db
@@ -27,6 +31,27 @@ logging.basicConfig(
     datefmt="%Y-%m-%dT%H:%M:%S",
 )
 logger = logging.getLogger("dns-monitor.api")
+
+# ---------------------------------------------------------------------------
+# Serialização JSON — converte tipos do asyncpg não suportados pelo json nativo
+# ---------------------------------------------------------------------------
+
+def _jsonify(obj) -> str:
+    """Serializa datetime, Decimal e outros tipos do asyncpg para JSON."""
+    def default(o):
+        if isinstance(o, (datetime, date)):
+            return o.isoformat()
+        if isinstance(o, Decimal):
+            return float(o)
+        return str(o)
+    return json.dumps(obj, default=default)
+
+
+class _SafeJSONResponse(JSONResponse):
+    """JSONResponse que usa _jsonify para lidar com datetime e Decimal."""
+    def render(self, content) -> bytes:
+        return _jsonify(content).encode("utf-8")
+
 
 # ---------------------------------------------------------------------------
 # Thresholds (lidos de env, com defaults sensatos)
@@ -127,6 +152,7 @@ class AgentPayload(BaseModel):
     hostname:      str
     timestamp:     str
     agent_version: Optional[str]  = None
+    fingerprint:   Optional[str]  = None     # SHA256 do hardware — detecta cópias
     dns_service:   Optional[DnsServiceModel] = None
     dns_checks:    Optional[list[DnsCheckModel]] = Field(default_factory=list)
     system:        Optional[SystemModel]     = None
@@ -252,6 +278,15 @@ async def receive_metrics(payload: AgentPayload) -> JSONResponse:
     # Garante registro do agente
     await db.upsert_agent(hostname, ts)
 
+    # Fingerprint — valida identidade do hardware
+    if payload.fingerprint:
+        fp_result = await db.upsert_fingerprint(hostname, payload.fingerprint)
+        if fp_result.get("changed"):
+            logger.warning(
+                "ALERTA: fingerprint mudou para '%s'. Anterior: %s | Atual: %s",
+                hostname, fp_result.get("previous"), payload.fingerprint
+            )
+
     # Heartbeat sempre gravado
     await db.insert_heartbeat(hostname, ts, payload.agent_version)
 
@@ -344,18 +379,84 @@ async def _evaluate_alerts(payload: AgentPayload) -> None:
 
 
 @app.get("/agents")
-async def list_agents(request: Request) -> JSONResponse:
+async def list_agents(request: Request) -> _SafeJSONResponse:
     """Lista status atual de todos os agentes registrados."""
     async with db.get_conn() as conn:
         rows = await conn.fetch("SELECT * FROM v_agent_current_status ORDER BY hostname")
-    return JSONResponse([dict(r) for r in rows])
+    return _SafeJSONResponse([dict(r) for r in rows])
 
 
 @app.get("/alerts")
-async def list_alerts(hostname: Optional[str] = None) -> JSONResponse:
+async def list_alerts(hostname: Optional[str] = None) -> _SafeJSONResponse:
     """Lista alertas abertos."""
     alerts = await db.get_open_alerts(hostname)
-    return JSONResponse(alerts)
+    return _SafeJSONResponse(alerts)
+
+
+@app.get("/commands/{hostname}")
+async def get_commands(hostname: str, request: Request) -> _SafeJSONResponse:
+    """Retorna comandos pendentes para o agente. Chamado pelo agente no poll."""
+    await require_token(request)
+    commands = await db.get_pending_commands(hostname)
+    return _SafeJSONResponse(commands)
+
+
+@app.post("/commands/{command_id}/result")
+async def post_command_result(command_id: int, request: Request) -> JSONResponse:
+    """Agente reporta o resultado de um comando executado."""
+    await require_token(request)
+    body = await request.json()
+    status = body.get("status", "done")   # 'done' | 'failed'
+    result = body.get("result", "")
+    if status not in ("done", "failed"):
+        return JSONResponse({"error": "status deve ser 'done' ou 'failed'"}, status_code=422)
+    await db.mark_command_done(command_id, status, result)
+    return JSONResponse({"status": "ok"})
+
+
+@app.post("/commands")
+async def create_command(request: Request) -> JSONResponse:
+    """
+    Cria um comando para um agente executar no próximo poll.
+    Corpo JSON:
+      { "hostname": "...", "command": "stop|disable|enable|purge",
+        "issued_by": "admin", "expires_hours": 24 }
+    Para purge, gera e retorna um confirm_token automaticamente.
+    """
+    await require_token(request)
+    body = await request.json()
+    hostname = body.get("hostname", "").strip()
+    command  = body.get("command",  "").strip()
+    issued_by = body.get("issued_by", "admin")
+    expires_hours = body.get("expires_hours")
+
+    if not hostname or not command:
+        return JSONResponse({"error": "hostname e command são obrigatórios"}, status_code=422)
+
+    confirm_token = None
+    if command == "purge":
+        confirm_token = secrets.token_hex(8)
+
+    try:
+        cmd_id = await db.insert_command(
+            hostname, command, issued_by, confirm_token, expires_hours
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
+
+    response = {"id": cmd_id, "hostname": hostname, "command": command, "status": "pending"}
+    if confirm_token:
+        response["confirm_token"] = confirm_token
+        response["warning"] = "purge é irreversível. Anote o confirm_token — o agente precisará dele para executar."
+    return JSONResponse(response, status_code=201)
+
+
+@app.get("/commands/{hostname}/history")
+async def get_command_history(hostname: str, request: Request) -> _SafeJSONResponse:
+    """Histórico de comandos executados em um host."""
+    await require_token(request)
+    history = await db.get_commands_history(hostname)
+    return _SafeJSONResponse(history)
 
 
 @app.get("/health")

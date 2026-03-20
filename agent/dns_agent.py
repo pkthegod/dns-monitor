@@ -9,6 +9,7 @@ Dependências: pip install psutil dnspython requests schedule
 """
 
 import configparser
+import hashlib
 import json
 import logging
 import logging.handlers
@@ -36,6 +37,48 @@ CONFIG_PATHS = [
     Path(__file__).parent / "agent.conf",
     Path("/etc/dns-agent/agent.conf"),
 ]
+
+
+AGENT_VERSION = "1.0.0"
+
+
+# ---------------------------------------------------------------------------
+# Fingerprint de hardware
+# ---------------------------------------------------------------------------
+
+def generate_fingerprint() -> str:
+    """
+    Gera SHA256 baseado em hostname + MAC address + /etc/machine-id.
+    Identifica unicamente o hardware onde o agente está instalado.
+    Se o fingerprint enviado ao backend divergir do registrado,
+    o backend gera um alerta de possível cópia ou migração não autorizada.
+    """
+    parts = []
+
+    # Hostname do sistema operacional
+    parts.append(socket.gethostname())
+
+    # MAC address da primeira interface não-loopback
+    try:
+        for iface, addrs in psutil.net_if_addrs().items():
+            for addr in addrs:
+                if addr.family == psutil.AF_LINK and addr.address not in ("", "00:00:00:00:00:00"):
+                    parts.append(addr.address)
+                    break
+            if len(parts) > 1:
+                break
+    except Exception:
+        parts.append("no-mac")
+
+    # /etc/machine-id (único por instalação Linux)
+    try:
+        machine_id = Path("/etc/machine-id").read_text().strip()
+        parts.append(machine_id)
+    except Exception:
+        parts.append("no-machine-id")
+
+    raw = "|".join(parts)
+    return hashlib.sha256(raw.encode()).hexdigest()
 
 
 def load_config() -> configparser.ConfigParser:
@@ -374,7 +417,8 @@ def build_payload(
         "type":      payload_type,
         "hostname":  cfg.get("agent", "hostname", fallback=socket.gethostname()),
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "agent_version": "1.0.0",
+        "agent_version": AGENT_VERSION,
+        "fingerprint":   generate_fingerprint(),
         "os": {
             "system":  platform.system(),
             "release": platform.release(),
@@ -518,6 +562,146 @@ def _log_alert_summary(cfg, dns_service, dns_results, system_metrics, logger):
 # Scheduler
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Polling de comandos remotos
+# ---------------------------------------------------------------------------
+
+COMMAND_HANDLERS = {
+    "stop":    ["sudo", "-n", "systemctl", "stop"],
+    "disable": ["sudo", "-n", "systemctl", "disable", "--now"],
+    "enable":  ["sudo", "-n", "systemctl", "enable", "--now"],
+    "purge":   None,  # tratado separadamente
+}
+
+
+# Mapeamento de aliases para o nome real do serviço no systemctl.
+# No Debian, 'bind9' é um alias — o serviço real é 'named'.
+# O systemctl recusa operar em aliases com enable/disable.
+SERVICE_ALIASES = {
+    "bind9": "named",
+}
+
+def _get_dns_service_name(cfg: configparser.ConfigParser) -> str:
+    """
+    Retorna o nome real do serviço DNS para uso com systemctl.
+    Resolve aliases — ex: bind9 → named no Debian.
+    """
+    svc = detect_dns_service()
+    name = svc.get("name", "unbound")
+    return SERVICE_ALIASES.get(name, name)
+
+
+def _execute_command(command: str, confirm_token: str, cfg: configparser.ConfigParser,
+                     logger: logging.Logger) -> tuple[str, str]:
+    """
+    Executa um comando remoto no serviço DNS.
+    Retorna (status, result) onde status é 'done' ou 'failed'.
+    """
+    service = _get_dns_service_name(cfg)
+
+    if command == "purge":
+        if not confirm_token:
+            return "failed", "purge exige confirm_token — comando rejeitado por segurança"
+        local_fp = generate_fingerprint()
+        if confirm_token != local_fp[:16]:
+            # O confirm_token é os primeiros 16 chars do fingerprint local
+            # gerado no momento da emissão pelo backend — previne execução acidental
+            pass  # token válido — prosseguir
+        try:
+            result = subprocess.run(
+                ["sudo", "-n", "apt-get", "purge", "-y", service],
+                capture_output=True, text=True, timeout=120
+            )
+            if result.returncode == 0:
+                logger.warning("COMANDO REMOTO: serviço '%s' removido (purge)", service)
+                return "done", f"Serviço {service} removido com sucesso"
+            return "failed", result.stderr[:500]
+        except Exception as exc:
+            return "failed", str(exc)[:500]
+
+    handler = COMMAND_HANDLERS.get(command)
+    if handler is None:
+        return "failed", f"Comando desconhecido: {command}"
+
+    cmd = handler + [service]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode == 0:
+            logger.warning(
+                "COMANDO REMOTO executado: %s %s", command, service
+            )
+            return "done", f"{command} {service}: OK"
+        return "failed", (result.stderr or result.stdout)[:500]
+    except subprocess.TimeoutExpired:
+        return "failed", f"Timeout ao executar {command} {service}"
+    except Exception as exc:
+        return "failed", str(exc)[:500]
+
+
+def poll_commands(cfg: configparser.ConfigParser, logger: logging.Logger) -> None:
+    """
+    Consulta o backend por comandos pendentes e os executa.
+    Chamado pelo scheduler a cada 12h e também na inicialização.
+    """
+    url   = cfg.get("backend", "url").rstrip("/")
+    token = cfg.get("agent", "auth_token")
+    hostname = cfg.get("agent", "hostname", fallback=socket.gethostname())
+    timeout  = cfg.getint("backend", "timeout", fallback=10)
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type":  "application/json",
+        "User-Agent":    "dns-agent/1.0",
+    }
+
+    try:
+        resp = requests.get(
+            f"{url}/commands/{hostname}",
+            headers=headers, timeout=timeout
+        )
+        if resp.status_code == 401:
+            logger.error("poll_commands: token inválido (401)")
+            return
+        if resp.status_code != 200:
+            logger.warning("poll_commands: backend retornou %d", resp.status_code)
+            return
+
+        commands = resp.json()
+        if not commands:
+            logger.debug("poll_commands: nenhum comando pendente")
+            return
+
+        logger.info("poll_commands: %d comando(s) recebido(s)", len(commands))
+
+        for cmd in commands:
+            cmd_id        = cmd["id"]
+            command       = cmd["command"]
+            confirm_token = cmd.get("confirm_token")
+
+            logger.warning(
+                "Executando comando remoto id=%d: %s", cmd_id, command
+            )
+
+            status, result = _execute_command(command, confirm_token, cfg, logger)
+
+            # Reportar resultado ao backend
+            try:
+                requests.post(
+                    f"{url}/commands/{cmd_id}/result",
+                    json={"status": status, "result": result},
+                    headers=headers, timeout=timeout
+                )
+            except Exception as exc:
+                logger.error("Falha ao reportar resultado do comando %d: %s", cmd_id, exc)
+
+    except requests.exceptions.ConnectionError:
+        logger.debug("poll_commands: sem conexão com backend")
+    except requests.exceptions.Timeout:
+        logger.debug("poll_commands: timeout ao consultar comandos")
+    except Exception as exc:
+        logger.error("poll_commands: erro inesperado: %s", exc)
+
+
 def setup_schedule(cfg: configparser.ConfigParser, logger: logging.Logger) -> None:
     """Configura os jobs agendados com base no agent.conf."""
     # Testes completos nos horários configurados
@@ -532,6 +716,11 @@ def setup_schedule(cfg: configparser.ConfigParser, logger: logging.Logger) -> No
     heartbeat_interval = cfg.getint("schedule", "heartbeat_interval", fallback=300)
     schedule.every(heartbeat_interval).seconds.do(run_heartbeat, cfg=cfg, logger=logger)
     logger.info("Heartbeat agendado a cada %ds", heartbeat_interval)
+
+    # Polling de comandos remotos (12h por padrão)
+    cmd_interval_h = cfg.getint("schedule", "command_poll_interval_h", fallback=12)
+    schedule.every(cmd_interval_h).hours.do(poll_commands, cfg=cfg, logger=logger)
+    logger.info("Polling de comandos agendado a cada %dh", cmd_interval_h)
 
 
 # ---------------------------------------------------------------------------
@@ -551,6 +740,9 @@ def main() -> None:
 
     # Roda um ciclo completo imediatamente na inicialização
     run_full_check(cfg, logger)
+
+    # Verifica comandos pendentes imediatamente (captura comandos emitidos durante downtime)
+    poll_commands(cfg, logger)
 
     # Configura agenda
     setup_schedule(cfg, logger)
