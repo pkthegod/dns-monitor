@@ -1497,8 +1497,12 @@ class TestAgentAdminEndpoints:
         html_path.parent.mkdir(exist_ok=True)
 
         async def run():
+            request = MagicMock()
+            # Simula cookie válido
+            cookie_val = m._sign_admin_cookie("admin")
+            request.cookies = {"admin_session": cookie_val}
             with patch.object(pathlib.Path, "read_text", return_value=fake_html):
-                resp = await m.admin_panel()
+                resp = await m.admin_panel(request)
             return resp
 
         resp = self._run(run())
@@ -1617,6 +1621,167 @@ class TestRestartCommand:
         called_cmd = mock_sub.call_args[0][0]
         assert "restart" in called_cmd
         assert "unbound" in called_cmd
+
+
+# ===========================================================================
+# 19. ADMIN LOGIN — autenticação do painel admin
+# ===========================================================================
+
+class TestAdminLogin:
+    """
+    DADO que o painel admin precisa de autenticação
+    QUANDO o usuário acessa /admin sem sessão válida
+    ENTÃO deve ser redirecionado para /admin/login
+    QUANDO faz POST /admin/login com credenciais corretas
+    ENTÃO recebe cookie de sessão e é redirecionado para /admin
+    """
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def test_admin_login_page_returns_html(self):
+        """GET /admin/login deve retornar formulário HTML."""
+        import main as m
+
+        async def run():
+            resp = await m.admin_login_page()
+            return resp
+
+        resp = self._run(run())
+        assert resp.status_code == 200
+        assert "html" in resp.media_type
+
+    def test_admin_panel_redirects_without_cookie(self):
+        """GET /admin sem cookie válido deve redirecionar para /admin/login."""
+        import importlib
+        import main as m
+        importlib.reload(m)
+
+        async def run():
+            request = MagicMock()
+            request.cookies = {}
+            resp = await m.admin_panel(request)
+            return resp
+
+        resp = self._run(run())
+        # RedirectResponse tem status 303 (See Other)
+        assert resp.status_code == 303
+        assert "/admin/login" in resp.headers.get("location", "")
+
+    def test_admin_panel_serves_html_with_valid_cookie(self):
+        """GET /admin com cookie válido deve servir o painel."""
+        import importlib
+        import main as m
+        importlib.reload(m)
+
+        async def run():
+            request = MagicMock()
+            # Gera cookie válido usando a função interna
+            cookie_val = m._sign_admin_cookie("admin")
+            request.cookies = {"admin_session": cookie_val}
+            resp = await m.admin_panel(request)
+            return resp
+
+        resp = self._run(run())
+        assert resp.status_code == 200
+        assert "html" in resp.media_type
+
+    def test_login_post_valid_credentials_sets_cookie(self):
+        """POST /admin/login com user/pass corretos deve setar cookie e redirecionar."""
+        import importlib
+        import main as m
+
+        with patch.dict(os.environ, {"ADMIN_USER": "myadmin", "ADMIN_PASSWORD": "mypass123"}):
+            importlib.reload(m)
+
+            async def run():
+                from fastapi import Request as FReq
+                request = MagicMock(spec=FReq)
+                request.form = AsyncMock(return_value={"username": "myadmin", "password": "mypass123"})
+                resp = await m.admin_login_post(request)
+                return resp
+
+            resp = self._run(run())
+            assert resp.status_code == 303
+            assert "/admin" in resp.headers.get("location", "")
+            # Cookie deve estar no response
+            cookie_header = resp.headers.get("set-cookie", "")
+            assert "admin_session" in cookie_header
+
+    def test_login_post_invalid_credentials_returns_401(self):
+        """POST /admin/login com credenciais erradas deve retornar 401."""
+        import importlib
+        import main as m
+
+        with patch.dict(os.environ, {"ADMIN_USER": "myadmin", "ADMIN_PASSWORD": "mypass123"}):
+            importlib.reload(m)
+
+            async def run():
+                request = MagicMock()
+                request.form = AsyncMock(return_value={"username": "myadmin", "password": "errado"})
+                resp = await m.admin_login_post(request)
+                return resp
+
+            resp = self._run(run())
+            assert resp.status_code == 401
+
+    def test_login_post_missing_env_returns_503(self):
+        """POST /admin/login sem ADMIN_USER/PASSWORD configurados deve retornar 503."""
+        import importlib
+        import main as m
+
+        with patch.dict(os.environ, {"ADMIN_USER": "", "ADMIN_PASSWORD": ""}, clear=False):
+            importlib.reload(m)
+
+            async def run():
+                request = MagicMock()
+                request.form = AsyncMock(return_value={"username": "x", "password": "y"})
+                resp = await m.admin_login_post(request)
+                return resp
+
+            resp = self._run(run())
+            assert resp.status_code == 503
+
+    def test_sign_and_verify_cookie_roundtrip(self):
+        """Cookie assinado deve ser verificável."""
+        import importlib
+        import main as m
+        importlib.reload(m)
+
+        cookie = m._sign_admin_cookie("admin")
+        assert m._verify_admin_cookie(cookie) == "admin"
+
+    def test_verify_tampered_cookie_returns_none(self):
+        """Cookie adulterado deve retornar None."""
+        import importlib
+        import main as m
+        importlib.reload(m)
+
+        cookie = m._sign_admin_cookie("admin")
+        tampered = cookie[:-4] + "XXXX"
+        assert m._verify_admin_cookie(tampered) is None
+
+    def test_verify_garbage_cookie_returns_none(self):
+        """Cookie com formato inválido deve retornar None."""
+        import importlib
+        import main as m
+        importlib.reload(m)
+
+        assert m._verify_admin_cookie("lixo-total") is None
+        assert m._verify_admin_cookie("") is None
+
+    def test_logout_clears_cookie(self):
+        """GET /admin/logout deve limpar o cookie e redirecionar para /admin/login."""
+        import main as m
+
+        async def run():
+            return await m.admin_logout()
+
+        resp = self._run(run())
+        assert resp.status_code == 303
+        assert "/admin/login" in resp.headers.get("location", "")
+        cookie_header = resp.headers.get("set-cookie", "")
+        assert "admin_session" in cookie_header
 
 
 # ===========================================================================

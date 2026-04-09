@@ -11,10 +11,12 @@ from typing import Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import Depends, FastAPI, HTTPException, Request, status
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 import pathlib
 import json
 import secrets
+import hashlib
+import hmac
 from datetime import date, datetime
 from decimal import Decimal
 from pydantic import BaseModel, Field
@@ -88,6 +90,32 @@ async def require_token(request: Request) -> None:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token inválido ou ausente",
         )
+
+# ---------------------------------------------------------------------------
+# Autenticação do painel admin (cookie HMAC)
+# ---------------------------------------------------------------------------
+
+ADMIN_USER = os.environ.get("ADMIN_USER", "")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
+_COOKIE_SECRET = (AGENT_TOKEN or "dns-monitor-fallback-key").encode()
+
+
+def _sign_admin_cookie(username: str) -> str:
+    """Gera cookie assinado: username.hex(hmac)"""
+    sig = hmac.new(_COOKIE_SECRET, username.encode(), hashlib.sha256).hexdigest()
+    return f"{username}.{sig}"
+
+
+def _verify_admin_cookie(cookie: str) -> Optional[str]:
+    """Verifica cookie assinado. Retorna username ou None."""
+    if not cookie or "." not in cookie:
+        return None
+    username, sig = cookie.rsplit(".", 1)
+    expected = hmac.new(_COOKIE_SECRET, username.encode(), hashlib.sha256).hexdigest()
+    if hmac.compare_digest(sig, expected):
+        return username
+    return None
+
 
 # ---------------------------------------------------------------------------
 # Modelos Pydantic (validação do payload do agente)
@@ -524,9 +552,47 @@ async def get_command_history(hostname: str, request: Request) -> _SafeJSONRespo
     return _SafeJSONResponse(history)
 
 
+@app.get("/admin/login", response_class=HTMLResponse, include_in_schema=False)
+async def admin_login_page() -> HTMLResponse:
+    """Formulário de login do painel admin."""
+    html_path = pathlib.Path(__file__).parent / "static" / "login.html"
+    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+
+
+@app.post("/admin/login", include_in_schema=False)
+async def admin_login_post(request: Request):
+    """Valida credenciais e seta cookie de sessão."""
+    if not ADMIN_USER or not ADMIN_PASSWORD:
+        return HTMLResponse("ADMIN_USER/ADMIN_PASSWORD não configurados", status_code=503)
+
+    form = await request.form()
+    username = form.get("username", "")
+    password = form.get("password", "")
+
+    if not secrets.compare_digest(username, ADMIN_USER) or \
+       not secrets.compare_digest(password, ADMIN_PASSWORD):
+        return HTMLResponse("Credenciais inválidas", status_code=401)
+
+    resp = RedirectResponse("/admin", status_code=303)
+    cookie_val = _sign_admin_cookie(username)
+    resp.set_cookie("admin_session", cookie_val, httponly=True, samesite="strict", max_age=86400)
+    return resp
+
+
+@app.get("/admin/logout", include_in_schema=False)
+async def admin_logout():
+    """Limpa cookie de sessão e redireciona para login."""
+    resp = RedirectResponse("/admin/login", status_code=303)
+    resp.delete_cookie("admin_session")
+    return resp
+
+
 @app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
-async def admin_panel() -> HTMLResponse:
-    """Painel de administração — controle remoto dos agentes."""
+async def admin_panel(request: Request) -> HTMLResponse:
+    """Painel de administração — protegido por cookie de sessão."""
+    cookie = request.cookies.get("admin_session", "")
+    if not _verify_admin_cookie(cookie):
+        return RedirectResponse("/admin/login", status_code=303)
     html_path = pathlib.Path(__file__).parent / "static" / "admin.html"
     return HTMLResponse(html_path.read_text(encoding="utf-8"))
 
