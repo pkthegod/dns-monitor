@@ -258,6 +258,86 @@ async def resolve_alert(hostname: str, alert_type: str) -> None:
         )
 
 
+async def update_agent_meta(
+    hostname: str,
+    display_name: Optional[str],
+    location: Optional[str],
+    notes: Optional[str],
+    active: Optional[bool] = None,
+) -> bool:
+    """Atualiza metadados editáveis do agente. Retorna False se não existir."""
+    async with get_conn() as conn:
+        # Se active está sendo alterado, ajusta inactive_since
+        if active is True:
+            inactive_since_expr = "NULL"
+        elif active is False:
+            inactive_since_expr = "COALESCE(inactive_since, NOW())"
+        else:
+            inactive_since_expr = "inactive_since"  # mantém
+
+        result = await conn.execute(
+            f"""
+            UPDATE agents
+            SET display_name   = $2,
+                location       = $3,
+                notes          = $4,
+                active         = COALESCE($5, active),
+                inactive_since = {inactive_since_expr}
+            WHERE hostname = $1
+            """,
+            hostname,
+            display_name or None,
+            location or None,
+            notes or None,
+            active,
+        )
+        return result != "UPDATE 0"
+
+
+async def delete_inactive_agents() -> list[str]:
+    """
+    Remove agentes marcados como inativos há mais de 3 dias.
+    Retorna lista de hostnames deletados.
+    """
+    async with get_conn() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT hostname FROM agents
+            WHERE active = FALSE
+              AND inactive_since IS NOT NULL
+              AND inactive_since < NOW() - INTERVAL '3 days'
+            """
+        )
+    deleted = []
+    for row in rows:
+        await delete_agent(row["hostname"])
+        deleted.append(row["hostname"])
+    return deleted
+
+
+async def delete_agent(hostname: str) -> bool:
+    """
+    Remove o agente e todos os seus dados históricos.
+    Retorna False se o hostname não existir.
+    """
+    async with get_conn() as conn:
+        result = await conn.execute(
+            "DELETE FROM agents WHERE hostname = $1", hostname
+        )
+        if result == "DELETE 0":
+            return False
+        # Remove dados históricos (hypertables não têm FK cascade)
+        for table in (
+            "agent_heartbeats", "metrics_cpu", "metrics_ram",
+            "metrics_disk", "metrics_io", "dns_checks",
+            "dns_service_status", "agent_commands", "alerts_log",
+        ):
+            await conn.execute(
+                f"DELETE FROM {table} WHERE hostname = $1", hostname  # noqa: S608
+            )
+        return True
+
+
 async def get_agents_offline(threshold_minutes: int = 10) -> list[dict]:
     async with get_conn() as conn:
         rows = await conn.fetch(
@@ -382,7 +462,7 @@ async def upsert_fingerprint(hostname: str, fingerprint: str) -> dict:
 # Comandos remotos
 # ---------------------------------------------------------------------------
 
-VALID_COMMANDS = {"stop", "disable", "enable", "purge"}
+VALID_COMMANDS = {"stop", "disable", "enable", "restart", "purge"}
 
 
 async def get_pending_commands(hostname: str) -> list[dict]:
@@ -476,6 +556,21 @@ async def get_command_by_id(command_id: int):
             command_id,
         )
         return dict(row) if row else None
+
+
+async def get_all_commands_history(limit: int = 50) -> list[dict]:
+    """Retorna histórico recente de comandos de todos os hosts."""
+    async with get_conn() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, hostname, command, issued_by, issued_at, executed_at, status, result
+            FROM agent_commands
+            ORDER BY issued_at DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+        return [dict(r) for r in rows]
 
 
 async def get_commands_history(hostname: str, limit: int = 50) -> list[dict]:

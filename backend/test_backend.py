@@ -27,6 +27,7 @@ import pytest
 # Setup — adiciona backend ao path sem precisar instalar o pacote
 # ---------------------------------------------------------------------------
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "backend"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "agent"))
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +109,7 @@ class TestAuthentication:
             import main as m
             importlib.reload(m)
             # require_token é async — roda via asyncio
-            asyncio.get_event_loop().run_until_complete(m.require_token(request))
+            asyncio.run(m.require_token(request))
             # Se não levantou HTTPException, passou
 
     def test_wrong_token_raises_401(self):
@@ -122,7 +123,7 @@ class TestAuthentication:
             import main as m
             importlib.reload(m)
             with pytest.raises(HTTPException) as exc_info:
-                asyncio.get_event_loop().run_until_complete(m.require_token(request))
+                asyncio.run(m.require_token(request))
             assert exc_info.value.status_code == 401
 
     def test_missing_token_raises_401(self):
@@ -136,12 +137,12 @@ class TestAuthentication:
             import main as m
             importlib.reload(m)
             with pytest.raises(HTTPException) as exc_info:
-                asyncio.get_event_loop().run_until_complete(m.require_token(request))
+                asyncio.run(m.require_token(request))
             assert exc_info.value.status_code == 401
 
-    def test_empty_agent_token_env_skips_auth(self):
-        """Se AGENT_TOKEN não configurado, auth é pulada (com warning)."""
-        from fastapi import Request
+    def test_empty_agent_token_env_raises_503(self):
+        """Se AGENT_TOKEN não configurado, backend recusa com 503."""
+        from fastapi import Request, HTTPException
 
         request = MagicMock(spec=Request)
         request.headers = {}
@@ -150,8 +151,9 @@ class TestAuthentication:
             import importlib
             import main as m
             importlib.reload(m)
-            # Não deve levantar exceção
-            asyncio.get_event_loop().run_until_complete(m.require_token(request))
+            with pytest.raises(HTTPException) as exc:
+                asyncio.run(m.require_token(request))
+            assert exc.value.status_code == 503
 
 
 # ===========================================================================
@@ -233,7 +235,7 @@ class TestEvaluateAlerts:
     """
 
     def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        return asyncio.run(coro)
 
     def _make_mocks(self, has_open=False):
         """Retorna db e tg mockados com comportamentos padrão."""
@@ -427,7 +429,7 @@ class TestJobSendReport:
     """
 
     def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        return asyncio.run(coro)
 
     def test_uses_get_all_disk_alerts_not_per_agent_loop(self):
         """Fix 1: get_all_disk_alerts chamado 1 vez, nunca get_latest_disk_alerts."""
@@ -501,7 +503,7 @@ class TestJobSendReport:
         with patch.object(m, 'db', mock_db), \
              patch.object(m, 'tg', mock_tg), \
              patch.object(d, 'get_conn', return_value=mock_ctx):
-            asyncio.get_event_loop().run_until_complete(m.job_send_report())
+            asyncio.run(m.job_send_report())
 
         assert captured["total_agents"] == 4
         assert captured["online_agents"] == 2
@@ -516,7 +518,7 @@ class TestJobCheckOffline:
     """Verifica que o job de detecção de offline não gera spam de alertas."""
 
     def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        return asyncio.run(coro)
 
     def _setup(self, offline_agents, existing_open_alerts):
         import importlib
@@ -692,7 +694,7 @@ class TestHealthEndpoint:
     """Verifica o endpoint /health com banco disponível e indisponível."""
 
     def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        return asyncio.run(coro)
 
     def test_health_ok_when_db_responds(self):
         import importlib
@@ -784,7 +786,7 @@ class TestInsertCommandValidation:
 
     def _run(self, coro):
         import asyncio
-        return asyncio.get_event_loop().run_until_complete(coro)
+        return asyncio.run(coro)
 
     def test_invalid_command_raises_valueerror(self):
         import db
@@ -798,7 +800,7 @@ class TestInsertCommandValidation:
                 with pytest.raises(ValueError, match="Comando inválido"):
                     await db.insert_command("host", "reboot", "admin")
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
     def test_purge_without_token_raises_valueerror(self):
         import db
@@ -808,7 +810,7 @@ class TestInsertCommandValidation:
             with pytest.raises(ValueError, match="confirm_token"):
                 await db.insert_command("host", "purge", "admin", confirm_token=None)
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
     def test_valid_commands_accepted(self):
         import db
@@ -833,7 +835,7 @@ class TestCommandEndpoints:
 
     def _run(self, coro):
         import asyncio
-        return asyncio.get_event_loop().run_until_complete(coro)
+        return asyncio.run(coro)
 
     def test_get_commands_requires_auth(self):
         import main as m_module
@@ -846,7 +848,7 @@ class TestCommandEndpoints:
                 with pytest.raises(Exception):
                     await m_module.get_commands("host1", req)
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
     def test_get_commands_returns_pending(self):
         import main as m_module
@@ -867,7 +869,7 @@ class TestCommandEndpoints:
             assert len(data) == 1
             assert data[0]["command"] == "stop"
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
     def test_post_command_result_done(self):
         import main as m_module
@@ -889,7 +891,7 @@ class TestCommandEndpoints:
             import json
             assert json.loads(resp.body)["status"] == "ok"
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
     def test_post_command_result_invalid_status(self):
         import main as m_module
@@ -905,7 +907,7 @@ class TestCommandEndpoints:
                         resp = await m_module.post_command_result(1, req)
             assert resp.status_code == 422
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
     def test_create_command_missing_fields(self):
         import main as m_module
@@ -920,7 +922,7 @@ class TestCommandEndpoints:
                     resp = await m_module.create_command(req)
             assert resp.status_code == 422
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
     def test_create_command_purge_generates_confirm_token(self):
         import main as m_module
@@ -943,7 +945,7 @@ class TestCommandEndpoints:
             assert "warning" in data
             assert len(data["confirm_token"]) == 16
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
     def test_create_command_stop_no_confirm_token(self):
         import main as m_module
@@ -964,7 +966,7 @@ class TestCommandEndpoints:
             assert resp.status_code == 201
             assert "confirm_token" not in data
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
     def test_create_command_invalid_command_returns_422(self):
         import main as m_module
@@ -981,7 +983,7 @@ class TestCommandEndpoints:
                         resp = await m_module.create_command(req)
             assert resp.status_code == 422
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
 
 # ===========================================================================
@@ -1031,7 +1033,7 @@ class TestSendCommandResult:
 
     def _run(self, coro):
         import asyncio
-        return asyncio.get_event_loop().run_until_complete(coro)
+        return asyncio.run(coro)
 
     def test_enable_done_sends_restabelecido(self):
         import telegram_bot as tg
@@ -1099,7 +1101,7 @@ class TestCommandResultEndpointWithAlert:
 
     def _run(self, coro):
         import asyncio
-        return asyncio.get_event_loop().run_until_complete(coro)
+        return asyncio.run(coro)
 
     def test_done_triggers_telegram_alert(self):
         import main as m_module
@@ -1122,7 +1124,7 @@ class TestCommandResultEndpointWithAlert:
             assert call_kwargs["hostname"] == "ns1"
             assert call_kwargs["status"]   == "done"
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
     def test_failed_triggers_telegram_alert(self):
         import main as m_module
@@ -1144,7 +1146,7 @@ class TestCommandResultEndpointWithAlert:
             assert call_kwargs["status"]  == "failed"
             assert call_kwargs["command"] == "stop"
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
     def test_no_alert_if_command_not_found(self):
         import main as m_module
@@ -1159,7 +1161,7 @@ class TestCommandResultEndpointWithAlert:
             # Se comando não existe no banco, não dispara alerta
             mock_tg.assert_not_called()
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
 
 # ===========================================================================
@@ -1178,6 +1180,443 @@ class TestGetCommandById:
         import db
         sig = inspect.signature(db.get_command_by_id)
         assert "command_id" in sig.parameters
+
+
+# ===========================================================================
+# 14. AGENTE META — update_agent_meta (active/inactive_since)
+# ===========================================================================
+
+class TestUpdateAgentMeta:
+    """Testa update_agent_meta: assinatura, active/inactive_since e retorno."""
+
+    def test_is_async(self):
+        import inspect
+        import db
+        assert inspect.iscoroutinefunction(db.update_agent_meta)
+
+    def test_signature_has_active_param(self):
+        import inspect
+        import db
+        sig = inspect.signature(db.update_agent_meta)
+        assert "active" in sig.parameters
+
+    def test_active_true_clears_inactive_since(self):
+        """Reativar um agente deve gravar active=True e zerar inactive_since."""
+        import db
+
+        mock_conn = AsyncMock()
+        mock_conn.execute = AsyncMock(return_value="UPDATE 1")
+        mock_ctx = MagicMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        async def run():
+            with patch("db.get_conn", return_value=mock_ctx):
+                result = await db.update_agent_meta("ns1", None, None, None, active=True)
+            return result
+
+        result = asyncio.run(run())
+        assert result is True
+        sql_called = mock_conn.execute.call_args[0][0]
+        assert "inactive_since" in sql_called
+        assert "NULL" in sql_called
+
+    def test_active_false_sets_inactive_since(self):
+        """Desativar deve preservar/definir inactive_since via COALESCE."""
+        import db
+
+        mock_conn = AsyncMock()
+        mock_conn.execute = AsyncMock(return_value="UPDATE 1")
+        mock_ctx = MagicMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        async def run():
+            with patch("db.get_conn", return_value=mock_ctx):
+                result = await db.update_agent_meta("ns1", None, None, None, active=False)
+            return result
+
+        result = asyncio.run(run())
+        assert result is True
+        sql_called = mock_conn.execute.call_args[0][0]
+        assert "COALESCE(inactive_since, NOW())" in sql_called
+
+    def test_active_none_preserves_inactive_since(self):
+        """Sem alterar active, inactive_since não deve mudar."""
+        import db
+
+        mock_conn = AsyncMock()
+        mock_conn.execute = AsyncMock(return_value="UPDATE 1")
+        mock_ctx = MagicMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        async def run():
+            with patch("db.get_conn", return_value=mock_ctx):
+                result = await db.update_agent_meta("ns1", "Nome", "DC1", "nota", active=None)
+            return result
+
+        result = asyncio.run(run())
+        assert result is True
+        sql_called = mock_conn.execute.call_args[0][0]
+        assert "inactive_since" in sql_called
+
+    def test_returns_false_when_not_found(self):
+        """Deve retornar False se o hostname não existir no banco."""
+        import db
+
+        mock_conn = AsyncMock()
+        mock_conn.execute = AsyncMock(return_value="UPDATE 0")
+        mock_ctx = MagicMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        async def run():
+            with patch("db.get_conn", return_value=mock_ctx):
+                return await db.update_agent_meta("naoexiste", None, None, None)
+
+        result = asyncio.run(run())
+        assert result is False
+
+
+# ===========================================================================
+# 15. DELETE AGENT — delete_agent e delete_inactive_agents
+# ===========================================================================
+
+class TestDeleteAgent:
+    """Testa delete_agent: remoção do agente e limpeza das tabelas filhas."""
+
+    def test_is_async(self):
+        import inspect
+        import db
+        assert inspect.iscoroutinefunction(db.delete_agent)
+
+    def test_returns_false_when_not_found(self):
+        import db
+
+        mock_conn = AsyncMock()
+        mock_conn.execute = AsyncMock(return_value="DELETE 0")
+        mock_ctx = MagicMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        async def run():
+            with patch("db.get_conn", return_value=mock_ctx):
+                return await db.delete_agent("naoexiste")
+
+        result = asyncio.run(run())
+        assert result is False
+
+    def test_returns_true_and_cleans_all_tables(self):
+        """Deve retornar True e deletar dados das 9 tabelas filhas."""
+        import db
+
+        execute_calls = []
+
+        async def fake_execute(sql, *args):
+            execute_calls.append(sql)
+            # Primeira chamada é DELETE FROM agents — simula sucesso
+            return "DELETE 1" if "FROM agents" in sql else "DELETE 5"
+
+        mock_conn = AsyncMock()
+        mock_conn.execute = fake_execute
+        mock_ctx = MagicMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        async def run():
+            with patch("db.get_conn", return_value=mock_ctx):
+                return await db.delete_agent("ns1")
+
+        result = asyncio.run(run())
+        assert result is True
+        # Deve ter deletado de agents + 9 tabelas filhas
+        assert len(execute_calls) == 10
+        tables_cleaned = " ".join(execute_calls)
+        for table in ("agent_heartbeats", "metrics_cpu", "metrics_ram",
+                      "metrics_disk", "metrics_io", "dns_checks",
+                      "dns_service_status", "agent_commands", "alerts_log"):
+            assert table in tables_cleaned
+
+
+class TestDeleteInactiveAgents:
+    """Testa delete_inactive_agents: identifica e purga agentes vencidos."""
+
+    def test_is_async(self):
+        import inspect
+        import db
+        assert inspect.iscoroutinefunction(db.delete_inactive_agents)
+
+    def test_returns_empty_when_none_inactive(self):
+        import db
+
+        mock_conn = AsyncMock()
+        mock_conn.fetch = AsyncMock(return_value=[])
+        mock_ctx = MagicMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        async def run():
+            with patch("db.get_conn", return_value=mock_ctx):
+                with patch("db.delete_agent", AsyncMock(return_value=True)):
+                    return await db.delete_inactive_agents()
+
+        result = asyncio.run(run())
+        assert result == []
+
+    def test_deletes_agents_inactive_over_3_days(self):
+        """Agentes com inactive_since > 3 dias devem ser removidos."""
+        import db
+
+        rows = [{"hostname": "ns-old-1"}, {"hostname": "ns-old-2"}]
+
+        mock_conn = AsyncMock()
+        mock_conn.fetch = AsyncMock(return_value=rows)
+        mock_ctx = MagicMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        deleted_calls = []
+
+        async def fake_delete(hostname):
+            deleted_calls.append(hostname)
+            return True
+
+        async def run():
+            with patch("db.get_conn", return_value=mock_ctx):
+                with patch("db.delete_agent", side_effect=fake_delete):
+                    return await db.delete_inactive_agents()
+
+        result = asyncio.run(run())
+        assert set(result) == {"ns-old-1", "ns-old-2"}
+        assert set(deleted_calls) == {"ns-old-1", "ns-old-2"}
+
+    def test_query_filters_3_days(self):
+        """A query deve filtrar inactive_since < NOW() - INTERVAL '3 days'."""
+        import db
+
+        mock_conn = AsyncMock()
+        mock_conn.fetch = AsyncMock(return_value=[])
+        mock_ctx = MagicMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        async def run():
+            with patch("db.get_conn", return_value=mock_ctx):
+                await db.delete_inactive_agents()
+
+        asyncio.run(run())
+        sql = mock_conn.fetch.call_args[0][0]
+        assert "3 days" in sql
+        assert "active = FALSE" in sql
+
+
+# ===========================================================================
+# 16. ENDPOINTS ADMIN — PATCH /agents/{hostname} e DELETE /agents/{hostname}
+# ===========================================================================
+
+class TestAgentAdminEndpoints:
+    """Testa os endpoints de administração de agentes."""
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def test_patch_agent_returns_ok(self):
+        import main as m
+
+        async def run():
+            body = m.AgentMetaUpdate(display_name="NS Principal", location="DC SP", notes=None, active=True)
+            with patch("main.db.update_agent_meta", AsyncMock(return_value=True)):
+                resp = await m.update_agent("ns1", body)
+            import json
+            data = json.loads(resp.body)
+            assert data["status"] == "ok"
+            assert data["hostname"] == "ns1"
+
+        self._run(run())
+
+    def test_patch_agent_not_found_raises_404(self):
+        from fastapi import HTTPException
+        import main as m
+
+        async def run():
+            body = m.AgentMetaUpdate()
+            with patch("main.db.update_agent_meta", AsyncMock(return_value=False)):
+                with pytest.raises(HTTPException) as exc:
+                    await m.update_agent("naoexiste", body)
+            assert exc.value.status_code == 404
+
+        self._run(run())
+
+    def test_patch_agent_passes_active_field(self):
+        """active=False deve ser passado para db.update_agent_meta."""
+        import main as m
+
+        mock_db = AsyncMock(return_value=True)
+
+        async def run():
+            body = m.AgentMetaUpdate(active=False)
+            with patch("main.db.update_agent_meta", mock_db):
+                await m.update_agent("ns1", body)
+
+        self._run(run())
+        call_kwargs = mock_db.call_args
+        assert call_kwargs[0][4] is False  # 5º argumento posicional = active
+
+    def test_delete_agent_returns_ok(self):
+        import main as m
+
+        async def run():
+            with patch("main.db.delete_agent", AsyncMock(return_value=True)):
+                resp = await m.delete_agent("ns1")
+            import json
+            data = json.loads(resp.body)
+            assert data["status"] == "ok"
+
+        self._run(run())
+
+    def test_delete_agent_not_found_raises_404(self):
+        from fastapi import HTTPException
+        import main as m
+
+        async def run():
+            with patch("main.db.delete_agent", AsyncMock(return_value=False)):
+                with pytest.raises(HTTPException) as exc:
+                    await m.delete_agent("naoexiste")
+            assert exc.value.status_code == 404
+
+        self._run(run())
+
+    def test_admin_panel_returns_html(self):
+        """GET /admin deve retornar HTML com status 200."""
+        import main as m
+        import pathlib
+
+        html_path = pathlib.Path(__file__).parent / "static" / "admin.html"
+        fake_html = "<html><body>Admin</body></html>"
+        html_path.parent.mkdir(exist_ok=True)
+
+        async def run():
+            with patch.object(pathlib.Path, "read_text", return_value=fake_html):
+                resp = await m.admin_panel()
+            return resp
+
+        resp = self._run(run())
+        assert resp.status_code == 200
+        assert "html" in resp.media_type
+
+
+# ===========================================================================
+# 17. GET /commands/history — histórico global de comandos
+# ===========================================================================
+
+class TestAllCommandsHistory:
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def test_get_all_commands_history_is_async(self):
+        import inspect
+        import db
+        assert inspect.iscoroutinefunction(db.get_all_commands_history)
+
+    def test_get_all_commands_history_signature(self):
+        import inspect
+        import db
+        sig = inspect.signature(db.get_all_commands_history)
+        assert "limit" in sig.parameters
+
+    def test_history_endpoint_returns_list(self):
+        import main as m
+
+        history = [
+            {"id": 1, "hostname": "ns1", "command": "restart",
+             "issued_by": "admin-panel", "issued_at": "2026-04-08T10:00:00+00:00",
+             "executed_at": None, "status": "pending", "result": None},
+        ]
+
+        async def run():
+            req = MagicMock()
+            req.headers = {"Authorization": "Bearer tok"}
+            with patch("main.require_token", AsyncMock(return_value=None)):
+                with patch("main.db.get_all_commands_history", AsyncMock(return_value=history)):
+                    resp = await m.get_all_commands_history(req, limit=50)
+            import json
+            return json.loads(resp.body)
+
+        data = self._run(run())
+        assert len(data) == 1
+        assert data[0]["command"] == "restart"
+
+    def test_history_endpoint_requires_token(self):
+        import main as m
+        from fastapi import HTTPException
+
+        async def run():
+            req = MagicMock()
+            req.headers = {"Authorization": "Bearer errado"}
+            with patch.dict("os.environ", {"AGENT_TOKEN": "correto"}):
+                import importlib
+                importlib.reload(m)
+                with pytest.raises(HTTPException) as exc:
+                    await m.get_all_commands_history(req)
+            assert exc.value.status_code == 401
+
+        self._run(run())
+
+
+# ===========================================================================
+# 18. RESTART — comando no agente
+# ===========================================================================
+
+class TestRestartCommand:
+    """Verifica que 'restart' está registrado e é válido no agente e no db."""
+
+    def test_restart_in_agent_command_handlers(self):
+        import importlib
+        import dns_agent as agent
+        importlib.reload(agent)
+        assert "restart" in agent.COMMAND_HANDLERS
+        assert agent.COMMAND_HANDLERS["restart"] == ["sudo", "-n", "systemctl", "restart"]
+
+    def test_restart_in_db_valid_commands(self):
+        import importlib
+        import db
+        importlib.reload(db)
+        assert "restart" in db.VALID_COMMANDS
+
+    def test_restart_executes_systemctl(self):
+        """_execute_command com 'restart' deve chamar systemctl restart <service>."""
+        import configparser
+        import importlib
+        import dns_agent as agent
+        importlib.reload(agent)
+
+        cfg = configparser.ConfigParser()
+        cfg.read_dict({"agent": {"hostname": "ns1", "auth_token": "tok"},
+                       "backend": {"url": "http://localhost:8000", "timeout": "5",
+                                   "retries": "1", "retry_delay": "0"},
+                       "dns": {"service": "unbound", "test_domains": "google.com",
+                               "local_resolver": "127.0.0.1", "dns_port": "53",
+                               "query_timeout": "2"},
+                       "schedule": {"check_times": "00:00", "command_poll_interval_h": "12"}})
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "restarted"
+        mock_result.stderr = ""
+
+        import logging
+        logger = logging.getLogger("test")
+
+        with patch("dns_agent.detect_dns_service", return_value={"name": "unbound"}):
+            with patch("subprocess.run", return_value=mock_result) as mock_sub:
+                status, result = agent._execute_command("restart", "", cfg, logger)
+
+        assert status == "done"
+        called_cmd = mock_sub.call_args[0][0]
+        assert "restart" in called_cmd
+        assert "unbound" in called_cmd
 
 
 # ===========================================================================

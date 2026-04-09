@@ -2,7 +2,9 @@
 # install_agent.sh — Instala o dns-agent como serviço systemd
 # Compatível com Debian 12+ e Ubuntu 22.04+
 # Execute como root: bash install_agent.sh
-set -euo pipefail
+set -eu
+(set -o pipefail) 2>/dev/null || true
+
 
 INSTALL_DIR="/opt/dns-agent"
 CONFIG_DIR="/etc/dns-agent"

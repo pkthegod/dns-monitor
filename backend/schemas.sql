@@ -238,15 +238,27 @@ CREATE TABLE IF NOT EXISTS agents (
 );
 
 
+-- Colunas adicionadas após criação inicial da tabela agents
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS inactive_since        TIMESTAMPTZ;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS fingerprint           TEXT;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS fingerprint_first_seen TIMESTAMPTZ;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS fingerprint_last_seen  TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS idx_agents_fingerprint ON agents (fingerprint);
+
 -- =============================================================================
 -- 7. VIEW: STATUS ATUAL DOS AGENTES (última leitura de cada hostname)
 -- Usada pelo Grafana no painel de visão geral.
 -- =============================================================================
-CREATE OR REPLACE VIEW v_agent_current_status AS
+DROP VIEW IF EXISTS v_agent_current_status;
+CREATE VIEW v_agent_current_status AS
 SELECT
     a.hostname,
     a.display_name,
     a.location,
+    a.active,
+    a.inactive_since,
+    a.notes,
     a.dns_service          AS expected_dns_service,
     a.last_seen,
     CASE
@@ -302,13 +314,6 @@ SELECT add_compression_policy('agent_heartbeats',   INTERVAL '7 days', if_not_ex
 -- 8. FINGERPRINT E COMANDOS REMOTOS
 -- =============================================================================
 
--- Coluna fingerprint na tabela agents
--- SHA256(hostname + mac_address + /etc/machine-id) — identifica o hardware real
-ALTER TABLE agents ADD COLUMN IF NOT EXISTS fingerprint TEXT;
-ALTER TABLE agents ADD COLUMN IF NOT EXISTS fingerprint_first_seen TIMESTAMPTZ;
-ALTER TABLE agents ADD COLUMN IF NOT EXISTS fingerprint_last_seen  TIMESTAMPTZ;
-
-CREATE INDEX IF NOT EXISTS idx_agents_fingerprint ON agents (fingerprint);
 
 -- Tabela de comandos remotos
 -- O servidor insere, o agente consulta a cada poll e executa
@@ -355,11 +360,8 @@ WITH NO DATA;
 SELECT add_continuous_aggregate_policy('metrics_cpu_1h',
     start_offset => INTERVAL '3 days',
     end_offset   => INTERVAL '1 hour',
-    schedule_interval => INTERVAL '1 hour'
-) WHERE NOT EXISTS (
-    SELECT 1 FROM timescaledb_information.jobs
-    WHERE application_name LIKE '%metrics_cpu_1h%'
-);
+    schedule_interval => INTERVAL '1 hour',
+    if_not_exists => TRUE);
 
 -- RAM agregado por hora
 CREATE MATERIALIZED VIEW IF NOT EXISTS metrics_ram_1h
@@ -377,11 +379,8 @@ WITH NO DATA;
 SELECT add_continuous_aggregate_policy('metrics_ram_1h',
     start_offset => INTERVAL '3 days',
     end_offset   => INTERVAL '1 hour',
-    schedule_interval => INTERVAL '1 hour'
-) WHERE NOT EXISTS (
-    SELECT 1 FROM timescaledb_information.jobs
-    WHERE application_name LIKE '%metrics_ram_1h%'
-);
+    schedule_interval => INTERVAL '1 hour',
+    if_not_exists => TRUE);
 
 -- DNS latência agregada por hora
 CREATE MATERIALIZED VIEW IF NOT EXISTS dns_checks_1h
@@ -401,8 +400,5 @@ WITH NO DATA;
 SELECT add_continuous_aggregate_policy('dns_checks_1h',
     start_offset => INTERVAL '3 days',
     end_offset   => INTERVAL '1 hour',
-    schedule_interval => INTERVAL '1 hour'
-) WHERE NOT EXISTS (
-    SELECT 1 FROM timescaledb_information.jobs
-    WHERE application_name LIKE '%dns_checks_1h%'
-);
+    schedule_interval => INTERVAL '1 hour',
+    if_not_exists => TRUE);

@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DNS Monitor — Admin</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: #0f1117;
+    color: #e2e8f0;
+    min-height: 100vh;
+    padding: 24px;
+  }
+
+  h1 { font-size: 1.4rem; font-weight: 600; color: #f8fafc; }
+  h2 { font-size: 1rem; font-weight: 600; color: #94a3b8; text-transform: uppercase; letter-spacing: .06em; }
+
+  /* ── Header ── */
+  .header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+  }
+  .header h1 { flex: 1; }
+
+  .token-wrap { display: flex; align-items: center; gap: 8px; }
+  .token-wrap label { font-size: .8rem; color: #64748b; white-space: nowrap; }
+  .token-wrap input {
+    background: #1e2330;
+    border: 1px solid #2d3748;
+    color: #e2e8f0;
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: .85rem;
+    width: 260px;
+  }
+
+  .refresh-info { font-size: .78rem; color: #475569; }
+  #countdown { color: #64748b; font-variant-numeric: tabular-nums; }
+
+  /* ── Sections ── */
+  .section { margin-bottom: 32px; }
+  .section-title { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .badge {
+    background: #1e2330;
+    border: 1px solid #2d3748;
+    border-radius: 20px;
+    font-size: .72rem;
+    padding: 2px 8px;
+    color: #94a3b8;
+  }
+
+  /* ── Tables ── */
+  .table-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid #1e2330; }
+  table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  thead th {
+    background: #151820;
+    padding: 10px 14px;
+    text-align: left;
+    font-weight: 500;
+    color: #64748b;
+    border-bottom: 1px solid #1e2330;
+    white-space: nowrap;
+  }
+  tbody tr { border-bottom: 1px solid #1a1f2e; transition: background .15s; }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: #151a27; }
+  tbody td { padding: 10px 14px; vertical-align: middle; }
+
+  /* ── Pills ── */
+  .pill {
+    display: inline-block;
+    border-radius: 20px;
+    padding: 2px 10px;
+    font-size: .75rem;
+    font-weight: 600;
+    letter-spacing: .03em;
+  }
+  .pill-online   { background: #0d2b1a; color: #34d399; border: 1px solid #065f46; }
+  .pill-stale    { background: #292213; color: #fbbf24; border: 1px solid #78350f; }
+  .pill-offline  { background: #2d1515; color: #f87171; border: 1px solid #7f1d1d; }
+  .pill-never    { background: #1e2330; color: #64748b; border: 1px solid #2d3748; }
+  .pill-active   { background: #0d2b1a; color: #34d399; border: 1px solid #065f46; }
+  .pill-inactive { background: #2d1515; color: #f87171; border: 1px solid #7f1d1d; }
+  .pill-pending  { background: #1a2035; color: #93c5fd; border: 1px solid #1e3a5f; }
+  .pill-done     { background: #0d2b1a; color: #34d399; border: 1px solid #065f46; }
+  .pill-failed   { background: #2d1515; color: #f87171; border: 1px solid #7f1d1d; }
+  .pill-expired  { background: #1e2330; color: #64748b; border: 1px solid #2d3748; }
+
+  /* ── Buttons ── */
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .btn {
+    border: none;
+    border-radius: 6px;
+    padding: 5px 12px;
+    font-size: .78rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity .15s, transform .1s;
+    letter-spacing: .02em;
+  }
+  .btn:hover   { opacity: .85; }
+  .btn:active  { transform: scale(.96); }
+  .btn:disabled { opacity: .35; cursor: not-allowed; }
+
+  .btn-restart  { background: #1d4ed8; color: #eff6ff; }
+  .btn-enable   { background: #065f46; color: #d1fae5; }
+  .btn-disable  { background: #78350f; color: #fef3c7; }
+  .btn-edit     { background: #1e2a3a; color: #93c5fd; border: 1px solid #1e3a5f; }
+  .btn-delete   { background: #2d1515; color: #fca5a5; border: 1px solid #7f1d1d; }
+  .btn-primary  { background: #1d4ed8; color: #eff6ff; padding: 7px 18px; font-size: .85rem; }
+  .btn-cancel   { background: #1e2330; color: #94a3b8; border: 1px solid #2d3748; padding: 7px 18px; font-size: .85rem; }
+
+  /* ── Toggle switch ── */
+  .toggle-wrap { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+  .toggle { position: relative; display: inline-block; width: 40px; height: 22px; }
+  .toggle input { opacity: 0; width: 0; height: 0; }
+  .slider {
+    position: absolute; inset: 0;
+    background: #2d3748; border-radius: 22px; cursor: pointer;
+    transition: background .2s;
+  }
+  .slider::before {
+    content: '';
+    position: absolute;
+    width: 16px; height: 16px;
+    left: 3px; bottom: 3px;
+    background: #94a3b8; border-radius: 50%;
+    transition: transform .2s, background .2s;
+  }
+  .toggle input:checked + .slider { background: #065f46; }
+  .toggle input:checked + .slider::before { transform: translateX(18px); background: #34d399; }
+  .toggle-label { font-size: .85rem; color: #e2e8f0; }
+
+  .pill-client-active   { background: #0d2b1a; color: #34d399; border: 1px solid #065f46; }
+  .pill-client-inactive { background: #2d1a0d; color: #fb923c; border: 1px solid #7c2d12; }
+  .purge-warning { font-size: .72rem; color: #fb923c; margin-top: 2px; }
+
+  /* ── Metrics ── */
+  .metric { font-variant-numeric: tabular-nums; }
+  .metric-warn { color: #fbbf24; }
+  .metric-crit { color: #f87171; }
+  .metric-ok   { color: #94a3b8; }
+
+  /* ── Modal ── */
+  .modal-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.6);
+    z-index: 500;
+    align-items: center;
+    justify-content: center;
+  }
+  .modal-backdrop.open { display: flex; }
+  .modal {
+    background: #151820;
+    border: 1px solid #2d3748;
+    border-radius: 12px;
+    padding: 28px;
+    width: 100%;
+    max-width: 420px;
+    box-shadow: 0 20px 60px rgba(0,0,0,.5);
+  }
+  .modal h3 { font-size: 1rem; font-weight: 600; margin-bottom: 20px; color: #f1f5f9; }
+  .field { margin-bottom: 16px; }
+  .field label { display: block; font-size: .78rem; color: #64748b; margin-bottom: 6px; }
+  .field input,
+  .field textarea {
+    width: 100%;
+    background: #0f1117;
+    border: 1px solid #2d3748;
+    color: #e2e8f0;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: .85rem;
+    font-family: inherit;
+  }
+  .field textarea { resize: vertical; min-height: 72px; }
+  .field input:focus,
+  .field textarea:focus { outline: none; border-color: #3b82f6; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
+
+  /* ── Toast ── */
+  #toast-container {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    z-index: 1000;
+  }
+  .toast {
+    background: #1e2330;
+    border: 1px solid #2d3748;
+    border-radius: 8px;
+    padding: 10px 16px;
+    font-size: .83rem;
+    max-width: 320px;
+    animation: slideIn .2s ease;
+  }
+  .toast-ok  { border-left: 3px solid #34d399; }
+  .toast-err { border-left: 3px solid #f87171; }
+  @keyframes slideIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+  .dim { color: #64748b; font-size: .78rem; }
+  .error-msg { color: #f87171; padding: 12px; font-size: .85rem; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>DNS Monitor — Admin</h1>
+  <div class="token-wrap">
+    <label for="token-input">Token</label>
+    <input type="password" id="token-input" placeholder="Bearer token do backend" autocomplete="off">
+  </div>
+  <span class="refresh-info">Atualiza em <span id="countdown">5:00</span></span>
+</div>
+
+<!-- Tabela de agentes -->
+<div class="section">
+  <div class="section-title">
+    <h2>Agentes</h2>
+    <span class="badge" id="badge-agents">—</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Hostname</th>
+          <th>Localização</th>
+          <th>Cliente</th>
+          <th>Status</th>
+          <th>CPU %</th>
+          <th>RAM %</th>
+          <th>Serviço DNS</th>
+          <th>DNS ativo</th>
+          <th>Último heartbeat</th>
+          <th>Ações</th>
+        </tr>
+      </thead>
+      <tbody id="tbody-agents"><tr><td colspan="10" class="dim" style="padding:16px">Carregando…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Tabela de histórico -->
+<div class="section">
+  <div class="section-title">
+    <h2>Histórico de Comandos</h2>
+    <span class="badge" id="badge-history">—</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Hostname</th>
+          <th>Comando</th>
+          <th>Emitido por</th>
+          <th>Emitido em</th>
+          <th>Executado em</th>
+          <th>Status</th>
+          <th>Resultado</th>
+        </tr>
+      </thead>
+      <tbody id="tbody-history"><tr><td colspan="7" class="dim" style="padding:16px">Carregando…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Modal de edição -->
+<div class="modal-backdrop" id="edit-modal">
+  <div class="modal">
+    <h3 id="modal-title">Editar agente</h3>
+    <div class="field">
+      <label>Display name</label>
+      <input type="text" id="edit-display-name" placeholder="Nome amigável (opcional)">
+    </div>
+    <div class="field">
+      <label>Localização</label>
+      <input type="text" id="edit-location" placeholder="Ex: Rack A / DC São Paulo">
+    </div>
+    <div class="field">
+      <label>Notas</label>
+      <textarea id="edit-notes" placeholder="Observações livres…"></textarea>
+    </div>
+    <div class="field">
+      <label>Status do cliente</label>
+      <div class="toggle-wrap">
+        <label class="toggle">
+          <input type="checkbox" id="edit-active">
+          <span class="slider"></span>
+        </label>
+        <span class="toggle-label" id="edit-active-label">Ativo</span>
+      </div>
+      <div id="edit-inactive-warning" style="display:none" class="purge-warning">
+        Será removido automaticamente 3 dias após ser marcado como inativo.
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-cancel" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="saveEdit()">Salvar</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script>
+  const REFRESH_INTERVAL = 300;
+  let editingHostname = null;
+
+  function token() {
+    return document.getElementById('token-input').value.trim();
+  }
+
+  // ── Countdown ──────────────────────────────────────────────────────────────
+  let remaining = REFRESH_INTERVAL;
+  function updateCountdown() {
+    const m = String(Math.floor(remaining / 60)).padStart(1, '0');
+    const s = String(remaining % 60).padStart(2, '0');
+    document.getElementById('countdown').textContent = `${m}:${s}`;
+    remaining--;
+    if (remaining < 0) { remaining = REFRESH_INTERVAL; loadAll(); }
+  }
+  setInterval(updateCountdown, 1000);
+
+  // ── Toast ──────────────────────────────────────────────────────────────────
+  function toast(msg, ok = true) {
+    const el = document.createElement('div');
+    el.className = `toast ${ok ? 'toast-ok' : 'toast-err'}`;
+    el.textContent = msg;
+    document.getElementById('toast-container').appendChild(el);
+    setTimeout(() => el.remove(), 4000);
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  function statusPill(s) {
+    const map = {
+      online:     ['online',  'Online'],
+      stale:      ['stale',   'Instável'],
+      offline:    ['offline', 'Offline'],
+      never_seen: ['never',   'Nunca visto'],
+    };
+    const [cls, label] = map[s] || ['never', s];
+    return `<span class="pill pill-${cls}">${label}</span>`;
+  }
+
+  function activePill(v) {
+    if (v === true)  return '<span class="pill pill-active">Ativo</span>';
+    if (v === false) return '<span class="pill pill-inactive">Inativo</span>';
+    return '<span class="dim">—</span>';
+  }
+
+  function metricCell(val, warnAt, critAt) {
+    if (val == null) return '<span class="dim">—</span>';
+    const n = parseFloat(val).toFixed(1);
+    let cls = 'metric-ok';
+    if (val >= critAt)  cls = 'metric-crit';
+    else if (val >= warnAt) cls = 'metric-warn';
+    return `<span class="metric ${cls}">${n}%</span>`;
+  }
+
+  function fmtDate(iso) {
+    if (!iso) return '<span class="dim">—</span>';
+    return new Date(iso).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+  }
+
+  function esc(s) {
+    return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // ── API ────────────────────────────────────────────────────────────────────
+  async function apiFetch(path, opts = {}) {
+    const t = token();
+    const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
+    if (t) headers['Authorization'] = `Bearer ${t}`;
+    const resp = await fetch(path, { ...opts, headers });
+    if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
+    return resp.json();
+  }
+
+  // ── Send command ───────────────────────────────────────────────────────────
+  async function sendCommand(hostname, command, btn) {
+    if (!token()) { toast('Insira o token antes de enviar comandos.', false); return; }
+    if (command === 'disable') {
+      if (!confirm(`Desabilitar o serviço DNS em "${hostname}"?\nO serviço não iniciará no boot.`)) return;
+    }
+    btn.disabled = true;
+    try {
+      await apiFetch('/commands', {
+        method: 'POST',
+        body: JSON.stringify({ hostname, command, issued_by: 'admin-panel' }),
+      });
+      const labels = { restart: 'Restart', enable: 'Enable', disable: 'Disable' };
+      toast(`"${labels[command] || command}" enfileirado para ${hostname}.`);
+      await loadHistory();
+    } catch (e) {
+      toast(`Erro: ${e.message}`, false);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // ── Delete agent ───────────────────────────────────────────────────────────
+  async function deleteAgent(hostname, btn) {
+    if (!token()) { toast('Insira o token antes de remover agentes.', false); return; }
+    if (!confirm(`Remover "${hostname}" do banco de dados?\n\nTodos os dados históricos (métricas, heartbeats, checks DNS) serão apagados permanentemente.`)) return;
+    if (!confirm(`Confirmar remoção definitiva de "${hostname}"?`)) return;
+
+    btn.disabled = true;
+    try {
+      await apiFetch(`/agents/${encodeURIComponent(hostname)}`, { method: 'DELETE' });
+      toast(`Agente "${hostname}" removido.`);
+      await loadAgents();
+    } catch (e) {
+      toast(`Erro ao remover: ${e.message}`, false);
+      btn.disabled = false;
+    }
+  }
+
+  // ── Edit modal ─────────────────────────────────────────────────────────────
+  // Cache dos dados dos agentes para preencher o modal
+  let agentsCache = [];
+
+  function openEditModal(hostname) {
+    if (!token()) { toast('Insira o token antes de editar.', false); return; }
+    editingHostname = hostname;
+    const a = agentsCache.find(x => x.hostname === hostname) || {};
+    document.getElementById('modal-title').textContent = `Editar — ${hostname}`;
+    document.getElementById('edit-display-name').value = a.display_name || '';
+    document.getElementById('edit-location').value     = a.location     || '';
+    document.getElementById('edit-notes').value        = a.notes        || '';
+
+    const isActive = a.active !== false;
+    const cb = document.getElementById('edit-active');
+    cb.checked = isActive;
+    document.getElementById('edit-active-label').textContent = isActive ? 'Ativo' : 'Inativo';
+    document.getElementById('edit-inactive-warning').style.display = isActive ? 'none' : 'block';
+
+    document.getElementById('edit-modal').classList.add('open');
+    document.getElementById('edit-display-name').focus();
+  }
+
+  function closeModal() {
+    document.getElementById('edit-modal').classList.remove('open');
+    editingHostname = null;
+  }
+
+  // Atualiza label e aviso ao mudar o toggle no modal
+  document.getElementById('edit-active').addEventListener('change', function() {
+    document.getElementById('edit-active-label').textContent = this.checked ? 'Ativo' : 'Inativo';
+    document.getElementById('edit-inactive-warning').style.display = this.checked ? 'none' : 'block';
+  });
+
+  async function saveEdit() {
+    if (!editingHostname) return;
+    const active = document.getElementById('edit-active').checked;
+    const a = agentsCache.find(x => x.hostname === editingHostname) || {};
+    // Confirma desativação
+    if (!active && a.active !== false) {
+      if (!confirm(`Marcar "${editingHostname}" como inativo?\n\nO agente será removido automaticamente em 3 dias se não for reativado.`)) return;
+    }
+    const body = {
+      display_name: document.getElementById('edit-display-name').value.trim() || null,
+      location:     document.getElementById('edit-location').value.trim()     || null,
+      notes:        document.getElementById('edit-notes').value.trim()        || null,
+      active,
+    };
+    try {
+      await apiFetch(`/agents/${encodeURIComponent(editingHostname)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      });
+      toast(`Dados de "${editingHostname}" salvos.`);
+      closeModal();
+      await loadAgents();
+    } catch (e) {
+      toast(`Erro ao salvar: ${e.message}`, false);
+    }
+  }
+
+  // Fechar modal clicando fora
+  document.getElementById('edit-modal').addEventListener('click', e => {
+    if (e.target === e.currentTarget) closeModal();
+  });
+
+  // ── Load agents ────────────────────────────────────────────────────────────
+  async function loadAgents() {
+    const tbody = document.getElementById('tbody-agents');
+    try {
+      const agents = await apiFetch('/agents');
+      agentsCache = agents;
+      document.getElementById('badge-agents').textContent =
+        `${agents.filter(a => a.agent_status === 'online').length} online / ${agents.length} total`;
+
+      if (!agents.length) {
+        tbody.innerHTML = '<tr><td colspan="10" class="dim" style="padding:16px">Nenhum agente registrado.</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = agents.map(a => {
+        const isActive = a.active !== false;
+        const purgeDate = a.inactive_since
+          ? new Date(new Date(a.inactive_since).getTime() + 3 * 86400000)
+          : null;
+        const daysLeft = purgeDate
+          ? Math.ceil((purgeDate - Date.now()) / 86400000)
+          : null;
+        const clientCell = isActive
+          ? '<span class="pill pill-client-active">Ativo</span>'
+          : `<span class="pill pill-client-inactive">Inativo</span>${daysLeft !== null ? `<div class="purge-warning">Apaga em ${daysLeft}d</div>` : ''}`;
+
+        return `
+        <tr${isActive ? '' : ' style="opacity:.6"'}>
+          <td>
+            <strong>${esc(a.hostname)}</strong>
+            ${a.display_name && a.display_name !== a.hostname ? `<br><span class="dim">${esc(a.display_name)}</span>` : ''}
+          </td>
+          <td><span class="dim">${esc(a.location) || '—'}</span></td>
+          <td>${clientCell}</td>
+          <td>${statusPill(a.agent_status)}</td>
+          <td>${metricCell(a.cpu_percent, 80, 95)}</td>
+          <td>${metricCell(a.ram_percent, 85, 95)}</td>
+          <td><span class="dim">${esc(a.dns_service_name) || '—'}</span></td>
+          <td>${activePill(a.dns_service_active)}</td>
+          <td><span class="dim">${fmtDate(a.last_seen)}</span></td>
+          <td>
+            <div class="actions">
+              <button class="btn btn-restart" onclick="sendCommand('${esc(a.hostname)}','restart',this)">Restart</button>
+              <button class="btn btn-enable"  onclick="sendCommand('${esc(a.hostname)}','enable',this)">Enable</button>
+              <button class="btn btn-disable" onclick="sendCommand('${esc(a.hostname)}','disable',this)">Disable</button>
+              <button class="btn btn-edit"    onclick="openEditModal('${esc(a.hostname)}')">Edit</button>
+              <button class="btn btn-delete"  onclick="deleteAgent('${esc(a.hostname)}',this)">Delete</button>
+            </div>
+          </td>
+        </tr>`;
+      }).join('');
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="10" class="error-msg">Erro ao carregar agentes: ${e.message}</td></tr>`;
+    }
+  }
+
+  // ── Load history ───────────────────────────────────────────────────────────
+  async function loadHistory() {
+    const tbody = document.getElementById('tbody-history');
+    if (!token()) {
+      tbody.innerHTML = '<tr><td colspan="7" class="dim" style="padding:16px">Token necessário para ver o histórico.</td></tr>';
+      return;
+    }
+    try {
+      const rows = await apiFetch('/commands/history?limit=50');
+      document.getElementById('badge-history').textContent = `${rows.length} recentes`;
+
+      if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="7" class="dim" style="padding:16px">Nenhum comando registrado.</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = rows.map(r => `
+        <tr>
+          <td><strong>${esc(r.hostname)}</strong></td>
+          <td><code>${esc(r.command)}</code></td>
+          <td><span class="dim">${esc(r.issued_by) || '—'}</span></td>
+          <td><span class="dim">${fmtDate(r.issued_at)}</span></td>
+          <td><span class="dim">${fmtDate(r.executed_at)}</span></td>
+          <td><span class="pill pill-${esc(r.status)}">${esc(r.status)}</span></td>
+          <td><span class="dim" title="${esc(r.result)}">${r.result ? esc(r.result).slice(0,60) + (r.result.length > 60 ? '…' : '') : '—'}</span></td>
+        </tr>
+      `).join('');
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="7" class="error-msg">Erro ao carregar histórico: ${e.message}</td></tr>`;
+    }
+  }
+
+  // ── Init ───────────────────────────────────────────────────────────────────
+  async function loadAll() {
+    await Promise.all([loadAgents(), loadHistory()]);
+  }
+
+  const savedToken = sessionStorage.getItem('dns_admin_token');
+  if (savedToken) document.getElementById('token-input').value = savedToken;
+
+  document.getElementById('token-input').addEventListener('change', e => {
+    sessionStorage.setItem('dns_admin_token', e.target.value);
+    loadAll();
+  });
+
+  loadAll();
+</script>
+</body>
+</html>

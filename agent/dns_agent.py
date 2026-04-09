@@ -606,6 +606,7 @@ COMMAND_HANDLERS = {
     "stop":    ["sudo", "-n", "systemctl", "stop"],
     "disable": ["sudo", "-n", "systemctl", "disable", "--now"],
     "enable":  ["sudo", "-n", "systemctl", "enable", "--now"],
+    "restart": ["sudo", "-n", "systemctl", "restart"],
     "purge":   None,  # tratado separadamente
 }
 
@@ -638,11 +639,6 @@ def _execute_command(command: str, confirm_token: str, cfg: configparser.ConfigP
     if command == "purge":
         if not confirm_token:
             return "failed", "purge exige confirm_token — comando rejeitado por segurança"
-        local_fp = generate_fingerprint()
-        if confirm_token != local_fp[:16]:
-            # O confirm_token é os primeiros 16 chars do fingerprint local
-            # gerado no momento da emissão pelo backend — previne execução acidental
-            pass  # token válido — prosseguir
         try:
             result = subprocess.run(
                 ["sudo", "-n", "apt-get", "purge", "-y", service],

@@ -11,7 +11,8 @@ from typing import Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import Depends, FastAPI, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
+import pathlib
 import json
 import secrets
 from datetime import date, datetime
@@ -77,8 +78,10 @@ AGENT_TOKEN = os.environ.get("AGENT_TOKEN", "")
 
 async def require_token(request: Request) -> None:
     if not AGENT_TOKEN:
-        logger.warning("AGENT_TOKEN não configurado — autenticação desativada!")
-        return
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AGENT_TOKEN não configurado — backend recusa requests sem autenticação",
+        )
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer ") or auth[7:] != AGENT_TOKEN:
         raise HTTPException(
@@ -226,8 +229,19 @@ async def job_send_report() -> None:
     logger.info("Relatório enviado ao Telegram")
 
 
+async def job_purge_inactive() -> None:
+    """Roda a cada hora: deleta agentes inativos há mais de 3 dias."""
+    deleted = await db.delete_inactive_agents()
+    for hostname in deleted:
+        logger.info("Auto-purge: agente inativo removido após 3 dias: %s", hostname)
+        await tg.send_new_agent_detected(  # reutiliza notificação genérica
+            hostname, "removido automaticamente (inativo > 3 dias)"
+        )
+
+
 def setup_scheduler() -> None:
-    scheduler.add_job(job_check_offline, "interval", minutes=5, id="check_offline")
+    scheduler.add_job(job_check_offline,   "interval", minutes=5,  id="check_offline")
+    scheduler.add_job(job_purge_inactive,  "interval", hours=1,    id="purge_inactive")
     for t in REPORT_TIMES:
         h, m = t.split(":")
         scheduler.add_job(
@@ -387,7 +401,35 @@ async def _evaluate_alerts(payload: AgentPayload) -> None:
             await db.mark_alert_notified(aid)
 
 
-@app.get("/agents")
+class AgentMetaUpdate(BaseModel):
+    display_name: Optional[str]  = None
+    location:     Optional[str]  = None
+    notes:        Optional[str]  = None
+    active:       Optional[bool] = None
+
+
+@app.patch("/agents/{hostname}", dependencies=[Depends(require_token)])
+async def update_agent(hostname: str, body: AgentMetaUpdate) -> JSONResponse:
+    """Atualiza display_name, location e notes de um agente."""
+    found = await db.update_agent_meta(
+        hostname, body.display_name, body.location, body.notes, body.active
+    )
+    if not found:
+        raise HTTPException(status_code=404, detail="Agente não encontrado")
+    return JSONResponse({"status": "ok", "hostname": hostname})
+
+
+@app.delete("/agents/{hostname}", dependencies=[Depends(require_token)])
+async def delete_agent(hostname: str) -> JSONResponse:
+    """Remove o agente e todo o histórico de dados do banco."""
+    found = await db.delete_agent(hostname)
+    if not found:
+        raise HTTPException(status_code=404, detail="Agente não encontrado")
+    logger.info("Agente removido: %s", hostname)
+    return JSONResponse({"status": "ok", "hostname": hostname})
+
+
+@app.get("/agents", dependencies=[Depends(require_token)])
 async def list_agents(request: Request) -> _SafeJSONResponse:
     """Lista status atual de todos os agentes registrados."""
     async with db.get_conn() as conn:
@@ -395,7 +437,7 @@ async def list_agents(request: Request) -> _SafeJSONResponse:
     return _SafeJSONResponse([dict(r) for r in rows])
 
 
-@app.get("/alerts")
+@app.get("/alerts", dependencies=[Depends(require_token)])
 async def list_alerts(hostname: Optional[str] = None) -> _SafeJSONResponse:
     """Lista alertas abertos."""
     alerts = await db.get_open_alerts(hostname)
@@ -479,6 +521,21 @@ async def get_command_history(hostname: str, request: Request) -> _SafeJSONRespo
     """Histórico de comandos executados em um host."""
     await require_token(request)
     history = await db.get_commands_history(hostname)
+    return _SafeJSONResponse(history)
+
+
+@app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
+async def admin_panel() -> HTMLResponse:
+    """Painel de administração — controle remoto dos agentes."""
+    html_path = pathlib.Path(__file__).parent / "static" / "admin.html"
+    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+
+
+@app.get("/commands/history")
+async def get_all_commands_history(request: Request, limit: int = 50) -> _SafeJSONResponse:
+    """Histórico recente de todos os comandos (para o painel admin)."""
+    await require_token(request)
+    history = await db.get_all_commands_history(limit)
     return _SafeJSONResponse(history)
 
 
