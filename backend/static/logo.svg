@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" fill="none">
+  <!-- Background circle -->
+  <circle cx="120" cy="120" r="112" fill="#0f1117" stroke="#1e2330" stroke-width="3"/>
+
+  <!-- Shield body -->
+  <path d="M120 36 L188 72 L188 132 C188 172 156 204 120 216 C84 204 52 172 52 132 L52 72 Z"
+        fill="#111827" stroke="#1d4ed8" stroke-width="4" stroke-linejoin="round"/>
+
+  <!-- Inner shield highlight -->
+  <path d="M120 52 L176 82 L176 132 C176 164 150 192 120 202 C90 192 64 164 64 132 L64 82 Z"
+        fill="#0c1322" stroke="#2d3748" stroke-width="1.5"/>
+
+  <!-- DNS text -->
+  <text x="120" y="118" text-anchor="middle" font-family="Segoe UI,system-ui,sans-serif"
+        font-size="38" font-weight="700" fill="#3b82f6" letter-spacing="3">DNS</text>
+
+  <!-- Signal waves (monitoring pulse) -->
+  <path d="M88 148 Q96 132 104 148 Q112 164 120 148 Q128 132 136 148 Q144 164 152 148"
+        stroke="#34d399" stroke-width="3.5" stroke-linecap="round" fill="none"/>
+
+  <!-- Small dot (heartbeat point) -->
+  <circle cx="120" cy="148" r="3" fill="#34d399"/>
+
+  <!-- Corner accent dots -->
+  <circle cx="120" cy="64" r="4" fill="#1d4ed8" opacity=".6"/>
+</svg>

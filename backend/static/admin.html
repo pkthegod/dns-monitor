@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>DNS Monitor — Admin</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -216,7 +217,9 @@
 <body>
 
 <div class="header">
+  <img src="/static/logo.svg" alt="DNS Monitor" style="height:36px;width:36px">
   <h1>DNS Monitor — Admin</h1>
+  <a href="/admin/logout" class="btn btn-cancel" style="font-size:.75rem;padding:4px 12px;text-decoration:none">Sair</a>
   <div class="token-wrap">
     <label for="token-input">Token</label>
     <input type="password" id="token-input" placeholder="Bearer token do backend" autocomplete="off">

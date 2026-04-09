@@ -297,11 +297,15 @@ async def lifespan(app: FastAPI):
     logger.info("Backend encerrado")
 
 
+from fastapi.staticfiles import StaticFiles
+
 app = FastAPI(
     title="DNS Monitor — Backend",
     version="1.0.0",
     lifespan=lifespan,
 )
+
+app.mount("/static", StaticFiles(directory=str(pathlib.Path(__file__).parent / "static")), name="static")
 
 
 # ---------------------------------------------------------------------------

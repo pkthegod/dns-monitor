@@ -48,6 +48,8 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-dnsmonitor}:${POSTGRES_PASSWORD}@172.20.0.10:5432/${POSTGRES_DB:-dns_monitor}
       AGENT_TOKEN: ${AGENT_TOKEN:?Defina AGENT_TOKEN no .env}
+      ADMIN_USER: ${ADMIN_USER:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
       TZ: America/Sao_Paulo
