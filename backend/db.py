@@ -91,16 +91,18 @@ async def upsert_agent(
 
         await conn.execute(
             """
-            INSERT INTO agents (hostname, registered_at, last_seen, display_name, location)
-            VALUES ($1, $2, $2, $3, $4)
+            INSERT INTO agents (hostname, registered_at, last_seen, display_name, location, agent_version)
+            VALUES ($1, $2, $2, $3, $4, $5)
             ON CONFLICT (hostname) DO UPDATE SET
-                last_seen    = EXCLUDED.last_seen,
-                display_name = COALESCE(EXCLUDED.display_name, agents.display_name),
-                location     = COALESCE(EXCLUDED.location,     agents.location)
+                last_seen     = EXCLUDED.last_seen,
+                display_name  = COALESCE(EXCLUDED.display_name,  agents.display_name),
+                location      = COALESCE(EXCLUDED.location,      agents.location),
+                agent_version = COALESCE(EXCLUDED.agent_version, agents.agent_version)
             """,
             hostname, ts,
             display_name or None,
             location or None,
+            agent_version or None,
         )
     return {"is_new": is_new}
 
@@ -462,7 +464,7 @@ async def upsert_fingerprint(hostname: str, fingerprint: str) -> dict:
 # Comandos remotos
 # ---------------------------------------------------------------------------
 
-VALID_COMMANDS = {"stop", "disable", "enable", "restart", "purge"}
+VALID_COMMANDS = {"stop", "disable", "enable", "restart", "purge", "run_script", "update_agent"}
 
 
 async def get_pending_commands(hostname: str) -> list[dict]:
@@ -485,7 +487,7 @@ async def get_pending_commands(hostname: str) -> list[dict]:
         )
         rows = await conn.fetch(
             """
-            SELECT id, command, confirm_token, issued_at
+            SELECT id, command, confirm_token, params, issued_at
             FROM agent_commands
             WHERE hostname = $1
               AND status   = 'pending'
@@ -521,25 +523,28 @@ async def insert_command(
     issued_by: str = "admin",
     confirm_token: str = None,
     expires_hours: int = None,
+    params: str = None,
 ) -> int:
     """Insere um novo comando para o agente executar. Retorna o ID."""
     if command not in VALID_COMMANDS:
         raise ValueError(f"Comando inválido: {command}. Válidos: {VALID_COMMANDS}")
     if command == "purge" and not confirm_token:
         raise ValueError("purge exige confirm_token")
+    if command == "run_script" and not params:
+        raise ValueError("run_script exige params com o nome do script")
 
     async with get_conn() as conn:
         row = await conn.fetchrow(
             """
             INSERT INTO agent_commands
-                (hostname, command, issued_by, confirm_token, expires_at)
-            VALUES ($1, $2, $3, $4,
-                    CASE WHEN $5::int IS NULL THEN NULL
-                         ELSE NOW() + ($5 * INTERVAL '1 hour')
+                (hostname, command, issued_by, confirm_token, params, expires_at)
+            VALUES ($1, $2, $3, $4, $5,
+                    CASE WHEN $6::int IS NULL THEN NULL
+                         ELSE NOW() + ($6 * INTERVAL '1 hour')
                     END)
             RETURNING id
             """,
-            hostname, command, issued_by, confirm_token, expires_hours,
+            hostname, command, issued_by, confirm_token, params, expires_hours,
         )
         return row["id"]
 
@@ -563,7 +568,7 @@ async def get_all_commands_history(limit: int = 50) -> list[dict]:
     async with get_conn() as conn:
         rows = await conn.fetch(
             """
-            SELECT id, hostname, command, issued_by, issued_at, executed_at, status, result
+            SELECT id, hostname, command, params, issued_by, issued_at, executed_at, status, result
             FROM agent_commands
             ORDER BY issued_at DESC
             LIMIT $1

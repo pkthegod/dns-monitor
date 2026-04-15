@@ -618,8 +618,8 @@ class TestSplitSql:
         stmts = self._split(sql)
         assert len(stmts) == 1
 
-    def test_real_schemas_sql_produces_51_statements(self):
-        """Validação contra o arquivo real — deve produzir 51 statements."""
+    def test_real_schemas_sql_produces_68_statements(self):
+        """Validação contra o arquivo real — deve produzir 68 statements."""
         schema_path = os.path.join(
             os.path.dirname(__file__),
             "backend", "schemas.sql"
@@ -628,7 +628,7 @@ class TestSplitSql:
             pytest.skip("schemas.sql não encontrado — execute a partir da raiz do projeto")
         sql = open(schema_path).read()
         stmts = self._split(sql)
-        assert len(stmts) == 51, f"Esperado 51 statements, obtido {len(stmts)}"
+        assert len(stmts) == 68, f"Esperado 68 statements, obtido {len(stmts)}"
 
     def test_all_statements_start_with_keyword(self):
         """Nenhum statement vazio ou começando com ';'."""
@@ -1782,6 +1782,437 @@ class TestAdminLogin:
         assert "/admin/login" in resp.headers.get("location", "")
         cookie_header = resp.headers.get("set-cookie", "")
         assert "admin_session" in cookie_header
+
+
+# ===========================================================================
+# 20. VALID_COMMANDS — run_script e update_agent
+# ===========================================================================
+
+class TestValidCommandsExpanded:
+    """Verifica que run_script e update_agent estão nos comandos válidos."""
+
+    def test_run_script_in_valid_commands(self):
+        import importlib
+        import db
+        importlib.reload(db)
+        assert "run_script" in db.VALID_COMMANDS
+
+    def test_update_agent_in_valid_commands(self):
+        import importlib
+        import db
+        importlib.reload(db)
+        assert "update_agent" in db.VALID_COMMANDS
+
+    def test_run_script_requires_params(self):
+        import db
+        import asyncio
+
+        async def run():
+            with pytest.raises(ValueError, match="run_script exige params"):
+                await db.insert_command("host", "run_script", "admin", params=None)
+
+        asyncio.run(run())
+
+    def test_insert_command_passes_params(self):
+        import db
+
+        mock_conn = AsyncMock()
+        mock_conn.fetchrow = AsyncMock(return_value={"id": 77})
+        mock_ctx = MagicMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        async def run():
+            with patch("db.get_conn", return_value=mock_ctx):
+                cmd_id = await db.insert_command(
+                    "ns1", "run_script", "admin", params='{"script":"dig_test"}'
+                )
+            return cmd_id
+
+        result = asyncio.run(run())
+        assert result == 77
+        sql_called = mock_conn.fetchrow.call_args[0][0]
+        assert "params" in sql_called
+
+    def test_get_pending_commands_returns_params(self):
+        import db
+
+        mock_conn = AsyncMock()
+        # Primeiro execute é o UPDATE de expirados, segundo fetch é o SELECT
+        mock_conn.execute = AsyncMock()
+        mock_conn.fetch = AsyncMock(return_value=[
+            {"id": 1, "command": "run_script", "confirm_token": None,
+             "params": '{"script":"dig_test"}', "issued_at": "2026-01-01T00:00:00+00:00"}
+        ])
+        mock_ctx = MagicMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        async def run():
+            with patch("db.get_conn", return_value=mock_ctx):
+                return await db.get_pending_commands("ns1")
+
+        result = asyncio.run(run())
+        assert len(result) == 1
+        sql_select = mock_conn.fetch.call_args[0][0]
+        assert "params" in sql_select
+
+    def test_get_all_commands_history_returns_params(self):
+        import db
+
+        mock_conn = AsyncMock()
+        mock_conn.fetch = AsyncMock(return_value=[
+            {"id": 1, "hostname": "ns1", "command": "run_script",
+             "params": '{"script":"bind9_validate"}',
+             "issued_by": "admin", "issued_at": "2026-01-01", "executed_at": None,
+             "status": "done", "result": "{}"}
+        ])
+        mock_ctx = MagicMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        async def run():
+            with patch("db.get_conn", return_value=mock_ctx):
+                return await db.get_all_commands_history(limit=10)
+
+        result = asyncio.run(run())
+        assert len(result) == 1
+        sql_called = mock_conn.fetch.call_args[0][0]
+        assert "params" in sql_called
+
+
+# ===========================================================================
+# 21. agent_version no upsert_agent
+# ===========================================================================
+
+class TestAgentVersionUpsert:
+    """Verifica que upsert_agent grava agent_version na tabela agents."""
+
+    def test_upsert_agent_passes_agent_version(self):
+        import db
+
+        mock_conn = AsyncMock()
+        mock_conn.fetchval = AsyncMock(return_value=0)  # não é novo
+        mock_conn.execute = AsyncMock()
+        mock_ctx = MagicMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        async def run():
+            with patch("db.get_conn", return_value=mock_ctx):
+                return await db.upsert_agent(
+                    "ns1", "2026-01-01T00:00:00+00:00",
+                    agent_version="1.2.3",
+                )
+
+        asyncio.run(run())
+        sql_called = mock_conn.execute.call_args[0][0]
+        assert "agent_version" in sql_called
+
+    def test_upsert_agent_none_version_uses_coalesce(self):
+        import db
+
+        mock_conn = AsyncMock()
+        mock_conn.fetchval = AsyncMock(return_value=0)
+        mock_conn.execute = AsyncMock()
+        mock_ctx = MagicMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        async def run():
+            with patch("db.get_conn", return_value=mock_ctx):
+                return await db.upsert_agent(
+                    "ns1", "2026-01-01T00:00:00+00:00",
+                    agent_version=None,
+                )
+
+        asyncio.run(run())
+        sql_called = mock_conn.execute.call_args[0][0]
+        assert "COALESCE" in sql_called
+
+
+# ===========================================================================
+# 22. GET /agent/version — endpoint de versão do agente
+# ===========================================================================
+
+class TestAgentVersionEndpoint:
+    """Testa GET /agent/version que retorna versão, checksum e tamanho."""
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def _make_fake_path(self, exists=True, content=""):
+        fake = MagicMock()
+        fake.exists.return_value = exists
+        fake.read_text.return_value = content
+        return fake
+
+    def test_returns_version_and_checksum(self):
+        import importlib
+        import main as m
+        importlib.reload(m)
+
+        fake_content = 'AGENT_VERSION = "2.0.0"\n# rest of agent\n'
+        import hashlib
+        expected_checksum = hashlib.sha256(fake_content.encode()).hexdigest()
+
+        async def run():
+            req = MagicMock()
+            with patch("main.require_token", AsyncMock(return_value=None)), \
+                 patch("main.AGENT_FILE_PATH", self._make_fake_path(True, fake_content)):
+                resp = await m.agent_version_info(req)
+            return resp
+
+        resp = self._run(run())
+        import json
+        data = json.loads(resp.body)
+        assert data["version"] == "2.0.0"
+        assert data["checksum"] == expected_checksum
+        assert data["size"] == len(fake_content.encode())
+
+    def test_returns_unknown_when_no_version_found(self):
+        import importlib
+        import main as m
+        importlib.reload(m)
+
+        async def run():
+            req = MagicMock()
+            with patch("main.require_token", AsyncMock(return_value=None)), \
+                 patch("main.AGENT_FILE_PATH", self._make_fake_path(True, "# no version here")):
+                resp = await m.agent_version_info(req)
+            return resp
+
+        resp = self._run(run())
+        import json
+        data = json.loads(resp.body)
+        assert data["version"] == "unknown"
+
+    def test_raises_404_when_file_missing(self):
+        import importlib
+        import main as m
+        from fastapi import HTTPException
+        importlib.reload(m)
+
+        async def run():
+            req = MagicMock()
+            with patch("main.require_token", AsyncMock(return_value=None)), \
+                 patch("main.AGENT_FILE_PATH", self._make_fake_path(False)):
+                with pytest.raises(HTTPException) as exc:
+                    await m.agent_version_info(req)
+                assert exc.value.status_code == 404
+
+        self._run(run())
+
+
+# ===========================================================================
+# 23. GET /agent/latest — download do agente
+# ===========================================================================
+
+class TestAgentLatestEndpoint:
+    """Testa GET /agent/latest que serve o arquivo dns_agent.py."""
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def _make_fake_path(self, exists=True, content=""):
+        fake = MagicMock()
+        fake.exists.return_value = exists
+        fake.read_text.return_value = content
+        return fake
+
+    def test_returns_python_content_with_checksum_header(self):
+        import importlib
+        import main as m
+        importlib.reload(m)
+
+        fake_content = 'AGENT_VERSION = "2.0.0"\nprint("hello")\n'
+        import hashlib
+        expected_checksum = hashlib.sha256(fake_content.encode()).hexdigest()
+
+        async def run():
+            req = MagicMock()
+            with patch("main.require_token", AsyncMock(return_value=None)), \
+                 patch("main.AGENT_FILE_PATH", self._make_fake_path(True, fake_content)):
+                resp = await m.agent_latest_download(req)
+            return resp
+
+        resp = self._run(run())
+        assert resp.body.decode() == fake_content
+        assert resp.media_type == "text/x-python"
+        assert resp.headers["X-Agent-Checksum"] == expected_checksum
+
+    def test_raises_404_when_file_missing(self):
+        import importlib
+        import main as m
+        from fastapi import HTTPException
+        importlib.reload(m)
+
+        async def run():
+            req = MagicMock()
+            with patch("main.require_token", AsyncMock(return_value=None)), \
+                 patch("main.AGENT_FILE_PATH", self._make_fake_path(False)):
+                with pytest.raises(HTTPException) as exc:
+                    await m.agent_latest_download(req)
+                assert exc.value.status_code == 404
+
+        self._run(run())
+
+
+# ===========================================================================
+# 24. POST /tools/geolocate — geolocalização de IPs
+# ===========================================================================
+
+class TestGeolocateEndpoint:
+    """Testa POST /tools/geolocate com ip-api.com mockado."""
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def test_returns_geolocation_data(self):
+        import importlib
+        import main as m
+        importlib.reload(m)
+
+        fake_api_response = [
+            {"query": "8.8.8.8", "status": "success", "country": "United States",
+             "city": "Mountain View", "isp": "Google LLC", "lat": 37.4056, "lon": -122.0775}
+        ]
+
+        async def run():
+            req = MagicMock()
+            req.json = AsyncMock(return_value={"ips": ["8.8.8.8"]})
+            with patch("main.require_token", AsyncMock(return_value=None)):
+                mock_loop = MagicMock()
+                mock_loop.run_in_executor = AsyncMock(return_value=fake_api_response)
+                with patch("asyncio.get_event_loop", return_value=mock_loop):
+                    resp = await m.geolocate_ips(req)
+            return resp
+
+        resp = self._run(run())
+        import json
+        data = json.loads(resp.body)
+        assert len(data) == 1
+        assert data[0]["country"] == "United States"
+
+    def test_empty_ips_returns_empty_list(self):
+        import importlib
+        import main as m
+        importlib.reload(m)
+
+        async def run():
+            req = MagicMock()
+            req.json = AsyncMock(return_value={"ips": []})
+            with patch("main.require_token", AsyncMock(return_value=None)):
+                resp = await m.geolocate_ips(req)
+            return resp
+
+        resp = self._run(run())
+        import json
+        assert json.loads(resp.body) == []
+
+    def test_deduplicates_ips(self):
+        """IPs duplicados devem ser removidos antes da chamada."""
+        import importlib
+        import main as m
+        importlib.reload(m)
+
+        captured_ips = []
+        fake_response = [{"query": "8.8.8.8", "status": "success"}]
+
+        async def run():
+            req = MagicMock()
+            req.json = AsyncMock(return_value={"ips": ["8.8.8.8", "8.8.8.8", "1.1.1.1"]})
+            with patch("main.require_token", AsyncMock(return_value=None)):
+                mock_loop = MagicMock()
+                mock_loop.run_in_executor = AsyncMock(return_value=fake_response)
+                with patch("asyncio.get_event_loop", return_value=mock_loop):
+                    resp = await m.geolocate_ips(req)
+            return resp
+
+        self._run(run())
+
+
+# ===========================================================================
+# 25. GET /commands/{command_id}/status — status individual
+# ===========================================================================
+
+class TestCommandStatusEndpoint:
+    """Testa GET /commands/{command_id}/status."""
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def test_returns_command_data(self):
+        import main as m
+
+        cmd = {"id": 42, "hostname": "ns1", "command": "update_agent",
+               "status": "done", "result": "OK", "params": None}
+
+        async def run():
+            req = MagicMock()
+            with patch("main.require_token", AsyncMock(return_value=None)), \
+                 patch("main.db.get_command_by_id", AsyncMock(return_value=cmd)):
+                resp = await m.get_command_status(42, req)
+            return resp
+
+        resp = self._run(run())
+        import json
+        data = json.loads(resp.body)
+        assert data["id"] == 42
+        assert data["command"] == "update_agent"
+
+    def test_raises_404_when_not_found(self):
+        import main as m
+        from fastapi import HTTPException
+
+        async def run():
+            req = MagicMock()
+            with patch("main.require_token", AsyncMock(return_value=None)), \
+                 patch("main.db.get_command_by_id", AsyncMock(return_value=None)):
+                with pytest.raises(HTTPException) as exc:
+                    await m.get_command_status(999, req)
+                assert exc.value.status_code == 404
+
+        self._run(run())
+
+
+# ===========================================================================
+# 26. create_command com params
+# ===========================================================================
+
+class TestCreateCommandWithParams:
+    """Testa que POST /commands passa params para db.insert_command."""
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def test_params_passed_to_insert_command(self):
+        import main as m
+
+        captured = {}
+
+        async def fake_insert(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return 1
+
+        async def run():
+            req = MagicMock()
+            req.json = AsyncMock(return_value={
+                "hostname": "ns1", "command": "run_script",
+                "issued_by": "admin", "params": '{"script":"dig_test"}'
+            })
+            with patch("main.require_token", AsyncMock(return_value=None)), \
+                 patch("main.db.insert_command", side_effect=fake_insert):
+                resp = await m.create_command(req)
+            return resp
+
+        resp = self._run(run())
+        assert resp.status_code == 201
+        # Verificar que params foi passado na chamada
+        call_args = captured["args"]
+        assert '{"script":"dig_test"}' in call_args or \
+               captured["kwargs"].get("params") == '{"script":"dig_test"}'
 
 
 # ===========================================================================

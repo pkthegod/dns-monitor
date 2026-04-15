@@ -5,226 +5,667 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>DNS Monitor — Admin</title>
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-  body {
-    font-family: 'Segoe UI', system-ui, sans-serif;
-    background: #0f1117;
-    color: #e2e8f0;
-    min-height: 100vh;
-    padding: 24px;
+  :root {
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+    --bg:        #0b0e14;
+    --bg-card:   #111520;
+    --bg-input:  #0d1017;
+    --border:    #1e2640;
+    --border-lo: #161c2e;
+    --text:      #cdd6f4;
+    --text-dim:  #495680;
+    --text-mid:  #6e7fa8;
+    --accent:    #89b4fa;
+    --green:     #a6e3a1;
+    --red:       #f38ba8;
+    --yellow:    #f9e2af;
+    --orange:    #fab387;
+    --blue:      #89b4fa;
+    --purple:    #cba6f7;
   }
 
-  h1 { font-size: 1.4rem; font-weight: 600; color: #f8fafc; }
-  h2 { font-size: 1rem; font-weight: 600; color: #94a3b8; text-transform: uppercase; letter-spacing: .06em; }
+  body {
+    font-family: var(--font-mono);
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 20px 24px 40px;
+    font-size: 13px;
+    line-height: 1.5;
+  }
 
   /* ── Header ── */
   .header {
     display: flex;
     align-items: center;
-    gap: 16px;
-    margin-bottom: 24px;
+    gap: 14px;
+    margin-bottom: 28px;
     flex-wrap: wrap;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border-lo);
   }
-  .header h1 { flex: 1; }
+  .header h1 {
+    flex: 1;
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: .04em;
+  }
+  .header h1 span { color: var(--text-mid); font-weight: 400; }
 
   .token-wrap { display: flex; align-items: center; gap: 8px; }
-  .token-wrap label { font-size: .8rem; color: #64748b; white-space: nowrap; }
+  .token-wrap label { font-size: .72rem; color: var(--text-dim); white-space: nowrap; letter-spacing: .08em; text-transform: uppercase; }
   .token-wrap input {
-    background: #1e2330;
-    border: 1px solid #2d3748;
-    color: #e2e8f0;
-    border-radius: 6px;
-    padding: 6px 10px;
-    font-size: .85rem;
-    width: 260px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 5px;
+    padding: 5px 10px;
+    font-size: .8rem;
+    font-family: var(--font-mono);
+    width: 240px;
   }
+  .token-wrap input:focus { outline: none; border-color: var(--accent); }
 
-  .refresh-info { font-size: .78rem; color: #475569; }
-  #countdown { color: #64748b; font-variant-numeric: tabular-nums; }
+  .refresh-info { font-size: .7rem; color: var(--text-dim); letter-spacing: .06em; }
+  #countdown { color: var(--text-mid); font-variant-numeric: tabular-nums; }
 
   /* ── Sections ── */
-  .section { margin-bottom: 32px; }
-  .section-title { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .section { margin-bottom: 36px; }
+  .section-title { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .section-title h2 {
+    font-size: .7rem;
+    font-weight: 700;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: .12em;
+  }
   .badge {
-    background: #1e2330;
-    border: 1px solid #2d3748;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
     border-radius: 20px;
-    font-size: .72rem;
-    padding: 2px 8px;
-    color: #94a3b8;
+    font-size: .68rem;
+    padding: 1px 8px;
+    color: var(--text-mid);
+    letter-spacing: .04em;
   }
 
   /* ── Tables ── */
-  .table-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid #1e2330; }
-  table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  .table-wrap { overflow-x: auto; border-radius: 8px; border: 1px solid var(--border-lo); }
+  table { width: 100%; border-collapse: collapse; }
   thead th {
-    background: #151820;
-    padding: 10px 14px;
+    background: #0d1119;
+    padding: 9px 14px;
     text-align: left;
-    font-weight: 500;
-    color: #64748b;
-    border-bottom: 1px solid #1e2330;
+    font-size: .68rem;
+    font-weight: 700;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border-lo);
     white-space: nowrap;
+    text-transform: uppercase;
+    letter-spacing: .08em;
   }
-  tbody tr { border-bottom: 1px solid #1a1f2e; transition: background .15s; }
+  tbody tr { border-bottom: 1px solid var(--border-lo); transition: background .12s; }
   tbody tr:last-child { border-bottom: none; }
-  tbody tr:hover { background: #151a27; }
-  tbody td { padding: 10px 14px; vertical-align: middle; }
+  tbody tr:hover { background: #0d1117; }
+  tbody td { padding: 9px 14px; vertical-align: middle; }
 
   /* ── Pills ── */
   .pill {
     display: inline-block;
-    border-radius: 20px;
-    padding: 2px 10px;
-    font-size: .75rem;
-    font-weight: 600;
-    letter-spacing: .03em;
+    border-radius: 4px;
+    padding: 1px 7px;
+    font-size: .68rem;
+    font-weight: 700;
+    letter-spacing: .06em;
+    text-transform: uppercase;
   }
-  .pill-online   { background: #0d2b1a; color: #34d399; border: 1px solid #065f46; }
-  .pill-stale    { background: #292213; color: #fbbf24; border: 1px solid #78350f; }
-  .pill-offline  { background: #2d1515; color: #f87171; border: 1px solid #7f1d1d; }
-  .pill-never    { background: #1e2330; color: #64748b; border: 1px solid #2d3748; }
-  .pill-active   { background: #0d2b1a; color: #34d399; border: 1px solid #065f46; }
-  .pill-inactive { background: #2d1515; color: #f87171; border: 1px solid #7f1d1d; }
-  .pill-pending  { background: #1a2035; color: #93c5fd; border: 1px solid #1e3a5f; }
-  .pill-done     { background: #0d2b1a; color: #34d399; border: 1px solid #065f46; }
-  .pill-failed   { background: #2d1515; color: #f87171; border: 1px solid #7f1d1d; }
-  .pill-expired  { background: #1e2330; color: #64748b; border: 1px solid #2d3748; }
+  .pill-online   { background: #0d2318; color: var(--green);  border: 1px solid #1a4a30; }
+  .pill-stale    { background: #2a1e0a; color: var(--yellow); border: 1px solid #5a3d10; }
+  .pill-offline  { background: #2a0f10; color: var(--red);    border: 1px solid #5a1a1a; }
+  .pill-never    { background: var(--bg-card); color: var(--text-dim); border: 1px solid var(--border); }
+  .pill-active   { background: #0d2318; color: var(--green);  border: 1px solid #1a4a30; }
+  .pill-inactive { background: #2a0f10; color: var(--red);    border: 1px solid #5a1a1a; }
+  .pill-pending  { background: #101a30; color: var(--blue);   border: 1px solid #1e3560; }
+  .pill-done     { background: #0d2318; color: var(--green);  border: 1px solid #1a4a30; }
+  .pill-failed   { background: #2a0f10; color: var(--red);    border: 1px solid #5a1a1a; }
+  .pill-expired  { background: var(--bg-card); color: var(--text-dim); border: 1px solid var(--border); }
+  .pill-client-active   { background: #0d2318; color: var(--green);  border: 1px solid #1a4a30; }
+  .pill-client-inactive { background: #261508; color: var(--orange); border: 1px solid #5a2e10; }
 
-  /* ── Buttons ── */
-  .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  /* ── Buttons (modais e header) ── */
   .btn {
     border: none;
-    border-radius: 6px;
-    padding: 5px 12px;
-    font-size: .78rem;
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: .68rem;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    transition: opacity .12s, transform .08s;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+  .btn:hover   { opacity: .82; }
+  .btn:active  { transform: scale(.95); }
+  .btn:disabled { opacity: .3; cursor: not-allowed; }
+
+  .btn-primary  { background: #0e1f4a; color: var(--blue);     border: 1px solid #1a3a7a; padding: 6px 16px; font-size: .78rem; }
+  .btn-cancel   { background: var(--bg-card); color: var(--text-mid); border: 1px solid var(--border); padding: 6px 16px; font-size: .78rem; }
+  .btn-run      { background: #1a1040; color: var(--purple);   border: 1px solid #3a2a70; padding: 6px 16px; font-size: .78rem; }
+  .btn-logout   { background: var(--bg-card); color: var(--text-dim); border: 1px solid var(--border); padding: 4px 10px; font-size: .68rem; text-decoration: none; letter-spacing: .06em; text-transform: uppercase; border-radius: 4px; transition: opacity .12s; }
+  .btn-logout:hover { opacity: .75; }
+
+  /* ── Agent action menu ── */
+  .agent-menu-trigger {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-mid);
+    border-radius: 5px;
+    padding: 3px 9px;
+    font-family: var(--font-mono);
+    font-size: .85rem;
     font-weight: 600;
     cursor: pointer;
-    transition: opacity .15s, transform .1s;
-    letter-spacing: .02em;
+    transition: background .12s, border-color .12s, color .12s;
+    line-height: 1;
+    letter-spacing: .06em;
   }
-  .btn:hover   { opacity: .85; }
-  .btn:active  { transform: scale(.96); }
-  .btn:disabled { opacity: .35; cursor: not-allowed; }
+  .agent-menu-trigger:hover {
+    background: #1a2035;
+    border-color: #2a3a6a;
+    color: var(--accent);
+  }
+  .agent-menu-trigger.active {
+    background: #1a2035;
+    border-color: var(--accent);
+    color: var(--accent);
+  }
 
-  .btn-restart  { background: #1d4ed8; color: #eff6ff; }
-  .btn-enable   { background: #065f46; color: #d1fae5; }
-  .btn-disable  { background: #78350f; color: #fef3c7; }
-  .btn-edit     { background: #1e2a3a; color: #93c5fd; border: 1px solid #1e3a5f; }
-  .btn-delete   { background: #2d1515; color: #fca5a5; border: 1px solid #7f1d1d; }
-  .btn-primary  { background: #1d4ed8; color: #eff6ff; padding: 7px 18px; font-size: .85rem; }
-  .btn-cancel   { background: #1e2330; color: #94a3b8; border: 1px solid #2d3748; padding: 7px 18px; font-size: .85rem; }
+  #agent-menu {
+    position: fixed;
+    z-index: 900;
+    background: #0f1420;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 20px 60px rgba(0,0,0,.7), 0 0 0 1px rgba(137,180,250,.04);
+    min-width: 210px;
+    padding: 5px 0 7px;
+    display: none;
+    animation: menuIn .1s ease;
+  }
+  #agent-menu.open { display: block; }
+  @keyframes menuIn {
+    from { opacity: 0; transform: scale(.96) translateY(-4px); }
+    to   { opacity: 1; transform: scale(1)   translateY(0); }
+  }
 
-  /* ── Toggle switch ── */
+  .menu-header {
+    padding: 8px 14px 7px;
+    border-bottom: 1px solid var(--border-lo);
+    margin-bottom: 3px;
+  }
+  .menu-header-hostname {
+    font-size: .72rem;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: .04em;
+  }
+  .menu-header-sub {
+    font-size: .65rem;
+    color: var(--text-dim);
+    margin-top: 1px;
+  }
+
+  .menu-group-label {
+    padding: 6px 14px 2px;
+    font-size: .6rem;
+    font-weight: 700;
+    color: var(--text-dim);
+    letter-spacing: .12em;
+    text-transform: uppercase;
+  }
+  .menu-divider {
+    height: 1px;
+    background: var(--border-lo);
+    margin: 4px 6px;
+  }
+
+  .menu-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 14px 6px 12px;
+    font-size: .76rem;
+    font-weight: 500;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    transition: background .08s;
+    border-left: 2px solid transparent;
+    user-select: none;
+    white-space: nowrap;
+  }
+  .menu-item:hover { background: #141c30; }
+  .menu-item:active { opacity: .7; }
+
+  .menu-icon { font-size: .8rem; width: 16px; text-align: center; flex-shrink: 0; opacity: .85; }
+  .menu-label { flex: 1; }
+  .menu-badge {
+    font-size: .6rem;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 3px;
+    letter-spacing: .04em;
+  }
+
+  .mi-restart { border-left-color: var(--blue);    color: var(--blue); }
+  .mi-enable  { border-left-color: var(--green);   color: var(--green); }
+  .mi-disable { border-left-color: var(--orange);  color: var(--orange); }
+  .mi-diag    { border-left-color: var(--purple);  color: var(--purple); }
+  .mi-trace   { border-left-color: #2dd4bf;        color: #2dd4bf; }
+  .mi-update  { border-left-color: var(--yellow);  color: var(--yellow); }
+  .mi-edit    { border-left-color: var(--text-mid);color: var(--text-mid); }
+  .mi-delete  { border-left-color: var(--red);     color: var(--red); }
+
+  .mi-restart:hover { background: #0a1328; }
+  .mi-enable:hover  { background: #091508; }
+  .mi-disable:hover { background: #180e04; }
+  .mi-diag:hover    { background: #110c22; }
+  .mi-trace:hover   { background: #061414; }
+  .mi-update:hover  { background: #181406; }
+  .mi-edit:hover    { background: #111825; }
+  .mi-delete:hover  { background: #180808; }
+
+  /* ── Toggle ── */
   .toggle-wrap { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
-  .toggle { position: relative; display: inline-block; width: 40px; height: 22px; }
+  .toggle { position: relative; display: inline-block; width: 38px; height: 20px; }
   .toggle input { opacity: 0; width: 0; height: 0; }
   .slider {
     position: absolute; inset: 0;
-    background: #2d3748; border-radius: 22px; cursor: pointer;
+    background: #1e2640; border-radius: 20px; cursor: pointer;
     transition: background .2s;
   }
   .slider::before {
     content: '';
     position: absolute;
-    width: 16px; height: 16px;
+    width: 14px; height: 14px;
     left: 3px; bottom: 3px;
-    background: #94a3b8; border-radius: 50%;
+    background: var(--text-mid); border-radius: 50%;
     transition: transform .2s, background .2s;
   }
-  .toggle input:checked + .slider { background: #065f46; }
-  .toggle input:checked + .slider::before { transform: translateX(18px); background: #34d399; }
-  .toggle-label { font-size: .85rem; color: #e2e8f0; }
+  .toggle input:checked + .slider { background: #1a4a30; }
+  .toggle input:checked + .slider::before { transform: translateX(18px); background: var(--green); }
+  .toggle-label { font-size: .8rem; color: var(--text); }
 
-  .pill-client-active   { background: #0d2b1a; color: #34d399; border: 1px solid #065f46; }
-  .pill-client-inactive { background: #2d1a0d; color: #fb923c; border: 1px solid #7c2d12; }
-  .purge-warning { font-size: .72rem; color: #fb923c; margin-top: 2px; }
+  .purge-warning { font-size: .68rem; color: var(--orange); margin-top: 2px; }
 
   /* ── Metrics ── */
   .metric { font-variant-numeric: tabular-nums; }
-  .metric-warn { color: #fbbf24; }
-  .metric-crit { color: #f87171; }
-  .metric-ok   { color: #94a3b8; }
+  .metric-warn { color: var(--yellow); }
+  .metric-crit { color: var(--red); }
+  .metric-ok   { color: var(--text-mid); }
 
-  /* ── Modal ── */
+  /* ── Modal base ── */
   .modal-backdrop {
     display: none;
     position: fixed;
     inset: 0;
-    background: rgba(0,0,0,.6);
+    background: rgba(0,0,0,.7);
     z-index: 500;
     align-items: center;
     justify-content: center;
+    padding: 20px;
   }
   .modal-backdrop.open { display: flex; }
   .modal {
-    background: #151820;
-    border: 1px solid #2d3748;
-    border-radius: 12px;
-    padding: 28px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 24px;
     width: 100%;
-    max-width: 420px;
-    box-shadow: 0 20px 60px rgba(0,0,0,.5);
+    max-width: 460px;
+    box-shadow: 0 24px 60px rgba(0,0,0,.6);
   }
-  .modal h3 { font-size: 1rem; font-weight: 600; margin-bottom: 20px; color: #f1f5f9; }
-  .field { margin-bottom: 16px; }
-  .field label { display: block; font-size: .78rem; color: #64748b; margin-bottom: 6px; }
+  .modal h3 {
+    font-size: .9rem;
+    font-weight: 700;
+    margin-bottom: 18px;
+    color: var(--accent);
+    letter-spacing: .04em;
+    text-transform: uppercase;
+  }
+  .field { margin-bottom: 14px; }
+  .field label {
+    display: block;
+    font-size: .68rem;
+    color: var(--text-dim);
+    margin-bottom: 5px;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+  }
   .field input,
-  .field textarea {
+  .field textarea,
+  .field select {
     width: 100%;
-    background: #0f1117;
-    border: 1px solid #2d3748;
-    color: #e2e8f0;
-    border-radius: 6px;
-    padding: 8px 10px;
-    font-size: .85rem;
-    font-family: inherit;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 5px;
+    padding: 7px 10px;
+    font-size: .8rem;
+    font-family: var(--font-mono);
   }
-  .field textarea { resize: vertical; min-height: 72px; }
+  .field select option { background: var(--bg-card); }
+  .field textarea { resize: vertical; min-height: 68px; }
   .field input:focus,
-  .field textarea:focus { outline: none; border-color: #3b82f6; }
-  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
+  .field textarea:focus,
+  .field select:focus { outline: none; border-color: var(--accent); }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+
+  /* ── Diagnostic modal (wider) ── */
+  .modal-diag { max-width: 680px; }
+  .diag-result {
+    margin-top: 16px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px;
+    max-height: 400px;
+    overflow-y: auto;
+  }
+  .diag-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border-lo);
+  }
+  .diag-summary-text { font-size: .8rem; font-weight: 700; }
+  .diag-summary-ok   { color: var(--green); }
+  .diag-summary-fail { color: var(--red); }
+  .diag-checks { display: flex; flex-direction: column; gap: 5px; }
+  .diag-check {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    font-size: .78rem;
+    line-height: 1.4;
+  }
+  .diag-check-icon {
+    flex-shrink: 0;
+    font-size: .68rem;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 3px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    margin-top: 1px;
+  }
+  .icon-ok   { background: #0d2318; color: var(--green);  border: 1px solid #1a4a30; }
+  .icon-fail { background: #2a0f10; color: var(--red);    border: 1px solid #5a1a1a; }
+  .icon-skip { background: var(--bg-card); color: var(--text-dim); border: 1px solid var(--border); }
+  .icon-info { background: #101a30; color: var(--blue);   border: 1px solid #1e3560; }
+  .icon-warn { background: #261508; color: var(--orange); border: 1px solid #5a2e10; }
+  .diag-waiting {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--text-mid);
+    font-size: .8rem;
+    padding: 8px 0;
+  }
+  .spinner {
+    width: 14px; height: 14px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .8s linear infinite;
+    flex-shrink: 0;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .diag-script-select { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .diag-script-select select {
+    flex: 1;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 5px;
+    padding: 6px 10px;
+    font-family: var(--font-mono);
+    font-size: .8rem;
+  }
+  .diag-script-select select:focus { outline: none; border-color: var(--accent); }
+  .diag-error { color: var(--red); font-size: .78rem; padding: 8px 0; }
+  .diag-hostname { color: var(--text-mid); font-size: .75rem; margin-bottom: 14px; }
 
   /* ── Toast ── */
   #toast-container {
     position: fixed;
-    bottom: 24px;
-    right: 24px;
+    bottom: 20px;
+    right: 20px;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 6px;
     z-index: 1000;
   }
   .toast {
-    background: #1e2330;
-    border: 1px solid #2d3748;
-    border-radius: 8px;
-    padding: 10px 16px;
-    font-size: .83rem;
-    max-width: 320px;
-    animation: slideIn .2s ease;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 9px 14px;
+    font-size: .78rem;
+    max-width: 300px;
+    animation: slideIn .15s ease;
   }
-  .toast-ok  { border-left: 3px solid #34d399; }
-  .toast-err { border-left: 3px solid #f87171; }
-  @keyframes slideIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  .toast-ok  { border-left: 3px solid var(--green); }
+  .toast-err { border-left: 3px solid var(--red); }
+  @keyframes slideIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
-  .dim { color: #64748b; font-size: .78rem; }
-  .error-msg { color: #f87171; padding: 12px; font-size: .85rem; }
+  .dim { color: var(--text-dim); font-size: .75rem; }
+  .error-msg { color: var(--red); padding: 12px; font-size: .8rem; }
+  code { font-family: var(--font-mono); color: var(--text-mid); }
+
+  /* ── Result expand ── */
+  .result-cell { cursor: pointer; }
+  .result-cell:hover span { color: var(--accent); }
+
+  /* ── Trace modal ── */
+  .btn-trace  { background: #081e1e; color: #2dd4bf;   border: 1px solid #134545; }
+  .btn-trace:hover { opacity: .82; }
+  .btn-trace:active { transform: scale(.95); }
+
+  .version-badge {
+    display: inline-block;
+    font-size: .65rem;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 3px;
+    letter-spacing: .04em;
+    vertical-align: middle;
+  }
+  .version-ok      { background: #0d2318; color: var(--green);  border: 1px solid #1a4a30; }
+  .version-old     { background: #2a1e0a; color: var(--yellow); border: 1px solid #5a3d10; }
+  .version-unknown { background: var(--bg-card); color: var(--text-dim); border: 1px solid var(--border); }
+
+  .modal-trace { max-width: 740px; }
+
+  .trace-controls { display: flex; gap: 8px; align-items: flex-end; margin-bottom: 16px; flex-wrap: wrap; }
+  .trace-controls .field { margin-bottom: 0; flex: 1; min-width: 160px; }
+  .trace-controls .field.resolver-field { max-width: 160px; }
+
+  .trace-area {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px;
+    max-height: 520px;
+    overflow-y: auto;
+  }
+
+  /* Path nodes */
+  .trace-path { display: flex; flex-direction: column; align-items: stretch; gap: 0; }
+
+  .trace-node {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 14px;
+    background: #0d1117;
+    position: relative;
+  }
+  .trace-node-source  { border-color: #1a3a4a; background: #081420; }
+  .trace-node-answer  { border-color: #1a4a30; background: #081a10; }
+  .trace-node-hop     { border-color: var(--border); }
+  .trace-node-hop:hover { border-color: #2a3a6a; background: #0d1220; }
+
+  .trace-node-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .trace-hop-num {
+    background: #1e2640;
+    color: var(--text-mid);
+    border-radius: 4px;
+    font-size: .65rem;
+    font-weight: 700;
+    padding: 1px 6px;
+    letter-spacing: .06em;
+    flex-shrink: 0;
+  }
+  .trace-hop-zone {
+    font-size: .72rem;
+    font-weight: 700;
+    color: var(--text-mid);
+    text-transform: uppercase;
+    letter-spacing: .08em;
+  }
+  .trace-hop-type {
+    font-size: .65rem;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 3px;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    margin-left: auto;
+  }
+  .type-root   { background: #1a1040; color: var(--purple); border: 1px solid #3a2a70; }
+  .type-tld    { background: #101a30; color: var(--blue);   border: 1px solid #1e3560; }
+  .type-auth   { background: #0a2020; color: #2dd4bf;       border: 1px solid #134545; }
+  .type-answer { background: #0d2318; color: var(--green);  border: 1px solid #1a4a30; }
+  .type-source { background: #081420; color: var(--accent); border: 1px solid #1a3a6a; }
+
+  .trace-server-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: .78rem;
+    margin-bottom: 4px;
+    flex-wrap: wrap;
+  }
+  .trace-ip   { color: var(--text); font-weight: 600; }
+  .trace-name { color: var(--text-dim); font-size: .72rem; }
+
+  .trace-geo-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: .72rem;
+    color: var(--text-mid);
+    flex-wrap: wrap;
+  }
+  .trace-flag    { font-size: .9rem; line-height: 1; }
+  .trace-city    { color: var(--text-mid); }
+  .trace-isp     { color: var(--text-dim); }
+  .trace-latency {
+    margin-left: auto;
+    font-size: .7rem;
+    font-weight: 700;
+    padding: 1px 7px;
+    border-radius: 3px;
+    font-variant-numeric: tabular-nums;
+  }
+  .lat-fast { background: #0d2318; color: var(--green);  border: 1px solid #1a4a30; }
+  .lat-mid  { background: #101a30; color: var(--blue);   border: 1px solid #1e3560; }
+  .lat-slow { background: #2a1e0a; color: var(--yellow); border: 1px solid #5a3d10; }
+  .lat-dead { background: #2a0f10; color: var(--red);    border: 1px solid #5a1a1a; }
+
+  .trace-connector {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 2px 0;
+    gap: 0;
+    user-select: none;
+  }
+  .trace-connector-line {
+    width: 1px;
+    height: 10px;
+    background: var(--border);
+  }
+  .trace-connector-arrow { color: var(--border); font-size: .8rem; line-height: 1; }
+  .trace-connector-ms {
+    font-size: .65rem;
+    color: var(--text-dim);
+    letter-spacing: .04em;
+  }
+
+  .trace-answer-ips {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 6px;
+  }
+  .trace-answer-ip-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    background: #0a1a0a;
+    border-radius: 4px;
+    border: 1px solid #1a4a30;
+    font-size: .75rem;
+    flex-wrap: wrap;
+  }
+
+  .trace-query-summary {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 8px 12px;
+    margin-bottom: 12px;
+    font-size: .75rem;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .trace-query-label { color: var(--text-dim); text-transform: uppercase; letter-spacing: .06em; font-size: .68rem; }
+  .trace-query-status { font-weight: 700; }
+  .status-noerror { color: var(--green); }
+  .status-fail    { color: var(--red); }
+
+  .trace-geo-loading { color: var(--text-dim); font-style: italic; font-size: .7rem; }
 </style>
 </head>
 <body>
 
 <div class="header">
-  <img src="/static/logo.svg" alt="DNS Monitor" style="height:36px;width:36px">
-  <h1>DNS Monitor — Admin</h1>
-  <a href="/admin/logout" class="btn btn-cancel" style="font-size:.75rem;padding:4px 12px;text-decoration:none">Sair</a>
+  <img src="/static/logo.svg" alt="" style="height:32px;width:32px;flex-shrink:0">
+  <h1>DNS Monitor <span>// Admin</span></h1>
+  <a href="/admin/logout" class="btn-logout">Sair</a>
   <div class="token-wrap">
     <label for="token-input">Token</label>
-    <input type="password" id="token-input" placeholder="Bearer token do backend" autocomplete="off">
+    <input type="password" id="token-input" placeholder="Bearer token" autocomplete="off">
   </div>
-  <span class="refresh-info">Atualiza em <span id="countdown">5:00</span></span>
+  <span class="refresh-info">REFRESH EM <span id="countdown">5:00</span></span>
 </div>
 
 <!-- Tabela de agentes -->
@@ -241,15 +682,16 @@
           <th>Localização</th>
           <th>Cliente</th>
           <th>Status</th>
-          <th>CPU %</th>
-          <th>RAM %</th>
-          <th>Serviço DNS</th>
-          <th>DNS ativo</th>
+          <th>CPU</th>
+          <th>RAM</th>
+          <th>Serviço</th>
+          <th>DNS</th>
+          <th>Versão</th>
           <th>Último heartbeat</th>
           <th>Ações</th>
         </tr>
       </thead>
-      <tbody id="tbody-agents"><tr><td colspan="10" class="dim" style="padding:16px">Carregando…</td></tr></tbody>
+      <tbody id="tbody-agents"><tr><td colspan="11" class="dim" style="padding:14px">Carregando…</td></tr></tbody>
     </table>
   </div>
 </div>
@@ -273,7 +715,7 @@
           <th>Resultado</th>
         </tr>
       </thead>
-      <tbody id="tbody-history"><tr><td colspan="7" class="dim" style="padding:16px">Carregando…</td></tr></tbody>
+      <tbody id="tbody-history"><tr><td colspan="7" class="dim" style="padding:14px">Carregando…</td></tr></tbody>
     </table>
   </div>
 </div>
@@ -292,7 +734,7 @@
     </div>
     <div class="field">
       <label>Notas</label>
-      <textarea id="edit-notes" placeholder="Observações livres…"></textarea>
+      <textarea id="edit-notes" placeholder="Observações…"></textarea>
     </div>
     <div class="field">
       <label>Status do cliente</label>
@@ -308,8 +750,62 @@
       </div>
     </div>
     <div class="modal-actions">
-      <button class="btn btn-cancel" onclick="closeModal()">Cancelar</button>
-      <button class="btn btn-primary" onclick="saveEdit()">Salvar</button>
+      <button class="btn btn-cancel" onclick="closeEditModal()">CANCELAR</button>
+      <button class="btn btn-primary" onclick="saveEdit()">SALVAR</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal de diagnóstico -->
+<div class="modal-backdrop" id="diag-modal">
+  <div class="modal modal-diag">
+    <h3>Diagnóstico Remoto</h3>
+    <div class="diag-hostname" id="diag-hostname-label">— hostname —</div>
+    <div class="diag-script-select">
+      <select id="diag-script-select">
+        <option value="bind9_validate">Bind9 — Validação completa</option>
+        <option value="dig_test">DIG — Teste de resolução DNS</option>
+      </select>
+      <button class="btn btn-run" id="diag-run-btn" onclick="runDiagnostic()">▶ EXECUTAR</button>
+    </div>
+    <div id="diag-result-area"></div>
+    <div class="modal-actions">
+      <button class="btn btn-cancel" onclick="closeDiagModal()">FECHAR</button>
+    </div>
+  </div>
+</div>
+
+<!-- Menu de ações por agente (global, reposicionado via JS) -->
+<div id="agent-menu" role="menu" aria-label="Ações do agente"></div>
+
+<!-- Modal de DNS Trace -->
+<div class="modal-backdrop" id="trace-modal">
+  <div class="modal modal-trace">
+    <h3>DNS Trace</h3>
+    <div class="diag-hostname" id="trace-hostname-label">— hostname —</div>
+    <div class="trace-controls">
+      <div class="field">
+        <label>Domínio</label>
+        <input type="text" id="trace-domain" placeholder="ex: google.com" value="google.com">
+      </div>
+      <div class="field resolver-field">
+        <label>Resolver</label>
+        <select id="trace-resolver">
+          <option value="127.0.0.1">127.0.0.1 (local)</option>
+          <option value="8.8.8.8">8.8.8.8 (Google)</option>
+          <option value="1.1.1.1">1.1.1.1 (Cloudflare)</option>
+          <option value="custom">Personalizado…</option>
+        </select>
+      </div>
+      <div class="field resolver-field" id="trace-custom-wrap" style="display:none">
+        <label>IP do resolver</label>
+        <input type="text" id="trace-custom-resolver" placeholder="ex: 192.168.1.1">
+      </div>
+      <button class="btn btn-trace" id="trace-run-btn" onclick="runTrace()" style="padding:6px 16px;font-size:.78rem;margin-bottom:0;align-self:flex-end">▶ TRACE</button>
+    </div>
+    <div id="trace-area"></div>
+    <div class="modal-actions">
+      <button class="btn btn-cancel" onclick="closeTraceModal()">FECHAR</button>
     </div>
   </div>
 </div>
@@ -319,6 +815,9 @@
 <script>
   const REFRESH_INTERVAL = 300;
   let editingHostname = null;
+  let diagHostname    = null;
+  let diagPollTimer   = null;
+  let serverVersion   = null;   // versão do agente disponível no servidor
 
   function token() {
     return document.getElementById('token-input').value.trim();
@@ -366,9 +865,22 @@
     if (val == null) return '<span class="dim">—</span>';
     const n = parseFloat(val).toFixed(1);
     let cls = 'metric-ok';
-    if (val >= critAt)  cls = 'metric-crit';
+    if (val >= critAt)      cls = 'metric-crit';
     else if (val >= warnAt) cls = 'metric-warn';
     return `<span class="metric ${cls}">${n}%</span>`;
+  }
+
+  function isOutdated(agentVer) {
+    if (!serverVersion || !agentVer) return false;
+    return agentVer !== serverVersion;
+  }
+
+  function versionCell(agentVer) {
+    if (!agentVer) return '<span class="dim">—</span>';
+    if (!serverVersion) return `<span class="version-badge version-unknown">${esc(agentVer)}</span>`;
+    if (agentVer === serverVersion)
+      return `<span class="version-badge version-ok">${esc(agentVer)}</span>`;
+    return `<span class="version-badge version-old" title="Servidor: ${esc(serverVersion)}">${esc(agentVer)} ↑${esc(serverVersion)}</span>`;
   }
 
   function fmtDate(iso) {
@@ -392,72 +904,66 @@
 
   // ── Send command ───────────────────────────────────────────────────────────
   async function sendCommand(hostname, command, btn) {
-    if (!token()) { toast('Insira o token antes de enviar comandos.', false); return; }
+    if (!token()) { toast('INSIRA O TOKEN ANTES DE ENVIAR COMANDOS.', false); return; }
     if (command === 'disable') {
       if (!confirm(`Desabilitar o serviço DNS em "${hostname}"?\nO serviço não iniciará no boot.`)) return;
     }
-    btn.disabled = true;
+    if (btn) btn.disabled = true;
     try {
       await apiFetch('/commands', {
         method: 'POST',
         body: JSON.stringify({ hostname, command, issued_by: 'admin-panel' }),
       });
-      const labels = { restart: 'Restart', enable: 'Enable', disable: 'Disable' };
-      toast(`"${labels[command] || command}" enfileirado para ${hostname}.`);
+      toast(`"${command.toUpperCase()}" enfileirado para ${hostname}.`);
       await loadHistory();
     } catch (e) {
       toast(`Erro: ${e.message}`, false);
     } finally {
-      btn.disabled = false;
+      if (btn) btn.disabled = false;
     }
   }
 
   // ── Delete agent ───────────────────────────────────────────────────────────
   async function deleteAgent(hostname, btn) {
-    if (!token()) { toast('Insira o token antes de remover agentes.', false); return; }
-    if (!confirm(`Remover "${hostname}" do banco de dados?\n\nTodos os dados históricos (métricas, heartbeats, checks DNS) serão apagados permanentemente.`)) return;
+    if (!token()) { toast('INSIRA O TOKEN ANTES DE REMOVER AGENTES.', false); return; }
+    if (!confirm(`Remover "${hostname}" do banco de dados?\n\nTodos os dados históricos serão apagados permanentemente.`)) return;
     if (!confirm(`Confirmar remoção definitiva de "${hostname}"?`)) return;
-
-    btn.disabled = true;
+    if (btn) btn.disabled = true;
     try {
       await apiFetch(`/agents/${encodeURIComponent(hostname)}`, { method: 'DELETE' });
       toast(`Agente "${hostname}" removido.`);
       await loadAgents();
     } catch (e) {
       toast(`Erro ao remover: ${e.message}`, false);
-      btn.disabled = false;
+      if (btn) btn.disabled = false;
     }
   }
 
   // ── Edit modal ─────────────────────────────────────────────────────────────
-  // Cache dos dados dos agentes para preencher o modal
   let agentsCache = [];
 
   function openEditModal(hostname) {
-    if (!token()) { toast('Insira o token antes de editar.', false); return; }
+    if (!token()) { toast('INSIRA O TOKEN ANTES DE EDITAR.', false); return; }
     editingHostname = hostname;
     const a = agentsCache.find(x => x.hostname === hostname) || {};
-    document.getElementById('modal-title').textContent = `Editar — ${hostname}`;
+    document.getElementById('modal-title').textContent = `EDITAR — ${hostname}`;
     document.getElementById('edit-display-name').value = a.display_name || '';
     document.getElementById('edit-location').value     = a.location     || '';
     document.getElementById('edit-notes').value        = a.notes        || '';
-
     const isActive = a.active !== false;
     const cb = document.getElementById('edit-active');
     cb.checked = isActive;
     document.getElementById('edit-active-label').textContent = isActive ? 'Ativo' : 'Inativo';
     document.getElementById('edit-inactive-warning').style.display = isActive ? 'none' : 'block';
-
     document.getElementById('edit-modal').classList.add('open');
     document.getElementById('edit-display-name').focus();
   }
 
-  function closeModal() {
+  function closeEditModal() {
     document.getElementById('edit-modal').classList.remove('open');
     editingHostname = null;
   }
 
-  // Atualiza label e aviso ao mudar o toggle no modal
   document.getElementById('edit-active').addEventListener('change', function() {
     document.getElementById('edit-active-label').textContent = this.checked ? 'Ativo' : 'Inativo';
     document.getElementById('edit-inactive-warning').style.display = this.checked ? 'none' : 'block';
@@ -467,7 +973,6 @@
     if (!editingHostname) return;
     const active = document.getElementById('edit-active').checked;
     const a = agentsCache.find(x => x.hostname === editingHostname) || {};
-    // Confirma desativação
     if (!active && a.active !== false) {
       if (!confirm(`Marcar "${editingHostname}" como inativo?\n\nO agente será removido automaticamente em 3 dias se não for reativado.`)) return;
     }
@@ -483,17 +988,277 @@
         body: JSON.stringify(body),
       });
       toast(`Dados de "${editingHostname}" salvos.`);
-      closeModal();
+      closeEditModal();
       await loadAgents();
     } catch (e) {
       toast(`Erro ao salvar: ${e.message}`, false);
     }
   }
 
-  // Fechar modal clicando fora
   document.getElementById('edit-modal').addEventListener('click', e => {
-    if (e.target === e.currentTarget) closeModal();
+    if (e.target === e.currentTarget) closeEditModal();
   });
+
+  // ── Diagnostic modal ───────────────────────────────────────────────────────
+  function openDiagModal(hostname) {
+    if (!token()) { toast('INSIRA O TOKEN ANTES DE EXECUTAR DIAGNÓSTICO.', false); return; }
+    diagHostname = hostname;
+    document.getElementById('diag-hostname-label').textContent = `// ${hostname}`;
+    document.getElementById('diag-result-area').innerHTML = '';
+    document.getElementById('diag-run-btn').disabled = false;
+    document.getElementById('diag-modal').classList.add('open');
+  }
+
+  function closeDiagModal() {
+    document.getElementById('diag-modal').classList.remove('open');
+    if (diagPollTimer) { clearInterval(diagPollTimer); diagPollTimer = null; }
+    diagHostname = null;
+  }
+
+  document.getElementById('diag-modal').addEventListener('click', e => {
+    if (e.target === e.currentTarget) closeDiagModal();
+  });
+
+  async function runDiagnostic() {
+    if (!diagHostname) return;
+    const scriptId = document.getElementById('diag-script-select').value;
+    const runBtn   = document.getElementById('diag-run-btn');
+    const area     = document.getElementById('diag-result-area');
+
+    runBtn.disabled = true;
+    area.innerHTML = `
+      <div class="diag-result">
+        <div class="diag-waiting">
+          <div class="spinner"></div>
+          <span>Enfileirando comando para <strong>${esc(diagHostname)}</strong>…</span>
+        </div>
+      </div>`;
+
+    let cmdId;
+    try {
+      const resp = await apiFetch('/commands', {
+        method: 'POST',
+        body: JSON.stringify({
+          hostname: diagHostname,
+          command: 'run_script',
+          params: scriptId,
+          issued_by: 'admin-panel',
+          expires_hours: 1,
+        }),
+      });
+      cmdId = resp.id;
+    } catch (e) {
+      area.innerHTML = `<div class="diag-result"><div class="diag-error">Erro ao criar comando: ${esc(e.message)}</div></div>`;
+      runBtn.disabled = false;
+      return;
+    }
+
+    area.innerHTML = `
+      <div class="diag-result">
+        <div class="diag-waiting">
+          <div class="spinner"></div>
+          <span>Aguardando o agente executar o diagnóstico… (id=${cmdId})</span>
+        </div>
+        <div class="dim" style="margin-top:8px;font-size:.7rem">O agente executa no próximo poll de comandos.</div>
+      </div>`;
+
+    let attempts = 0;
+    const maxAttempts = 40; // 40 × 3s = 2 min
+    diagPollTimer = setInterval(async () => {
+      attempts++;
+      if (attempts > maxAttempts) {
+        clearInterval(diagPollTimer);
+        diagPollTimer = null;
+        area.innerHTML = `<div class="diag-result"><div class="diag-waiting"><span>Timeout: o agente não respondeu em 2 minutos. Verifique o histórico de comandos.</span></div></div>`;
+        runBtn.disabled = false;
+        return;
+      }
+      try {
+        const cmd = await apiFetch(`/commands/${cmdId}/status`);
+        if (cmd.status === 'pending') return;
+        clearInterval(diagPollTimer);
+        diagPollTimer = null;
+        runBtn.disabled = false;
+        renderDiagResult(cmd);
+        await loadHistory();
+      } catch (_) { /* continua polling */ }
+    }, 3000);
+  }
+
+  function renderDiagResult(cmd) {
+    const area = document.getElementById('diag-result-area');
+    if (cmd.status === 'failed') {
+      area.innerHTML = `<div class="diag-result"><div class="diag-error">Falha: ${esc(cmd.result || 'Erro desconhecido')}</div></div>`;
+      return;
+    }
+    let data;
+    try {
+      data = JSON.parse(cmd.result);
+    } catch (_) {
+      area.innerHTML = `<div class="diag-result"><div class="dim" style="white-space:pre-wrap;font-size:.78rem">${esc(cmd.result)}</div></div>`;
+      return;
+    }
+    const ok = data.error_count === 0;
+    const checksHtml = (data.checks || []).map(c => {
+      const iconClass = { ok:'icon-ok', fail:'icon-fail', skip:'icon-skip', info:'icon-info', warn:'icon-warn' }[c.status] || 'icon-skip';
+      return `<div class="diag-check">
+        <span class="diag-check-icon ${iconClass}">${c.status}</span>
+        <span>${esc(c.message)}</span>
+      </div>`;
+    }).join('');
+
+    area.innerHTML = `
+      <div class="diag-result">
+        <div class="diag-header">
+          <span class="pill ${ok ? 'pill-done' : 'pill-failed'}">${ok ? 'SAUDÁVEL' : 'PROBLEMAS'}</span>
+          <span class="diag-summary-text ${ok ? 'diag-summary-ok' : 'diag-summary-fail'}">${esc(data.summary || '')}</span>
+          <span class="dim" style="margin-left:auto">${data.checks ? data.checks.length : 0} checks</span>
+        </div>
+        <div class="diag-checks">${checksHtml}</div>
+      </div>`;
+  }
+
+  // ── Agent action menu ──────────────────────────────────────────────────────
+  let _menuTrigger = null;
+
+  function openAgentMenu(event, hostname, agentVersion, displayName) {
+    event.stopPropagation();
+    const trigger  = event.currentTarget;
+    const menu     = document.getElementById('agent-menu');
+    const outdated = isOutdated(agentVersion);
+    const label    = displayName || hostname;
+
+    // Toggle: fechar se já está aberto para este trigger
+    if (_menuTrigger === trigger && menu.classList.contains('open')) {
+      closeAgentMenu(); return;
+    }
+    if (_menuTrigger) closeAgentMenu();
+    _menuTrigger = trigger;
+    trigger.classList.add('active');
+
+    // ── Montar itens ──────────────────────────────────────────────────────────
+    const updateBadge = outdated
+      ? `<span class="menu-badge" style="background:#2a1e0a;color:var(--yellow);border:1px solid #5a3d10">${esc(agentVersion||'?')} → ${esc(serverVersion||'?')}</span>`
+      : '';
+
+    menu.innerHTML = `
+      <div class="menu-header">
+        <div class="menu-header-hostname">${esc(label)}</div>
+        ${displayName && displayName !== hostname ? `<div class="menu-header-sub">${esc(hostname)}</div>` : ''}
+      </div>
+
+      <div class="menu-group-label">Serviço DNS</div>
+      <div class="menu-item mi-restart" onclick="_menuAction(()=>sendCommand('${esc(hostname)}','restart',null))">
+        <span class="menu-icon">↺</span><span class="menu-label">Restart</span>
+      </div>
+      <div class="menu-item mi-enable"  onclick="_menuAction(()=>sendCommand('${esc(hostname)}','enable',null))">
+        <span class="menu-icon">◉</span><span class="menu-label">Enable</span>
+      </div>
+      <div class="menu-item mi-disable" onclick="_menuAction(()=>sendCommand('${esc(hostname)}','disable',null))">
+        <span class="menu-icon">○</span><span class="menu-label">Disable</span>
+      </div>
+
+      <div class="menu-divider"></div>
+      <div class="menu-group-label">Diagnóstico</div>
+      <div class="menu-item mi-diag"  onclick="_menuAction(()=>openDiagModal('${esc(hostname)}'))">
+        <span class="menu-icon">⬡</span><span class="menu-label">Validar serviço</span>
+      </div>
+      <div class="menu-item mi-trace" onclick="_menuAction(()=>openTraceModal('${esc(hostname)}'))">
+        <span class="menu-icon">⊕</span><span class="menu-label">DNS Trace</span>
+      </div>
+
+      <div class="menu-divider"></div>
+      <div class="menu-group-label">Agente</div>
+      ${outdated ? `
+      <div class="menu-item mi-update" onclick="_menuAction(()=>sendUpdate('${esc(hostname)}',null))">
+        <span class="menu-icon">↑</span><span class="menu-label">Atualizar</span>${updateBadge}
+      </div>` : ''}
+      <div class="menu-item mi-edit"   onclick="_menuAction(()=>openEditModal('${esc(hostname)}'))">
+        <span class="menu-icon">✎</span><span class="menu-label">Editar</span>
+      </div>
+      <div class="menu-item mi-delete" onclick="_menuAction(()=>deleteAgent('${esc(hostname)}',null))">
+        <span class="menu-icon">⊗</span><span class="menu-label">Deletar</span>
+      </div>
+    `;
+
+    // ── Posicionar ────────────────────────────────────────────────────────────
+    menu.classList.add('open');
+    const rect   = trigger.getBoundingClientRect();
+    const mw     = menu.offsetWidth  || 220;
+    const mh     = menu.offsetHeight || 280;
+    const vw     = window.innerWidth;
+    const vh     = window.innerHeight;
+    const gap    = 6;
+
+    // Horizontal: alinhar à direita do trigger, garantir que não saia da tela
+    let left = rect.right - mw;
+    if (left < 8) left = 8;
+    if (left + mw > vw - 8) left = vw - mw - 8;
+
+    // Vertical: abrir para baixo se couber, senão para cima
+    let top;
+    if (rect.bottom + gap + mh <= vh) {
+      top = rect.bottom + gap;
+    } else {
+      top = rect.top - gap - mh;
+      if (top < 8) top = rect.bottom + gap; // fallback se também não couber acima
+    }
+
+    menu.style.left = `${left}px`;
+    menu.style.top  = `${top}px`;
+  }
+
+  function _menuAction(fn) {
+    closeAgentMenu();
+    fn();
+  }
+
+  function closeAgentMenu() {
+    const menu = document.getElementById('agent-menu');
+    menu.classList.remove('open');
+    if (_menuTrigger) { _menuTrigger.classList.remove('active'); _menuTrigger = null; }
+  }
+
+  // Fechar ao clicar fora ou pressionar ESC
+  document.addEventListener('click', e => {
+    const menu = document.getElementById('agent-menu');
+    if (menu.classList.contains('open') && !menu.contains(e.target)) {
+      closeAgentMenu();
+    }
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeAgentMenu();
+  });
+
+  // ── Agent update ───────────────────────────────────────────────────────────
+  async function fetchServerVersion() {
+    if (!token()) return;
+    try {
+      const data = await apiFetch('/agent/version');
+      serverVersion = data.version || null;
+    } catch (_) { serverVersion = null; }
+  }
+
+  async function sendUpdate(hostname, btn) {
+    if (!token()) { toast('INSIRA O TOKEN.', false); return; }
+    if (!confirm(
+      `Atualizar agente em "${hostname}"?\n\n` +
+      `Versão atual do servidor: ${serverVersion || '?'}\n\n` +
+      `O agente baixará o novo arquivo, verificará o checksum e reiniciará automaticamente.`
+    )) return;
+    if (btn) btn.disabled = true;
+    try {
+      await apiFetch('/commands', {
+        method: 'POST',
+        body: JSON.stringify({ hostname, command: 'update_agent', issued_by: 'admin-panel' }),
+      });
+      toast(`UPDATE enfileirado para ${hostname}. Aguarde o próximo poll do agente.`);
+      await loadHistory();
+    } catch (e) {
+      toast(`Erro: ${e.message}`, false);
+      if (btn) btn.disabled = false;
+    }
+  }
 
   // ── Load agents ────────────────────────────────────────────────────────────
   async function loadAgents() {
@@ -505,24 +1270,21 @@
         `${agents.filter(a => a.agent_status === 'online').length} online / ${agents.length} total`;
 
       if (!agents.length) {
-        tbody.innerHTML = '<tr><td colspan="10" class="dim" style="padding:16px">Nenhum agente registrado.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="11" class="dim" style="padding:14px">Nenhum agente registrado.</td></tr>';
         return;
       }
 
       tbody.innerHTML = agents.map(a => {
         const isActive = a.active !== false;
         const purgeDate = a.inactive_since
-          ? new Date(new Date(a.inactive_since).getTime() + 3 * 86400000)
-          : null;
-        const daysLeft = purgeDate
-          ? Math.ceil((purgeDate - Date.now()) / 86400000)
-          : null;
+          ? new Date(new Date(a.inactive_since).getTime() + 3 * 86400000) : null;
+        const daysLeft = purgeDate ? Math.ceil((purgeDate - Date.now()) / 86400000) : null;
         const clientCell = isActive
           ? '<span class="pill pill-client-active">Ativo</span>'
-          : `<span class="pill pill-client-inactive">Inativo</span>${daysLeft !== null ? `<div class="purge-warning">Apaga em ${daysLeft}d</div>` : ''}`;
+          : `<span class="pill pill-client-inactive">Inativo</span>${daysLeft !== null ? `<div class="purge-warning">apaga em ${daysLeft}d</div>` : ''}`;
 
         return `
-        <tr${isActive ? '' : ' style="opacity:.6"'}>
+        <tr${isActive ? '' : ' style="opacity:.55"'}>
           <td>
             <strong>${esc(a.hostname)}</strong>
             ${a.display_name && a.display_name !== a.hostname ? `<br><span class="dim">${esc(a.display_name)}</span>` : ''}
@@ -534,20 +1296,18 @@
           <td>${metricCell(a.ram_percent, 85, 95)}</td>
           <td><span class="dim">${esc(a.dns_service_name) || '—'}</span></td>
           <td>${activePill(a.dns_service_active)}</td>
+          <td>${versionCell(a.agent_version)}</td>
           <td><span class="dim">${fmtDate(a.last_seen)}</span></td>
           <td>
-            <div class="actions">
-              <button class="btn btn-restart" onclick="sendCommand('${esc(a.hostname)}','restart',this)">Restart</button>
-              <button class="btn btn-enable"  onclick="sendCommand('${esc(a.hostname)}','enable',this)">Enable</button>
-              <button class="btn btn-disable" onclick="sendCommand('${esc(a.hostname)}','disable',this)">Disable</button>
-              <button class="btn btn-edit"    onclick="openEditModal('${esc(a.hostname)}')">Edit</button>
-              <button class="btn btn-delete"  onclick="deleteAgent('${esc(a.hostname)}',this)">Delete</button>
-            </div>
+            <button class="agent-menu-trigger"
+              onclick="openAgentMenu(event,'${esc(a.hostname)}','${esc(a.agent_version||'')}','${esc(a.display_name||'')}')">
+              ⋯
+            </button>
           </td>
         </tr>`;
       }).join('');
     } catch (e) {
-      tbody.innerHTML = `<tr><td colspan="10" class="error-msg">Erro ao carregar agentes: ${e.message}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="11" class="error-msg">Erro ao carregar agentes: ${e.message}</td></tr>`;
     }
   }
 
@@ -555,7 +1315,7 @@
   async function loadHistory() {
     const tbody = document.getElementById('tbody-history');
     if (!token()) {
-      tbody.innerHTML = '<tr><td colspan="7" class="dim" style="padding:16px">Token necessário para ver o histórico.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" class="dim" style="padding:14px">Token necessário para ver o histórico.</td></tr>';
       return;
     }
     try {
@@ -563,29 +1323,336 @@
       document.getElementById('badge-history').textContent = `${rows.length} recentes`;
 
       if (!rows.length) {
-        tbody.innerHTML = '<tr><td colspan="7" class="dim" style="padding:16px">Nenhum comando registrado.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="dim" style="padding:14px">Nenhum comando registrado.</td></tr>';
         return;
       }
 
-      tbody.innerHTML = rows.map(r => `
+      tbody.innerHTML = rows.map(r => {
+        let resultPreview = '—';
+        if (r.result) {
+          // Para run_script, mostrar resumo do JSON
+          if (r.command === 'run_script') {
+            try {
+              const d = JSON.parse(r.result);
+              resultPreview = `<span class="pill ${d.error_count === 0 ? 'pill-done' : 'pill-failed'}" style="cursor:pointer" onclick="showResultModal(${esc(JSON.stringify(r.result))})">
+                ${d.error_count === 0 ? 'SAUDÁVEL' : d.error_count + ' FALHA(S)'} — ${esc(d.summary || '')}
+              </span>`;
+            } catch (_) {
+              resultPreview = `<span class="dim">${esc(r.result).slice(0,60)}${r.result.length > 60 ? '…' : ''}</span>`;
+            }
+          } else {
+            resultPreview = `<span class="dim" title="${esc(r.result)}">${esc(r.result).slice(0,60)}${r.result.length > 60 ? '…' : ''}</span>`;
+          }
+        }
+        return `
         <tr>
           <td><strong>${esc(r.hostname)}</strong></td>
-          <td><code>${esc(r.command)}</code></td>
+          <td><code>${esc(r.command)}${r.command === 'run_script' && r.params ? ` [${esc(r.params)}]` : ''}</code></td>
           <td><span class="dim">${esc(r.issued_by) || '—'}</span></td>
           <td><span class="dim">${fmtDate(r.issued_at)}</span></td>
           <td><span class="dim">${fmtDate(r.executed_at)}</span></td>
-          <td><span class="pill pill-${esc(r.status)}">${esc(r.status)}</span></td>
-          <td><span class="dim" title="${esc(r.result)}">${r.result ? esc(r.result).slice(0,60) + (r.result.length > 60 ? '…' : '') : '—'}</span></td>
-        </tr>
-      `).join('');
+          <td><span class="pill pill-${esc(r.status)}">${esc(r.status).toUpperCase()}</span></td>
+          <td>${resultPreview}</td>
+        </tr>`;
+      }).join('');
     } catch (e) {
       tbody.innerHTML = `<tr><td colspan="7" class="error-msg">Erro ao carregar histórico: ${e.message}</td></tr>`;
     }
   }
 
+  // ── Result modal (para ver resultado completo do diagnóstico) ──────────────
+  function showResultModal(resultJson) {
+    let data;
+    try { data = JSON.parse(resultJson); } catch (_) { return; }
+    // Reutiliza o modal de diagnóstico só para exibir
+    document.getElementById('diag-hostname-label').textContent = `// resultado`;
+    document.getElementById('diag-result-area').innerHTML = '';
+    document.getElementById('diag-run-btn').style.display = 'none';
+    document.getElementById('diag-script-select').parentElement.style.display = 'none';
+    document.getElementById('diag-modal').classList.add('open');
+    renderDiagResult({ status: 'done', result: resultJson });
+  }
+
+  // ── DNS Trace modal ────────────────────────────────────────────────────────
+  let traceHostname  = null;
+  let tracePollTimer = null;
+
+  document.getElementById('trace-resolver').addEventListener('change', function () {
+    document.getElementById('trace-custom-wrap').style.display =
+      this.value === 'custom' ? '' : 'none';
+  });
+
+  function openTraceModal(hostname) {
+    if (!token()) { toast('INSIRA O TOKEN ANTES DE EXECUTAR TRACE.', false); return; }
+    traceHostname = hostname;
+    document.getElementById('trace-hostname-label').textContent = `// ${hostname}`;
+    document.getElementById('trace-area').innerHTML = '';
+    document.getElementById('trace-run-btn').disabled = false;
+    document.getElementById('trace-modal').classList.add('open');
+    document.getElementById('trace-domain').focus();
+  }
+
+  function closeTraceModal() {
+    document.getElementById('trace-modal').classList.remove('open');
+    if (tracePollTimer) { clearInterval(tracePollTimer); tracePollTimer = null; }
+    traceHostname = null;
+  }
+
+  document.getElementById('trace-modal').addEventListener('click', e => {
+    if (e.target === e.currentTarget) closeTraceModal();
+  });
+
+  function getTraceResolver() {
+    const sel = document.getElementById('trace-resolver').value;
+    if (sel === 'custom') return document.getElementById('trace-custom-resolver').value.trim() || '127.0.0.1';
+    return sel;
+  }
+
+  async function runTrace() {
+    if (!traceHostname) return;
+    const domain   = document.getElementById('trace-domain').value.trim();
+    const resolver = getTraceResolver();
+    if (!domain) { toast('Informe um domínio.', false); return; }
+
+    const runBtn = document.getElementById('trace-run-btn');
+    const area   = document.getElementById('trace-area');
+    runBtn.disabled = true;
+
+    area.innerHTML = `<div class="trace-area"><div class="diag-waiting"><div class="spinner"></div><span>Enfileirando trace para <strong>${esc(traceHostname)}</strong>…</span></div></div>`;
+
+    let cmdId;
+    try {
+      const resp = await apiFetch('/commands', {
+        method: 'POST',
+        body: JSON.stringify({
+          hostname:     traceHostname,
+          command:      'run_script',
+          params:       JSON.stringify({ script: 'dig_trace', domain, resolver }),
+          issued_by:    'admin-panel',
+          expires_hours: 1,
+        }),
+      });
+      cmdId = resp.id;
+    } catch (e) {
+      area.innerHTML = `<div class="trace-area"><div class="diag-error">Erro ao criar comando: ${esc(e.message)}</div></div>`;
+      runBtn.disabled = false;
+      return;
+    }
+
+    area.innerHTML = `
+      <div class="trace-area">
+        <div class="diag-waiting"><div class="spinner"></div>
+        <span>Aguardando agente executar dig +trace… (cmd id=${cmdId})</span></div>
+        <div class="dim" style="margin-top:8px;font-size:.7rem">O agente executa no próximo poll de comandos.</div>
+      </div>`;
+
+    let attempts = 0;
+    tracePollTimer = setInterval(async () => {
+      if (++attempts > 40) {
+        clearInterval(tracePollTimer); tracePollTimer = null;
+        area.innerHTML = `<div class="trace-area"><div class="diag-waiting"><span>Timeout: agente não respondeu em 2 min.</span></div></div>`;
+        runBtn.disabled = false;
+        return;
+      }
+      try {
+        const cmd = await apiFetch(`/commands/${cmdId}/status`);
+        if (cmd.status === 'pending') return;
+        clearInterval(tracePollTimer); tracePollTimer = null;
+        runBtn.disabled = false;
+        await renderTraceResult(cmd);
+        await loadHistory();
+      } catch (_) {}
+    }, 3000);
+  }
+
+  async function renderTraceResult(cmd) {
+    const area = document.getElementById('trace-area');
+    if (cmd.status === 'failed') {
+      area.innerHTML = `<div class="trace-area"><div class="diag-error">Falha: ${esc(cmd.result || 'Erro desconhecido')}</div></div>`;
+      return;
+    }
+    let data;
+    try { data = JSON.parse(cmd.result); } catch (_) {
+      area.innerHTML = `<div class="trace-area"><pre style="font-size:.75rem;color:var(--text-mid);white-space:pre-wrap">${esc(cmd.result)}</pre></div>`;
+      return;
+    }
+    if (data.error && !data.trace) {
+      area.innerHTML = `<div class="trace-area"><div class="diag-error">${esc(data.error)}</div></div>`;
+      return;
+    }
+
+    // Collect all IPs for geolocation
+    const ips = new Set();
+    (data.trace || []).forEach(h => { if (h.server_ip) ips.add(h.server_ip); });
+    (data.query?.answers || []).forEach(a => { if (a.value) ips.add(a.value); });
+
+    // Show skeleton while fetching geo
+    area.innerHTML = buildTraceHtml(data, {});
+    document.querySelectorAll('.trace-geo-loading').forEach(el => el.textContent = 'obtendo geo…');
+
+    let geoMap = {};
+    try { geoMap = await fetchGeo([...ips]); } catch (_) {}
+
+    // Re-render with geo data
+    area.innerHTML = buildTraceHtml(data, geoMap);
+  }
+
+  function buildTraceHtml(data, geoMap) {
+    const q = data.query || {};
+    const hops = data.trace || [];
+
+    // Query summary bar
+    const qStatus   = q.status || '?';
+    const qAnswers  = (q.answers || []).map(a => a.value).join(', ') || '—';
+    const qLatency  = q.latency_ms != null ? `${q.latency_ms}ms` : '?ms';
+    const qOk       = qStatus === 'NOERROR' && (q.answers || []).length > 0;
+    const qSumHtml  = `
+      <div class="trace-query-summary">
+        <span class="trace-query-label">Consulta direta</span>
+        <span class="trace-query-status ${qOk ? 'status-noerror' : 'status-fail'}">${esc(qStatus)}</span>
+        <span style="color:var(--text-mid)">${esc(qAnswers)}</span>
+        <span class="pill ${qOk ? 'pill-done' : 'pill-failed'}" style="font-size:.65rem">${qLatency}</span>
+        ${data.trace_error ? `<span style="color:var(--orange);font-size:.7rem">${esc(data.trace_error)}</span>` : ''}
+      </div>`;
+
+    if (!hops.length) {
+      return `<div class="trace-area">${qSumHtml}<div class="diag-waiting"><span>Sem dados de trace disponíveis.</span></div></div>`;
+    }
+
+    // Determine hop types
+    function hopType(i, total) {
+      if (i === 0) return ['ROOT', 'type-root'];
+      if (i === total - 1) return ['ANSWER', 'type-answer'];
+      const z = (hops[i].zone || '').split('.').filter(Boolean);
+      return z.length <= 1 ? ['TLD', 'type-tld'] : ['AUTH', 'type-auth'];
+    }
+
+    // Source node
+    let html = `<div class="trace-area">${qSumHtml}<div class="trace-path">`;
+    html += `
+      <div class="trace-node trace-node-source">
+        <div class="trace-node-header">
+          <span class="trace-hop-type type-source">SOURCE</span>
+        </div>
+        <div class="trace-server-line">
+          <span class="trace-ip">${esc(data.source_hostname || traceHostname || '?')}</span>
+        </div>
+        <div class="trace-geo-line">
+          <span class="trace-city">resolvendo via @${esc(data.resolver || '127.0.0.1')}</span>
+        </div>
+      </div>`;
+
+    // Hops
+    hops.forEach((hop, i) => {
+      const [typeLbl, typeCls] = hopType(i, hops.length);
+      const geo = geoMap[hop.server_ip] || null;
+      const geoHtml = geo
+        ? `<span class="trace-flag">${countryFlag(geo.countryCode)}</span>
+           <span class="trace-city">${esc(geo.city || '')}${geo.city && geo.countryCode ? ', ' : ''}${esc(geo.countryCode || '')}</span>
+           <span class="trace-isp">${esc(geo.isp || geo.org || '')}</span>`
+        : `<span class="trace-geo-loading">—</span>`;
+
+      const latMs = hop.latency_ms ?? null;
+      let latCls = 'lat-mid';
+      if (latMs != null) {
+        if (latMs < 20)       latCls = 'lat-fast';
+        else if (latMs < 100) latCls = 'lat-mid';
+        else if (latMs < 300) latCls = 'lat-slow';
+        else                  latCls = 'lat-dead';
+      }
+      const latBadge = latMs != null
+        ? `<span class="trace-latency ${latCls}">${latMs}ms</span>` : '';
+
+      const connMs = latMs != null ? `${latMs}ms` : '';
+      html += `
+      <div class="trace-connector">
+        <div class="trace-connector-line"></div>
+        <span class="trace-connector-arrow">▼</span>
+        ${connMs ? `<span class="trace-connector-ms">${connMs}</span>` : ''}
+        <div class="trace-connector-line"></div>
+      </div>
+      <div class="trace-node trace-node-hop">
+        <div class="trace-node-header">
+          <span class="trace-hop-num">${i + 1}</span>
+          <span class="trace-hop-zone">${esc(hop.zone || '?')}</span>
+          <span class="trace-hop-type ${typeCls}">${typeLbl}</span>
+        </div>
+        <div class="trace-server-line">
+          <span class="trace-ip">${esc(hop.server_ip)}</span>
+          ${hop.server_name && hop.server_name !== hop.server_ip
+            ? `<span class="trace-name">(${esc(hop.server_name)})</span>` : ''}
+        </div>
+        <div class="trace-geo-line">
+          ${geoHtml}
+          ${latBadge}
+        </div>
+        ${hop.a_records && hop.a_records.length
+          ? buildAnswerIps(hop.a_records, geoMap, true) : ''}
+      </div>`;
+    });
+
+    // Final answer IPs (from query)
+    const finalIps = (q.answers || []).map(a => a.value);
+    if (finalIps.length) {
+      html += `
+      <div class="trace-connector">
+        <div class="trace-connector-line"></div>
+        <span class="trace-connector-arrow">▼</span>
+        <div class="trace-connector-line"></div>
+      </div>
+      <div class="trace-node trace-node-answer">
+        <div class="trace-node-header">
+          <span class="trace-hop-type type-answer">DESTINO FINAL</span>
+          <span class="trace-hop-zone">${esc(data.domain || '')}</span>
+        </div>
+        ${buildAnswerIps(finalIps, geoMap, false)}
+      </div>`;
+    }
+
+    html += `</div></div>`;
+    return html;
+  }
+
+  function buildAnswerIps(ips, geoMap, compact) {
+    return `<div class="trace-answer-ips">` +
+      ips.map(ip => {
+        const geo = geoMap[ip] || null;
+        const geoTxt = geo
+          ? `${countryFlag(geo.countryCode)} ${geo.city || ''}${geo.city && geo.countryCode ? ', ' : ''}${geo.countryCode || ''} — ${geo.isp || geo.org || ''}`
+          : '';
+        return `<div class="trace-answer-ip-row">
+          <span class="trace-ip">${esc(ip)}</span>
+          ${geoTxt ? `<span class="trace-geo-line" style="flex:1">${esc(geoTxt)}</span>` : `<span class="trace-geo-loading">—</span>`}
+        </div>`;
+      }).join('') +
+    `</div>`;
+  }
+
+  function countryFlag(code) {
+    if (!code || code.length !== 2) return '🌐';
+    try {
+      return String.fromCodePoint(
+        ...[...code.toUpperCase()].map(c => 0x1F1E6 + c.charCodeAt(0) - 65)
+      );
+    } catch (_) { return '🌐'; }
+  }
+
+  async function fetchGeo(ips) {
+    if (!ips.length) return {};
+    const data = await apiFetch('/tools/geolocate', {
+      method: 'POST',
+      body: JSON.stringify({ ips }),
+    });
+    const map = {};
+    for (const item of data) {
+      if (item.query) map[item.query] = item;
+    }
+    return map;
+  }
+
   // ── Init ───────────────────────────────────────────────────────────────────
   async function loadAll() {
-    await Promise.all([loadAgents(), loadHistory()]);
+    await Promise.all([fetchServerVersion(), loadAgents(), loadHistory()]);
   }
 
   const savedToken = sessionStorage.getItem('dns_admin_token');
@@ -595,6 +1662,20 @@
     sessionStorage.setItem('dns_admin_token', e.target.value);
     loadAll();
   });
+
+  // Reset diag modal state on close (restore run btn and script select)
+  document.getElementById('diag-modal').addEventListener('click', e => {
+    if (e.target === e.currentTarget) {
+      document.getElementById('diag-run-btn').style.display = '';
+      document.getElementById('diag-script-select').parentElement.style.display = '';
+    }
+  });
+  const origCloseDiag = closeDiagModal;
+  closeDiagModal = function() {
+    document.getElementById('diag-run-btn').style.display = '';
+    document.getElementById('diag-script-select').parentElement.style.display = '';
+    origCloseDiag();
+  };
 
   loadAll();
 </script>

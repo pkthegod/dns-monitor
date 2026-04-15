@@ -243,6 +243,7 @@ ALTER TABLE agents ADD COLUMN IF NOT EXISTS inactive_since        TIMESTAMPTZ;
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS fingerprint           TEXT;
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS fingerprint_first_seen TIMESTAMPTZ;
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS fingerprint_last_seen  TIMESTAMPTZ;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS agent_version         TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_agents_fingerprint ON agents (fingerprint);
 
@@ -261,6 +262,7 @@ SELECT
     a.notes,
     a.dns_service          AS expected_dns_service,
     a.last_seen,
+    a.agent_version,
     CASE
         WHEN a.last_seen IS NULL                              THEN 'never_seen'
         WHEN a.last_seen < NOW() - INTERVAL '15 minutes'     THEN 'offline'
@@ -330,6 +332,8 @@ CREATE TABLE IF NOT EXISTS agent_commands (
                                                -- 'pending'|'done'|'failed'|'expired'
     result          TEXT                       -- saída do comando ou mensagem de erro
 );
+
+ALTER TABLE agent_commands ADD COLUMN IF NOT EXISTS params TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_cmd_hostname_status
     ON agent_commands (hostname, status)

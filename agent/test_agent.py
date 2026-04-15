@@ -1081,7 +1081,7 @@ class TestPollCommands:
         ]
         exec_calls = []
 
-        def fake_execute(command, confirm_token, cfg, logger):
+        def fake_execute(command, confirm_token, cfg, logger, params=None):
             exec_calls.append(command)
             return ("done", f"{command} OK")
 
@@ -1126,6 +1126,443 @@ class TestPollCommands:
         assert "test-host" in call_url
         headers = mock_get.call_args[1]["headers"]
         assert "Bearer test-token-abc123" in headers["Authorization"]
+
+
+# ===========================================================================
+# 15. _parse_diagnostic_output
+# ===========================================================================
+
+class TestParseDiagnosticOutput:
+    """Testa o parser de saída dos scripts de diagnóstico."""
+
+    def _parse(self, script_id, raw):
+        import dns_agent as da
+        return json.loads(da._parse_diagnostic_output(script_id, raw))
+
+    def test_all_ok_returns_healthy(self):
+        raw = "CHECK_OK Serviço rodando\nCHECK_OK Porta 53 em escuta\nSUMMARY errors=0"
+        result = self._parse("bind9_validate", raw)
+        assert result["script"] == "bind9_validate"
+        assert result["error_count"] == 0
+        assert result["summary"] == "Saudável"
+        assert len(result["checks"]) == 2
+        assert result["checks"][0]["status"] == "ok"
+
+    def test_fail_increments_error_count(self):
+        raw = "CHECK_OK ok\nCHECK_FAIL DNS falhou\nSUMMARY errors=1"
+        result = self._parse("dig_test", raw)
+        assert result["error_count"] == 1
+        assert result["checks"][1]["status"] == "fail"
+        assert "problema" in result["summary"]
+
+    def test_skip_and_info_parsed(self):
+        raw = "CHECK_SKIP ignorado\nCHECK_INFO informação\nSUMMARY errors=0"
+        result = self._parse("test", raw)
+        assert result["checks"][0]["status"] == "skip"
+        assert result["checks"][0]["message"] == "ignorado"
+        assert result["checks"][1]["status"] == "info"
+
+    def test_warn_parsed(self):
+        raw = "CHECK_WARN latência alta\nSUMMARY errors=0"
+        result = self._parse("test", raw)
+        assert result["checks"][0]["status"] == "warn"
+        assert result["checks"][0]["message"] == "latência alta"
+
+    def test_empty_output_healthy(self):
+        result = self._parse("test", "")
+        assert result["error_count"] == 0
+        assert result["summary"] == "Saudável"
+
+    def test_summary_overrides_count(self):
+        """SUMMARY errors=N deve ser a contagem oficial."""
+        raw = "CHECK_FAIL f1\nCHECK_FAIL f2\nSUMMARY errors=5"
+        result = self._parse("test", raw)
+        assert result["error_count"] == 5
+
+
+# ===========================================================================
+# 16. DIAGNOSTIC_SCRIPTS
+# ===========================================================================
+
+class TestDiagnosticScripts:
+    """Verifica scripts de diagnóstico disponíveis."""
+
+    def test_bind9_validate_exists(self):
+        import dns_agent as da
+        assert "bind9_validate" in da.DIAGNOSTIC_SCRIPTS
+        assert "#!/bin/bash" in da.DIAGNOSTIC_SCRIPTS["bind9_validate"]
+
+    def test_dig_test_exists(self):
+        import dns_agent as da
+        assert "dig_test" in da.DIAGNOSTIC_SCRIPTS
+        assert "dig" in da.DIAGNOSTIC_SCRIPTS["dig_test"]
+
+    def test_scripts_have_summary_line(self):
+        import dns_agent as da
+        for name, script in da.DIAGNOSTIC_SCRIPTS.items():
+            assert "SUMMARY errors=" in script, f"Script {name} falta SUMMARY"
+
+
+# ===========================================================================
+# 17. _execute_command — run_script e update_agent
+# ===========================================================================
+
+class TestExecuteCommandExtended:
+    """Testa run_script e update_agent no dispatch de _execute_command."""
+
+    def test_update_agent_routes_to_handler(self):
+        import dns_agent as da
+        cfg = make_cfg()
+        logger = make_logger()
+        with patch("dns_agent._execute_update_agent",
+                   return_value=("done", "Atualizado")) as mock_update:
+            status, result = da._execute_command("update_agent", None, cfg, logger)
+        assert status == "done"
+        mock_update.assert_called_once()
+
+    def test_run_script_known_script_executes(self):
+        import dns_agent as da
+        cfg = make_cfg()
+        logger = make_logger()
+        fake_output = "CHECK_OK tudo bem\nSUMMARY errors=0"
+        mock_proc = MagicMock()
+        mock_proc.stdout = fake_output
+        mock_proc.stderr = ""
+        mock_proc.returncode = 0
+
+        with patch("dns_agent.subprocess.run", return_value=mock_proc), \
+             patch("dns_agent.os.chmod"), \
+             patch("dns_agent.os.unlink"):
+            status, result = da._execute_command(
+                "run_script", None, cfg, logger, params="bind9_validate"
+            )
+        assert status == "done"
+        parsed = json.loads(result)
+        assert parsed["script"] == "bind9_validate"
+
+    def test_run_script_unknown_script_fails(self):
+        import dns_agent as da
+        cfg = make_cfg()
+        logger = make_logger()
+        status, result = da._execute_command(
+            "run_script", None, cfg, logger, params="nao_existe"
+        )
+        assert status == "failed"
+        assert "desconhecido" in result.lower() or "nao_existe" in result
+
+    def test_run_script_no_params_fails(self):
+        import dns_agent as da
+        cfg = make_cfg()
+        logger = make_logger()
+        status, result = da._execute_command(
+            "run_script", None, cfg, logger, params=""
+        )
+        assert status == "failed"
+
+    def test_run_script_json_params(self):
+        import dns_agent as da
+        cfg = make_cfg()
+        logger = make_logger()
+        fake_output = "CHECK_OK ok\nSUMMARY errors=0"
+        mock_proc = MagicMock()
+        mock_proc.stdout = fake_output
+        mock_proc.stderr = ""
+        mock_proc.returncode = 0
+
+        with patch("dns_agent.subprocess.run", return_value=mock_proc), \
+             patch("dns_agent.os.chmod"), \
+             patch("dns_agent.os.unlink"):
+            status, result = da._execute_command(
+                "run_script", None, cfg, logger,
+                params='{"script": "dig_test"}'
+            )
+        assert status == "done"
+
+    def test_run_script_dig_trace_dispatched(self):
+        import dns_agent as da
+        cfg = make_cfg()
+        logger = make_logger()
+        with patch("dns_agent._run_dig_trace",
+                   return_value=("done", '{"script":"dig_trace"}')) as mock_trace:
+            status, result = da._execute_command(
+                "run_script", None, cfg, logger,
+                params='{"script":"dig_trace", "domain":"example.com", "resolver":"8.8.8.8"}'
+            )
+        assert status == "done"
+        mock_trace.assert_called_once_with("example.com", "8.8.8.8", logger)
+
+    def test_run_script_timeout(self):
+        import dns_agent as da
+        import subprocess
+        cfg = make_cfg()
+        logger = make_logger()
+
+        with patch("dns_agent.subprocess.run",
+                   side_effect=subprocess.TimeoutExpired(["bash"], 60)), \
+             patch("dns_agent.os.chmod"), \
+             patch("dns_agent.os.unlink"):
+            status, result = da._execute_command(
+                "run_script", None, cfg, logger, params="bind9_validate"
+            )
+        assert status == "failed"
+        assert "Timeout" in result or "timeout" in result.lower()
+
+
+# ===========================================================================
+# 18. _execute_update_agent
+# ===========================================================================
+
+class TestExecuteUpdateAgent:
+    """Testa o mecanismo de auto-update do agente."""
+
+    def _mock_response(self, status_code=200, json_data=None, text=""):
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.json.return_value = json_data or {}
+        resp.text = text
+        return resp
+
+    def test_same_version_skips_download(self):
+        import dns_agent as da
+        logger = make_logger()
+        ver_resp = self._mock_response(200, {
+            "version": da.AGENT_VERSION,
+            "checksum": "abc123",
+        })
+        with patch("dns_agent.requests.get", return_value=ver_resp):
+            status, result = da._execute_update_agent(
+                "http://localhost:8000", "token", logger
+            )
+        assert status == "done"
+        assert "já está na versão" in result
+
+    def test_version_check_http_error(self):
+        import dns_agent as da
+        logger = make_logger()
+        ver_resp = self._mock_response(500)
+        with patch("dns_agent.requests.get", return_value=ver_resp):
+            status, result = da._execute_update_agent(
+                "http://localhost:8000", "token", logger
+            )
+        assert status == "failed"
+        assert "500" in result
+
+    def test_version_check_connection_error(self):
+        import dns_agent as da
+        import requests as req
+        logger = make_logger()
+        with patch("dns_agent.requests.get",
+                   side_effect=req.exceptions.ConnectionError("refused")):
+            status, result = da._execute_update_agent(
+                "http://localhost:8000", "token", logger
+            )
+        assert status == "failed"
+
+    def test_checksum_mismatch_aborts(self):
+        import dns_agent as da
+        logger = make_logger()
+        new_content = 'AGENT_VERSION = "9.9.9"\nprint("new")\n'
+
+        ver_resp = self._mock_response(200, {
+            "version": "9.9.9", "checksum": "wrong_checksum_here"
+        })
+        dl_resp = self._mock_response(200, text=new_content)
+
+        with patch("dns_agent.requests.get", side_effect=[ver_resp, dl_resp]):
+            status, result = da._execute_update_agent(
+                "http://localhost:8000", "token", logger
+            )
+        assert status == "failed"
+        assert "Checksum" in result
+
+    def test_syntax_error_aborts(self):
+        import dns_agent as da
+        import hashlib
+        logger = make_logger()
+        bad_content = 'AGENT_VERSION = "9.9.9"\ndef broken(\n'
+        checksum = hashlib.sha256(bad_content.encode()).hexdigest()
+
+        ver_resp = self._mock_response(200, {
+            "version": "9.9.9", "checksum": checksum
+        })
+        dl_resp = self._mock_response(200, text=bad_content)
+
+        with patch("dns_agent.requests.get", side_effect=[ver_resp, dl_resp]), \
+             patch("dns_agent.os.unlink"):
+            status, result = da._execute_update_agent(
+                "http://localhost:8000", "token", logger
+            )
+        assert status == "failed"
+        assert "sintaxe" in result.lower() or "syntax" in result.lower()
+
+    def test_successful_update_returns_done(self):
+        import dns_agent as da
+        import hashlib
+        import threading
+        logger = make_logger()
+        new_content = 'AGENT_VERSION = "9.9.9"\nprint("new agent")\n'
+        checksum = hashlib.sha256(new_content.encode()).hexdigest()
+
+        ver_resp = self._mock_response(200, {
+            "version": "9.9.9", "checksum": checksum
+        })
+        dl_resp = self._mock_response(200, text=new_content)
+
+        mock_thread_cls = MagicMock()
+        with patch("dns_agent.requests.get", side_effect=[ver_resp, dl_resp]), \
+             patch("dns_agent.shutil.copy2"), \
+             patch("dns_agent.os.replace"), \
+             patch("dns_agent.os.chmod"), \
+             patch.object(threading, "Thread", mock_thread_cls):
+            status, result = da._execute_update_agent(
+                "http://localhost:8000", "token", logger
+            )
+        assert status == "done"
+        assert "9.9.9" in result
+        assert "Atualizado" in result
+        # Thread de restart deve ter sido criada
+        mock_thread_cls.assert_called_once()
+
+    def test_download_http_error(self):
+        import dns_agent as da
+        logger = make_logger()
+        ver_resp = self._mock_response(200, {
+            "version": "9.9.9", "checksum": "abc"
+        })
+        dl_resp = self._mock_response(404)
+
+        with patch("dns_agent.requests.get", side_effect=[ver_resp, dl_resp]):
+            status, result = da._execute_update_agent(
+                "http://localhost:8000", "token", logger
+            )
+        assert status == "failed"
+        assert "404" in result
+
+
+# ===========================================================================
+# 19. _run_dig_trace
+# ===========================================================================
+
+class TestRunDigTrace:
+    """Testa a função _run_dig_trace."""
+
+    def test_dig_not_found_returns_failed(self):
+        import dns_agent as da
+        logger = make_logger()
+        with patch("dns_agent.shutil.which", return_value=None):
+            status, result_str = da._run_dig_trace("google.com", "127.0.0.1", logger)
+        assert status == "failed"
+        result = json.loads(result_str)
+        assert result["error_count"] == 1
+        assert "dig" in result["summary"].lower()
+
+    def test_successful_trace(self):
+        import dns_agent as da
+        logger = make_logger()
+
+        query_output = "google.com.\t\t299\tIN\tA\t142.250.218.46\n;; Query time: 15 msec\n"
+        trace_output = (
+            ".\t\t\t518400\tIN\tNS\ta.root-servers.net.\n"
+            ";; Received 228 bytes from 127.0.0.1#53(127.0.0.1) in 5 ms\n\n"
+            "com.\t\t\t172800\tIN\tNS\ta.gtld-servers.net.\n"
+            ";; Received 525 bytes from 198.41.0.4#53(a.root-servers.net) in 20 ms\n\n"
+            "google.com.\t\t172800\tIN\tNS\tns1.google.com.\n"
+            ";; Received 164 bytes from 192.5.6.30#53(a.gtld-servers.net) in 25 ms\n\n"
+            "google.com.\t\t300\tIN\tA\t142.250.218.46\n"
+            ";; Received 55 bytes from 216.239.32.10#53(ns1.google.com) in 30 ms\n"
+        )
+
+        mock_query_proc = MagicMock()
+        mock_query_proc.stdout = query_output
+        mock_query_proc.stderr = ""
+
+        mock_trace_proc = MagicMock()
+        mock_trace_proc.stdout = trace_output
+        mock_trace_proc.stderr = ""
+
+        with patch("dns_agent.shutil.which", return_value="/usr/bin/dig"), \
+             patch("dns_agent.subprocess.run", side_effect=[mock_query_proc, mock_trace_proc]):
+            status, result_str = da._run_dig_trace("google.com", "127.0.0.1", logger)
+
+        assert status == "done"
+        result = json.loads(result_str)
+        assert result["domain"] == "google.com"
+        assert result["error_count"] == 0
+        assert len(result["trace"]) > 0
+
+    def test_timeout_on_query(self):
+        import dns_agent as da
+        import subprocess
+        logger = make_logger()
+
+        with patch("dns_agent.shutil.which", return_value="/usr/bin/dig"), \
+             patch("dns_agent.subprocess.run",
+                   side_effect=subprocess.TimeoutExpired(["dig"], 15)):
+            status, result_str = da._run_dig_trace("google.com", "127.0.0.1", logger)
+
+        result = json.loads(result_str)
+        assert result["error_count"] >= 1
+
+
+# ===========================================================================
+# 20. poll_commands — params passado para _execute_command
+# ===========================================================================
+
+class TestPollCommandsWithParams:
+    """Testa que poll_commands passa params para _execute_command."""
+
+    def _mock_response(self, status_code=200, json_data=None):
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.json.return_value = json_data if json_data is not None else []
+        return resp
+
+    def test_params_forwarded_to_execute(self):
+        import dns_agent as da
+        cfg = make_cfg()
+        logger = make_logger()
+        commands = [
+            {"id": 10, "command": "run_script", "confirm_token": None,
+             "params": '{"script":"dig_test"}'}
+        ]
+
+        captured_kwargs = {}
+
+        def fake_execute(command, confirm_token, cfg, logger, params=None):
+            captured_kwargs["params"] = params
+            return ("done", "OK")
+
+        with patch("dns_agent.requests.get",
+                   return_value=self._mock_response(200, commands)), \
+             patch("dns_agent.requests.post",
+                   return_value=self._mock_response(200)), \
+             patch("dns_agent._execute_command", side_effect=fake_execute):
+            da.poll_commands(cfg, logger)
+
+        assert captured_kwargs["params"] == '{"script":"dig_test"}'
+
+    def test_params_none_when_not_present(self):
+        import dns_agent as da
+        cfg = make_cfg()
+        logger = make_logger()
+        commands = [
+            {"id": 11, "command": "stop", "confirm_token": None}
+        ]
+
+        captured_kwargs = {}
+
+        def fake_execute(command, confirm_token, cfg, logger, params=None):
+            captured_kwargs["params"] = params
+            return ("done", "OK")
+
+        with patch("dns_agent.requests.get",
+                   return_value=self._mock_response(200, commands)), \
+             patch("dns_agent.requests.post",
+                   return_value=self._mock_response(200)), \
+             patch("dns_agent._execute_command", side_effect=fake_execute):
+            da.poll_commands(cfg, logger)
+
+        assert captured_kwargs["params"] is None
 
 
 # ===========================================================================

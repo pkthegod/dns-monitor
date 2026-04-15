@@ -15,10 +15,12 @@ import logging
 import logging.handlers
 import os
 import platform
+import re
 import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -602,6 +604,193 @@ def _log_alert_summary(cfg, dns_service, dns_results, system_metrics, logger):
 # Polling de comandos remotos
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Scripts de diagnóstico embutidos (executados remotamente via run_script)
+# ---------------------------------------------------------------------------
+
+_BIND9_VALIDATE_SCRIPT = r"""#!/bin/bash
+ERROR_COUNT=0
+check_status() {
+    if [ $? -eq 0 ]; then
+        echo "CHECK_OK $1"
+    else
+        echo "CHECK_FAIL $1"
+        ERROR_COUNT=$((ERROR_COUNT + 1))
+    fi
+}
+SERVICE_NAME="named"
+if ! systemctl cat named > /dev/null 2>&1; then SERVICE_NAME="bind9"; fi
+systemctl is-active --quiet $SERVICE_NAME
+check_status "Serviço $SERVICE_NAME está rodando"
+ss -lntu | grep -q ":53 "
+check_status "Porta 53 em escuta"
+if command -v named-checkconf > /dev/null; then
+    named-checkconf > /dev/null 2>&1
+    check_status "Sintaxe named.conf válida"
+else
+    echo "CHECK_SKIP Comando named-checkconf não encontrado"
+fi
+dig @127.0.0.1 google.com +short +time=2 | grep -q .
+check_status "Resolução externa google.com"
+DNSSEC_AD=$(dig @127.0.0.1 internetsociety.org A +dnssec +time=5 +tries=1 2>/dev/null)
+if echo "$DNSSEC_AD" | grep -q "flags:.*ad"; then
+    echo "CHECK_OK Validação DNSSEC ativa (flag AD presente)"
+else
+    FAIL_STATUS=$(dig @127.0.0.1 dnssec-failed.org A +time=5 +tries=1 2>/dev/null | grep -i "status:")
+    if echo "$FAIL_STATUS" | grep -qi "SERVFAIL"; then
+        echo "CHECK_OK Validação DNSSEC ativa (dnssec-failed.org retornou SERVFAIL)"
+    else
+        echo "CHECK_FAIL DNSSEC pode não estar validando corretamente"
+        ERROR_COUNT=$((ERROR_COUNT + 1))
+    fi
+fi
+MEM_MAX=$(systemctl show $SERVICE_NAME -p MemoryMax 2>/dev/null | cut -d= -f2)
+if [ -z "$MEM_MAX" ] || [ "$MEM_MAX" = "infinity" ] || [ "$MEM_MAX" = "18446744073709551615" ]; then
+    echo "CHECK_INFO MemoryMax não definido (ilimitado)"
+else
+    echo "CHECK_OK MemoryMax configurado: $MEM_MAX bytes"
+fi
+BIND_CACHE="/var/cache/bind"
+if [ -d "$BIND_CACHE" ]; then
+    PERMS=$(stat -c "%U:%G" "$BIND_CACHE")
+    if [ "$PERMS" = "bind:bind" ] || [ "$PERMS" = "root:bind" ]; then
+        echo "CHECK_OK Permissões $BIND_CACHE corretas ($PERMS)"
+    else
+        echo "CHECK_WARN Permissões $BIND_CACHE incomuns: $PERMS"
+    fi
+else
+    echo "CHECK_INFO Diretório $BIND_CACHE não encontrado"
+fi
+echo "SUMMARY errors=$ERROR_COUNT"
+"""
+
+_DIG_TEST_SCRIPT = r"""#!/bin/bash
+ERROR_COUNT=0
+if ! command -v dig > /dev/null 2>&1; then
+    echo "CHECK_FAIL dig não encontrado (instale dnsutils: apt install dnsutils)"
+    echo "SUMMARY errors=1"
+    exit 1
+fi
+
+DOMAINS="google.com cloudflare.com github.com"
+RESOLVERS="127.0.0.1 8.8.8.8 1.1.1.1"
+
+dig_query() {
+    local resolver="$1" domain="$2"
+    local out
+    out=$(dig @"$resolver" "$domain" A +short +time=3 +tries=1 2>/dev/null)
+    local rc=$?
+    local latency
+    latency=$(dig @"$resolver" "$domain" A +stats +time=3 +tries=1 2>/dev/null | grep "Query time:" | awk '{print $4}')
+    if [ $rc -eq 0 ] && [ -n "$out" ]; then
+        echo "CHECK_OK @${resolver} → ${domain} (${latency:-?}ms) → $(echo "$out" | head -1)"
+    else
+        echo "CHECK_FAIL @${resolver} → ${domain}: sem resposta ou timeout"
+        ERROR_COUNT=$((ERROR_COUNT + 1))
+    fi
+}
+
+echo "CHECK_INFO === Resolução via resolver local (127.0.0.1) ==="
+for d in $DOMAINS; do dig_query "127.0.0.1" "$d"; done
+
+echo "CHECK_INFO === Resolução via Google DNS (8.8.8.8) ==="
+for d in $DOMAINS; do dig_query "8.8.8.8" "$d"; done
+
+echo "CHECK_INFO === Resolução via Cloudflare (1.1.1.1) ==="
+for d in $DOMAINS; do dig_query "1.1.1.1" "$d"; done
+
+echo "CHECK_INFO === DNSSEC ==="
+DNSSEC_OUT=$(dig @127.0.0.1 internetsociety.org A +dnssec +time=5 +tries=1 2>/dev/null)
+if echo "$DNSSEC_OUT" | grep -q "flags:.*ad"; then
+    echo "CHECK_OK DNSSEC ativo — flag AD presente (internetsociety.org)"
+else
+    SERVFAIL=$(dig @127.0.0.1 dnssec-failed.org A +time=5 +tries=1 2>/dev/null | grep -i "status:")
+    if echo "$SERVFAIL" | grep -qi "SERVFAIL"; then
+        echo "CHECK_OK DNSSEC ativo — dnssec-failed.org retornou SERVFAIL corretamente"
+    else
+        echo "CHECK_WARN DNSSEC pode não estar validando (flag AD ausente, SERVFAIL não retornado)"
+    fi
+fi
+
+echo "CHECK_INFO === Reverso (PTR) do resolver local ==="
+LOCAL_IP=$(dig @8.8.8.8 myip.opendns.com +short 2>/dev/null | head -1)
+if [ -n "$LOCAL_IP" ]; then
+    PTR=$(dig @127.0.0.1 -x "$LOCAL_IP" +short +time=3 2>/dev/null | head -1)
+    if [ -n "$PTR" ]; then
+        echo "CHECK_OK PTR de $LOCAL_IP → $PTR"
+    else
+        echo "CHECK_INFO PTR de $LOCAL_IP → sem registro reverso"
+    fi
+else
+    echo "CHECK_INFO IP público não detectado"
+fi
+
+echo "CHECK_INFO === Tempo de resposta comparativo (google.com) ==="
+for r in 127.0.0.1 8.8.8.8 1.1.1.1; do
+    ms=$(dig @"$r" google.com A +stats +time=3 +tries=1 2>/dev/null | grep "Query time:" | awk '{print $4}')
+    if [ -n "$ms" ]; then
+        if [ "$ms" -lt 50 ] 2>/dev/null; then
+            echo "CHECK_OK @${r} latência: ${ms}ms (excelente)"
+        elif [ "$ms" -lt 200 ] 2>/dev/null; then
+            echo "CHECK_INFO @${r} latência: ${ms}ms (normal)"
+        else
+            echo "CHECK_WARN @${r} latência: ${ms}ms (alta)"
+        fi
+    else
+        echo "CHECK_FAIL @${r} sem resposta ao medir latência"
+        ERROR_COUNT=$((ERROR_COUNT + 1))
+    fi
+done
+
+echo "SUMMARY errors=$ERROR_COUNT"
+"""
+
+DIAGNOSTIC_SCRIPTS: dict[str, str] = {
+    "bind9_validate": _BIND9_VALIDATE_SCRIPT,
+    "dig_test":       _DIG_TEST_SCRIPT,
+}
+
+
+def _parse_diagnostic_output(script_id: str, raw: str) -> str:
+    """
+    Converte a saída do script de diagnóstico em JSON estruturado.
+    Retorna uma string JSON.
+    """
+    checks = []
+    error_count = 0
+    summary = ""
+
+    for line in raw.splitlines():
+        line = line.strip()
+        if line.startswith("CHECK_OK "):
+            checks.append({"status": "ok", "message": line[9:]})
+        elif line.startswith("CHECK_FAIL "):
+            checks.append({"status": "fail", "message": line[11:]})
+            error_count += 1
+        elif line.startswith("CHECK_SKIP "):
+            checks.append({"status": "skip", "message": line[11:]})
+        elif line.startswith("CHECK_INFO "):
+            checks.append({"status": "info", "message": line[11:]})
+        elif line.startswith("CHECK_WARN "):
+            checks.append({"status": "warn", "message": line[11:]})
+        elif line.startswith("SUMMARY errors="):
+            try:
+                error_count = int(line.split("=")[1])
+            except ValueError:
+                pass
+            summary = "Saudável" if error_count == 0 else f"{error_count} problema(s) encontrado(s)"
+
+    if not summary:
+        summary = "Saudável" if error_count == 0 else f"{error_count} problema(s) encontrado(s)"
+
+    return json.dumps({
+        "script": script_id,
+        "checks": checks,
+        "error_count": error_count,
+        "summary": summary,
+    }, ensure_ascii=False)
+
+
 COMMAND_HANDLERS = {
     "stop":    ["sudo", "-n", "systemctl", "stop"],
     "disable": ["sudo", "-n", "systemctl", "disable", "--now"],
@@ -628,13 +817,304 @@ def _get_dns_service_name(cfg: configparser.ConfigParser) -> str:
     return SERVICE_ALIASES.get(name, name)
 
 
+def _execute_update_agent(
+    backend_url: str,
+    auth_token: str,
+    logger: logging.Logger,
+) -> tuple[str, str]:
+    """
+    Baixa a versão mais recente do agente do backend, verifica o checksum,
+    valida a sintaxe Python, substitui o arquivo atual e reinicia o processo.
+
+    Retorna (status, result) — o restart ocorre ~3s após o retorno para dar
+    tempo de reportar o resultado ao backend antes de encerrar.
+    """
+    import hashlib as _hashlib
+    import py_compile
+    import threading
+
+    current_file = os.path.abspath(__file__)
+    headers = {
+        "Authorization": f"Bearer {auth_token}",
+        "User-Agent":    f"dns-agent/{AGENT_VERSION}",
+    }
+
+    # ── 1. Verificar versão disponível ───────────────────────────────────────
+    try:
+        ver_resp = requests.get(
+            f"{backend_url}/agent/version",
+            headers=headers, timeout=10,
+        )
+        if ver_resp.status_code != 200:
+            return "failed", f"Erro ao consultar versão: HTTP {ver_resp.status_code}"
+        ver_data     = ver_resp.json()
+        remote_ver   = ver_data.get("version", "?")
+        remote_cksum = ver_data.get("checksum", "")
+    except Exception as exc:
+        return "failed", f"Erro ao consultar /agent/version: {exc}"
+
+    if remote_ver == AGENT_VERSION:
+        return "done", f"Agente já está na versão atual ({AGENT_VERSION}) — nenhuma ação necessária"
+
+    logger.warning("update_agent: versão remota=%s local=%s — iniciando download",
+                   remote_ver, AGENT_VERSION)
+
+    # ── 2. Baixar novo arquivo ───────────────────────────────────────────────
+    try:
+        dl_resp = requests.get(
+            f"{backend_url}/agent/latest",
+            headers=headers, timeout=60,
+        )
+        if dl_resp.status_code != 200:
+            return "failed", f"Erro ao baixar agente: HTTP {dl_resp.status_code}"
+        new_content = dl_resp.text
+    except Exception as exc:
+        return "failed", f"Erro ao baixar /agent/latest: {exc}"
+
+    # ── 3. Verificar checksum ────────────────────────────────────────────────
+    if remote_cksum:
+        actual_cksum = _hashlib.sha256(new_content.encode()).hexdigest()
+        if actual_cksum != remote_cksum:
+            return "failed", (
+                f"Checksum inválido — download corrompido ou adulterado. "
+                f"Esperado: {remote_cksum[:16]}… Obtido: {actual_cksum[:16]}…"
+            )
+
+    # ── 4. Validar sintaxe Python ────────────────────────────────────────────
+    tmp_path = current_file + ".update_tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(new_content)
+        py_compile.compile(tmp_path, doraise=True)
+    except py_compile.PyCompileError as exc:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        return "failed", f"Arquivo baixado tem erro de sintaxe Python — update cancelado: {exc}"
+    except Exception as exc:
+        return "failed", f"Erro ao validar arquivo: {exc}"
+
+    # ── 5. Substituição atômica (com backup) ─────────────────────────────────
+    backup_path = current_file + ".bak"
+    try:
+        shutil.copy2(current_file, backup_path)
+        os.replace(tmp_path, current_file)
+        os.chmod(current_file, 0o755)
+    except Exception as exc:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        return "failed", f"Erro ao substituir arquivo: {exc}"
+
+    result_msg = (
+        f"Atualizado {AGENT_VERSION} → {remote_ver} com sucesso. "
+        f"Backup em {backup_path}. Reiniciando em 3s…"
+    )
+    logger.warning("update_agent: %s", result_msg)
+
+    # ── 6. Reiniciar processo após dar tempo para reportar o resultado ────────
+    def _do_restart():
+        time.sleep(3)
+        logger.info("update_agent: reiniciando via os.execv")
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+
+    threading.Thread(target=_do_restart, daemon=True).start()
+    return "done", result_msg
+
+
+def _run_dig_trace(domain: str, resolver: str, logger: logging.Logger) -> tuple[str, str]:
+    """
+    Executa dig +trace no domínio dado e devolve JSON estruturado com hops.
+    Usado pelo comando run_script com params {"script":"dig_trace",...}.
+    """
+    import re as _re
+
+    result: dict = {
+        "script":          "dig_trace",
+        "domain":          domain,
+        "resolver":        resolver,
+        "source_hostname": socket.gethostname(),
+        "query":           None,
+        "trace":           [],
+        "error_count":     0,
+        "summary":         "",
+    }
+
+    if not shutil.which("dig"):
+        result["error_count"] = 1
+        result["summary"] = "dig não encontrado — instale dnsutils: apt install dnsutils"
+        return "failed", json.dumps(result, ensure_ascii=False)
+
+    # ── Consulta direta (@resolver) ──────────────────────────────────────────
+    try:
+        proc = subprocess.run(
+            ["dig", f"@{resolver}", domain, "A",
+             "+noall", "+answer", "+stats", "+time=5", "+tries=1"],
+            capture_output=True, text=True, timeout=15,
+        )
+        answers, latency_ms, query_status = [], None, "NOERROR"
+        for line in proc.stdout.splitlines():
+            ls = line.strip()
+            m = _re.match(r'^(\S+)\s+(\d+)\s+IN\s+A\s+([\d.]+)', ls)
+            if m:
+                answers.append({"name": m.group(1).rstrip('.'),
+                                 "ttl": int(m.group(2)), "value": m.group(3)})
+            m2 = _re.search(r'Query time:\s*(\d+)\s*msec', ls)
+            if m2:
+                latency_ms = int(m2.group(1))
+        for bad in ("SERVFAIL", "NXDOMAIN", "REFUSED"):
+            if bad in proc.stdout:
+                query_status = bad
+                result["error_count"] += 1
+                break
+        if not answers and query_status == "NOERROR":
+            query_status = "EMPTY"
+            result["error_count"] += 1
+        result["query"] = {"answers": answers, "latency_ms": latency_ms, "status": query_status}
+    except subprocess.TimeoutExpired:
+        result["query"] = {"error": "Timeout na consulta direta (15s)"}
+        result["error_count"] += 1
+    except Exception as exc:
+        result["query"] = {"error": str(exc)[:300]}
+        result["error_count"] += 1
+
+    # ── dig +trace ───────────────────────────────────────────────────────────
+    try:
+        proc = subprocess.run(
+            ["dig", "+trace", "+additional", "+time=5", "+tries=1", domain, "A"],
+            capture_output=True, text=True, timeout=90,
+        )
+
+        hop_re = _re.compile(
+            r'Received \d+ bytes from ([\d.a-fA-F:]+)#\d+\(([^)]*)\) in (\d+) ms'
+        )
+        ns_re = _re.compile(r'^(\S+)\s+\d+\s+IN\s+NS\s+(\S+)')
+        a_re  = _re.compile(r'^(\S+)\s+\d+\s+IN\s+A\s+([\d.]+)')
+
+        block: list[str] = []
+        hops:  list[dict] = []
+
+        for line in proc.stdout.splitlines():
+            s = line.strip()
+            if not s:
+                continue
+            block.append(s)
+            m_hop = hop_re.search(s)
+            if not m_hop:
+                continue
+
+            ns_list: list[str] = []
+            a_list:  list[str] = []
+            zone = None
+            for bl in block:
+                if bl.startswith(';'):
+                    continue
+                mn = ns_re.match(bl)
+                if mn:
+                    if zone is None:
+                        zone = mn.group(1).rstrip('.')
+                    ns_list.append(mn.group(2).rstrip('.'))
+                ma = a_re.match(bl)
+                if ma:
+                    if zone is None:
+                        zone = ma.group(1).rstrip('.')
+                    a_list.append(ma.group(2))
+
+            hops.append({
+                "zone":        zone or "?",
+                "server_ip":   m_hop.group(1),
+                "server_name": m_hop.group(2),
+                "latency_ms":  int(m_hop.group(3)),
+                "ns_records":  list(dict.fromkeys(ns_list)),
+                "a_records":   list(dict.fromkeys(a_list)),
+            })
+            block = []
+
+        result["trace"] = hops
+        if not hops:
+            result["error_count"] += 1
+            result["trace_error"] = "Trace retornou 0 hops"
+
+    except subprocess.TimeoutExpired:
+        result["trace_error"] = "Timeout no trace (90s)"
+        result["error_count"] += 1
+    except Exception as exc:
+        result["trace_error"] = str(exc)[:300]
+        result["error_count"] += 1
+
+    ok = result["error_count"] == 0
+    n  = len(result["trace"])
+    result["summary"] = (
+        f"Resolvido via {n} hop(s)" if ok
+        else f"{result['error_count']} problema(s) na resolução"
+    )
+    logger.info("dig_trace: domain=%s resolver=%s hops=%d errors=%d",
+                domain, resolver, n, result["error_count"])
+    return "done", json.dumps(result, ensure_ascii=False)
+
+
 def _execute_command(command: str, confirm_token: str, cfg: configparser.ConfigParser,
-                     logger: logging.Logger) -> tuple[str, str]:
+                     logger: logging.Logger, params: str = None) -> tuple[str, str]:
     """
     Executa um comando remoto no serviço DNS.
     Retorna (status, result) onde status é 'done' ou 'failed'.
     """
     service = _get_dns_service_name(cfg)
+
+    if command == "update_agent":
+        url        = cfg.get("backend", "url").rstrip("/")
+        auth_token = cfg.get("agent", "auth_token")
+        return _execute_update_agent(url, auth_token, logger)
+
+    if command == "run_script":
+        params_str = (params or "").strip()
+        # params pode ser JSON {"script": "...", "domain": "...", ...} ou nome simples
+        try:
+            params_obj = json.loads(params_str)
+            script_id  = params_obj.get("script", "")
+        except (json.JSONDecodeError, ValueError):
+            params_obj = {}
+            script_id  = params_str
+
+        if not script_id:
+            return "failed", "run_script exige params com o nome do script"
+
+        # Handler especial para dig_trace (precisa de argumentos dinâmicos)
+        if script_id == "dig_trace":
+            domain   = params_obj.get("domain",   "google.com").strip()
+            resolver = params_obj.get("resolver", "127.0.0.1").strip()
+            return _run_dig_trace(domain, resolver, logger)
+
+        script_content = DIAGNOSTIC_SCRIPTS.get(script_id)
+        if script_content is None:
+            return "failed", f"Script desconhecido: {script_id}. Disponíveis: {list(DIAGNOSTIC_SCRIPTS)}"
+        tmp = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".sh", delete=False, encoding="utf-8"
+            ) as f:
+                f.write(script_content)
+                tmp = f.name
+            os.chmod(tmp, 0o700)
+            result = subprocess.run(
+                ["bash", tmp],
+                capture_output=True, text=True, timeout=60
+            )
+            raw_output = result.stdout + result.stderr
+            logger.info("Diagnóstico '%s' executado (rc=%d)", script_id, result.returncode)
+            return "done", _parse_diagnostic_output(script_id, raw_output)
+        except subprocess.TimeoutExpired:
+            return "failed", json.dumps({"script": script_id, "error": "Timeout ao executar diagnóstico (60s)"})
+        except Exception as exc:
+            return "failed", json.dumps({"script": script_id, "error": str(exc)})
+        finally:
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
 
     if command == "purge":
         if not confirm_token:
@@ -709,12 +1189,13 @@ def poll_commands(cfg: configparser.ConfigParser, logger: logging.Logger) -> Non
             cmd_id        = cmd["id"]
             command       = cmd["command"]
             confirm_token = cmd.get("confirm_token")
+            params        = cmd.get("params")
 
             logger.warning(
                 "Executando comando remoto id=%d: %s", cmd_id, command
             )
 
-            status, result = _execute_command(command, confirm_token, cfg, logger)
+            status, result = _execute_command(command, confirm_token, cfg, logger, params)
 
             # Reportar resultado ao backend
             try:

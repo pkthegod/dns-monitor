@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(PYTHONPATH=. python -m pytest test_backend.py -v --tb=short)",
+      "Bash(where pytest:*)",
+      "Bash(pip list:*)",
+      "Bash(pip install:*)",
+      "Bash(PYTHONPATH=.:../agent python -m pytest test_backend.py -v --tb=short)",
+      "Bash(PYTHONPATH=.:../agent python -m pytest test_backend.py::TestAdminLogin -v --tb=short)",
+      "Bash(git clone:*)",
+      "Bash(uv --version)",
+      "Bash(specify --version)",
+      "Bash(uv tool:*)",
+      "Bash(specify init:*)",
+      "Bash(PYTHONIOENCODING=utf-8 PYTHONUTF8=1 specify init:*)",
+      "Bash(PYTHONIOENCODING=utf-8 PYTHONUTF8=1 NO_COLOR=1 specify init:*)",
+      "Bash(PYTHONIOENCODING=utf-8 PYTHONUTF8=1 TERM=dumb COLUMNS=80 specify init --here --force --ai claude)",
+      "Bash(mkdir -p /c/Users/Paulo/Documents/Servidores/bkpServidores/Servidores/Shell_files/dns-monitor/.specify/templates /c/Users/Paulo/Documents/Servidores/bkpServidores/Servidores/Shell_files/dns-monitor/.specify/scripts/bash /c/Users/Paulo/Documents/Servidores/bkpServidores/Servidores/Shell_files/dns-monitor/.specify/scripts/powershell /c/Users/Paulo/Documents/Servidores/bkpServidores/Servidores/Shell_files/dns-monitor/.specify/memory /c/Users/Paulo/Documents/Servidores/bkpServidores/Servidores/Shell_files/dns-monitor/.specify/integrations/claude/scripts /c/Users/Paulo/Documents/Servidores/bkpServidores/Servidores/Shell_files/dns-monitor/.specify/features /c/Users/Paulo/Documents/Servidores/bkpServidores/Servidores/Shell_files/dns-monitor/.specify/extensions/git/commands /c/Users/Paulo/Documents/Servidores/bkpServidores/Servidores/Shell_files/dns-monitor/.specify/extensions/git/scripts/bash /c/Users/Paulo/Documents/Servidores/bkpServidores/Servidores/Shell_files/dns-monitor/.specify/extensions/git/scripts/powershell)",
+      "Bash(cp '/c/Users/Paulo/AppData/Roaming/uv/tools/specify-cli/Lib/site-packages/specify_cli/core_pack/templates/*' /c/Users/Paulo/Documents/Servidores/bkpServidores/Servidores/Shell_files/dns-monitor/.specify/templates/)",
+      "Bash(cp '/c/Users/Paulo/AppData/Roaming/uv/tools/specify-cli/Lib/site-packages/specify_cli/core_pack/scripts/bash/*' /c/Users/Paulo/Documents/Servidores/bkpServidores/Servidores/Shell_files/dns-monitor/.specify/scripts/bash/)",
+      "Bash(cp '/c/Users/Paulo/AppData/Roaming/uv/tools/specify-cli/Lib/site-packages/specify_cli/core_pack/scripts/powershell/*.ps1' /c/Users/Paulo/Documents/Servidores/bkpServidores/Servidores/Shell_files/dns-monitor/.specify/scripts/powershell/)",
+      "Bash(cp '/c/Users/Paulo/AppData/Roaming/uv/tools/specify-cli/Lib/site-packages/specify_cli/core_pack/extensions/git/commands/*' /c/Users/Paulo/Documents/Servidores/bkpServidores/Servidores/Shell_files/dns-monitor/.specify/extensions/git/commands/)",
+      "Bash(mkdir -p /c/Users/Paulo/Documents/Servidores/bkpServidores/Servidores/Shell_files/dns-monitor/.claude/skills/speckit-__TRACKED_VAR__)",
+      "Bash(cp /c/Users/Paulo/AppData/Roaming/uv/tools/specify-cli/Lib/site-packages/specify_cli/core_pack/commands/__TRACKED_VAR__.md /c/Users/Paulo/Documents/Servidores/bkpServidores/Servidores/Shell_files/dns-monitor/.claude/skills/speckit-__TRACKED_VAR__/SKILL.md)",
+      "Bash(PYTHONUTF8=1 TERM=dumb specify check)",
+      "Bash(wc:*)",
+      "Bash(python -c ':*)",
+      "Bash(python -m pytest agent/test_agent.py -v --tb=short)",
+      "Bash(python -m pytest backend/test_backend.py -v --tb=short)",
+      "Bash(python -m pytest test_grafana.py -v --tb=short)",
+      "Bash(rm:*)"
+    ]
+  }
+}

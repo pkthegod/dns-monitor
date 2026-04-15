@@ -307,6 +307,16 @@ app = FastAPI(
 
 app.mount("/static", StaticFiles(directory=str(pathlib.Path(__file__).parent / "static")), name="static")
 
+# Caminho do arquivo do agente servido para auto-update.
+# Pode ser sobrescrito pela variável de ambiente AGENT_FILE_PATH.
+import re as _re
+AGENT_FILE_PATH = pathlib.Path(
+    os.environ.get(
+        "AGENT_FILE_PATH",
+        str(pathlib.Path(__file__).parent.parent / "agent" / "dns_agent.py"),
+    )
+)
+
 
 # ---------------------------------------------------------------------------
 # Endpoints
@@ -327,7 +337,7 @@ async def receive_metrics(payload: AgentPayload) -> JSONResponse:
         ts,
         display_name  = getattr(payload, "display_name", None),
         location      = getattr(payload, "location", None),
-        agent_version = payload.agent_version,
+        agent_version = payload.agent_version or None,
     )
     if agent_meta.get("is_new"):
         logger.info("Novo agente detectado: %s", hostname)
@@ -526,6 +536,7 @@ async def create_command(request: Request) -> JSONResponse:
     command  = body.get("command",  "").strip()
     issued_by = body.get("issued_by", "admin")
     expires_hours = body.get("expires_hours")
+    params = body.get("params")
 
     if not hostname or not command:
         return JSONResponse({"error": "hostname e command são obrigatórios"}, status_code=422)
@@ -536,7 +547,7 @@ async def create_command(request: Request) -> JSONResponse:
 
     try:
         cmd_id = await db.insert_command(
-            hostname, command, issued_by, confirm_token, expires_hours
+            hostname, command, issued_by, confirm_token, expires_hours, params
         )
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=422)
@@ -607,6 +618,92 @@ async def get_all_commands_history(request: Request, limit: int = 50) -> _SafeJS
     await require_token(request)
     history = await db.get_all_commands_history(limit)
     return _SafeJSONResponse(history)
+
+
+@app.get("/agent/version")
+async def agent_version_info(request: Request) -> JSONResponse:
+    """
+    Retorna a versão atual do agente disponível para download.
+    Usado pelo agente e pelo painel admin para comparar versões.
+    """
+    await require_token(request)
+    if not AGENT_FILE_PATH.exists():
+        raise HTTPException(status_code=404, detail="Arquivo do agente não encontrado no servidor")
+    content = AGENT_FILE_PATH.read_text(encoding="utf-8")
+    m = _re.search(r'^AGENT_VERSION\s*=\s*["\']([^"\']+)["\']', content, _re.MULTILINE)
+    version  = m.group(1) if m else "unknown"
+    checksum = hashlib.sha256(content.encode()).hexdigest()
+    return JSONResponse({
+        "version":  version,
+        "checksum": checksum,
+        "size":     len(content.encode()),
+    })
+
+
+@app.get("/agent/latest")
+async def agent_latest_download(request: Request):
+    """
+    Serve o arquivo dns_agent.py atual para o agente baixar durante auto-update.
+    Requer Bearer token.
+    """
+    await require_token(request)
+    if not AGENT_FILE_PATH.exists():
+        raise HTTPException(status_code=404, detail="Arquivo do agente não encontrado no servidor")
+    from fastapi.responses import PlainTextResponse
+    content = AGENT_FILE_PATH.read_text(encoding="utf-8")
+    checksum = hashlib.sha256(content.encode()).hexdigest()
+    return PlainTextResponse(
+        content,
+        media_type="text/x-python",
+        headers={"X-Agent-Checksum": checksum},
+    )
+
+
+@app.post("/tools/geolocate", dependencies=[Depends(require_token)])
+async def geolocate_ips(request: Request) -> JSONResponse:
+    """
+    Geolocaliza uma lista de IPs usando ip-api.com (gratuito, sem chave).
+    Retorna array com country, city, ISP, lat/lon por IP.
+    """
+    import asyncio
+    import urllib.request as _urllib
+    import json as _json
+
+    body = await request.json()
+    ips  = list(dict.fromkeys(str(ip) for ip in body.get("ips", []) if ip))[:100]
+    if not ips:
+        return JSONResponse([])
+
+    payload = _json.dumps([{"query": ip} for ip in ips]).encode()
+
+    def _fetch():
+        try:
+            req = _urllib.Request(
+                "http://ip-api.com/batch"
+                "?fields=query,status,country,countryCode,regionName,city,isp,org,lat,lon",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with _urllib.urlopen(req, timeout=10) as resp:
+                return _json.loads(resp.read().decode())
+        except Exception as exc:
+            logger.warning("geolocate: ip-api.com falhou: %s", exc)
+            return [{"query": ip, "status": "fail"} for ip in ips]
+
+    loop = asyncio.get_event_loop()
+    data = await loop.run_in_executor(None, _fetch)
+    return JSONResponse(data)
+
+
+@app.get("/commands/{command_id}/status")
+async def get_command_status(command_id: int, request: Request) -> _SafeJSONResponse:
+    """Retorna o status atual de um comando específico (para polling no painel)."""
+    await require_token(request)
+    cmd = await db.get_command_by_id(command_id)
+    if not cmd:
+        raise HTTPException(status_code=404, detail="Comando não encontrado")
+    return _SafeJSONResponse(cmd)
 
 
 @app.get("/health")
