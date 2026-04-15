@@ -9,7 +9,7 @@ The system follows a hub-and-spoke model: lightweight agents deployed on monitor
 All backend code uses async/await (FastAPI + asyncpg + httpx). No blocking I/O in the request path. The agent uses synchronous code (psutil, dnspython, requests) since it runs as a single-threaded daemon per machine.
 
 ### III. Test-First Development (NON-NEGOTIABLE)
-TDD is mandatory: Red → Green → Refactor. All 242+ tests must pass before any deploy. Tests use mocks exclusively — no live database connections in test suites. Test structure mirrors production code: `test_agent.py`, `test_backend.py`, `test_grafana.py`.
+TDD is mandatory: Red → Green → Refactor. All 284+ tests must pass before any deploy. Tests use mocks exclusively — no live database connections in test suites. Test structure mirrors production code: `test_agent.py`, `test_backend.py`, `test_grafana.py`.
 
 ### IV. Time-Series Data with TimescaleDB
 All metric data uses TimescaleDB hypertables with automatic compression (7 days) and retention policies (30 days for heartbeats, 1 year for metrics). Continuous aggregates provide hourly rollups. Raw SQL with parameterized queries via asyncpg — no ORM.
@@ -55,7 +55,7 @@ YAGNI — no speculative abstractions. Single-process backend (APScheduler const
 
 1. **Branch**: Work on `dev` branch, merge to `main` for releases
 2. **Test**: Write test first, verify it fails, implement, verify it passes
-3. **Verify**: All 242+ tests green before any deploy
+3. **Verify**: All 284+ tests green before any deploy
 4. **Build**: `docker compose build --no-cache backend`
 5. **Deploy**: `docker compose up -d`
 6. **Health**: `curl http://localhost:8000/health` returns `{"status":"ok"}`
@@ -74,4 +74,4 @@ YAGNI — no speculative abstractions. Single-process backend (APScheduler const
 - Amendments require updating this document with rationale
 - Constitution supersedes ad-hoc decisions
 
-**Version**: 1.0.0 | **Ratified**: 2026-04-09 | **Last Amended**: 2026-04-09
+**Version**: 1.1.0 | **Ratified**: 2026-04-09 | **Last Amended**: 2026-04-15

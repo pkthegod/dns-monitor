@@ -69,14 +69,14 @@ As ops tooling, I want a health endpoint so that I can monitor backend availabil
 - **SC-001**: Backend handles concurrent agent submissions without errors
 - **SC-002**: Database schema creation is idempotent (safe to restart)
 - **SC-003**: API response time < 200ms for metric ingestion
-- **SC-004**: 70 automated tests covering all backend functionality
+- **SC-004**: 137 automated tests covering all backend functionality
 
 ## Implementation Files
 
-- `backend/main.py` (619 lines) — FastAPI application + scheduler
-- `backend/db.py` (588 lines) — Database layer (asyncpg)
+- `backend/main.py` (716 lines) — FastAPI application + scheduler
+- `backend/db.py` (593 lines) — Database layer (asyncpg)
 - `backend/schemas.sql` (16.3KB) — Database DDL
 - `backend/Dockerfile` — Container definition
-- `backend/docker-compose.yaml` (103 lines) — Full stack orchestration
+- `backend/docker-compose.yaml` — Full stack orchestration
 - `backend/requirements.txt` — Python dependencies
-- `backend/test_backend.py` (1791 lines, 70 tests) — Test suite
+- `backend/test_backend.py` (137 tests) — Test suite

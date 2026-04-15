@@ -72,7 +72,7 @@ As a sysadmin, I want to configure the agent via config files so that I can cust
 - **SC-003**: DNS tests complete within timeout (default 5 seconds per domain)
 - **SC-004**: Agent handles network errors without crashing
 - **SC-005**: Disk metrics correctly classify alert levels based on thresholds
-- **SC-006**: 80 automated tests covering all agent functionality
+- **SC-006**: 105 automated tests covering all agent functionality
 
 ## Edge Cases
 
@@ -85,10 +85,10 @@ As a sysadmin, I want to configure the agent via config files so that I can cust
 
 ## Implementation Files
 
-- `agent/dns_agent.py` (788 lines) — Main agent code
+- `agent/dns_agent.py` (1269 lines) — Main agent code
 - `agent/agent.conf` — Configuration template
 - `agent/.env.sample` — Secrets template
 - `agent/install_agent.sh` — Automated installer
 - `agent/dns_agent.service` — Systemd unit file
 - `agent/requirements.txt` — Python dependencies
-- `agent/test_agent.py` (1135 lines, 80 tests) — Test suite
+- `agent/test_agent.py` (105 tests) — Test suite
