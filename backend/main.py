@@ -582,7 +582,7 @@ async def admin_login_page() -> HTMLResponse:
 async def admin_login_post(request: Request):
     """Valida credenciais e seta cookie de sessão."""
     if not ADMIN_USER or not ADMIN_PASSWORD:
-        return HTMLResponse("ADMIN_USER/ADMIN_PASSWORD não configurados", status_code=503)
+        return RedirectResponse("/admin/login?error=config", status_code=303)
 
     form = await request.form()
     username = form.get("username", "")
@@ -590,7 +590,7 @@ async def admin_login_post(request: Request):
 
     if not secrets.compare_digest(username, ADMIN_USER) or \
        not secrets.compare_digest(password, ADMIN_PASSWORD):
-        return HTMLResponse("Credenciais inválidas", status_code=401)
+        return RedirectResponse("/admin/login?error=1", status_code=303)
 
     resp = RedirectResponse("/admin", status_code=303)
     cookie_val = _sign_admin_cookie(username)

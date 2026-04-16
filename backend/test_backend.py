@@ -1708,8 +1708,8 @@ class TestAdminLogin:
             cookie_header = resp.headers.get("set-cookie", "")
             assert "admin_session" in cookie_header
 
-    def test_login_post_invalid_credentials_returns_401(self):
-        """POST /admin/login com credenciais erradas deve retornar 401."""
+    def test_login_post_invalid_credentials_redirects_with_error(self):
+        """POST /admin/login com credenciais erradas deve redirecionar para login?error=1."""
         import importlib
         import main as m
 
@@ -1723,10 +1723,11 @@ class TestAdminLogin:
                 return resp
 
             resp = self._run(run())
-            assert resp.status_code == 401
+            assert resp.status_code == 303
+            assert "/admin/login?error=1" in resp.headers.get("location", "")
 
-    def test_login_post_missing_env_returns_503(self):
-        """POST /admin/login sem ADMIN_USER/PASSWORD configurados deve retornar 503."""
+    def test_login_post_missing_env_redirects_with_config_error(self):
+        """POST /admin/login sem ADMIN_USER/PASSWORD deve redirecionar para login?error=config."""
         import importlib
         import main as m
 
@@ -1740,7 +1741,8 @@ class TestAdminLogin:
                 return resp
 
             resp = self._run(run())
-            assert resp.status_code == 503
+            assert resp.status_code == 303
+            assert "/admin/login?error=config" in resp.headers.get("location", "")
 
     def test_sign_and_verify_cookie_roundtrip(self):
         """Cookie assinado deve ser verificável."""

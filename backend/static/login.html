@@ -21,36 +21,39 @@
     max-width: 380px;
     box-shadow: 0 24px 80px rgba(0,0,0,.6);
   }
-  .login-card h1 {
-    font-size: 1.2rem;
-    font-weight: 600;
-    color: var(--text);
-    margin-bottom: 6px;
-  }
-  .login-card p { font-size: .85rem; color: var(--text-dim); margin-bottom: 28px; }
+  .login-logo { height: 56px; width: 56px; margin-bottom: 20px; opacity: .9; }
+  .login-card h1 { font-size: 1.2rem; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+  .login-card .subtitle { font-size: .85rem; color: var(--text-dim); margin-bottom: 28px; }
   .field { margin-bottom: 18px; }
   .field label { display: block; font-size: .78rem; color: var(--text-dim); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .05em; }
   .field input { width: 100%; font-family: var(--font); }
   .btn-login { width: 100%; margin-top: 8px; padding: 11px; font-size: .9rem; }
-  .error-msg {
-    background: #f7768e11;
-    border: 1px solid #f7768e44;
-    border-radius: 6px;
-    color: var(--red);
-    padding: 8px 12px;
-    font-size: .82rem;
-    margin-bottom: 16px;
-    display: none;
+
+  .login-error {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 14px 16px;
+    border-radius: var(--radius);
+    margin-bottom: 20px;
+    background: #f7768e0a;
+    border: 1px solid #f7768e22;
+    animation: fadeIn .4s ease both;
   }
+  .login-error-icon { flex-shrink: 0; color: var(--red); margin-top: 1px; }
+  .login-error-body { flex: 1; }
+  .login-error-title { font-weight: 600; color: var(--red); font-size: .85rem; margin-bottom: 4px; }
+  .login-error-msg { color: var(--text-mid); font-size: .82rem; line-height: 1.5; }
+  .login-error .btn { margin-top: 12px; font-size: .78rem; padding: 6px 16px; }
 </style>
 </head>
 <body>
 <div class="login-card scale-in">
-  <img src="/static/logo.svg" alt="" style="height:56px;width:56px;margin-bottom:20px;opacity:.9">
+  <img src="/static/logo.svg" alt="" class="login-logo">
   <h1>DNS Monitor</h1>
-  <p>Painel de administracao</p>
-  <div class="inline-msg inline-error" id="error-msg" style="display:none;margin-bottom:16px"></div>
-  <form method="POST" action="/admin/login">
+  <p class="subtitle" id="subtitle">Painel de administracao</p>
+  <div id="error-box"></div>
+  <form method="POST" action="/admin/login" id="login-form">
     <div class="field">
       <label for="username">Usuario</label>
       <input type="text" id="username" name="username" autocomplete="username" required autofocus>
@@ -65,11 +68,26 @@
 <script src="/static/app.js"></script>
 <script>
   const params = new URLSearchParams(location.search);
-  if (params.get('error')) {
-    const el = document.getElementById('error-msg');
-    el.innerHTML = '<span class="inline-msg-icon">' + ICONS.error + '</span><p>Credenciais invalidas.</p>';
-    el.style.display = 'flex';
-    el.classList.add('fade-in');
+  const errorType = params.get('error');
+  if (errorType) {
+    const box = document.getElementById('error-box');
+    const errors = {
+      '1':      { title: 'Credenciais invalidas', msg: 'Usuario ou senha incorretos. Verifique e tente novamente.' },
+      'config': { title: 'Admin nao configurado', msg: 'As variaveis ADMIN_USER e ADMIN_PASSWORD nao estao definidas no servidor.' },
+    };
+    const err = errors[errorType] || { title: 'Erro', msg: 'Ocorreu um erro ao fazer login.' };
+
+    box.innerHTML = `
+      <div class="login-error">
+        <span class="login-error-icon">${ICONS.error}</span>
+        <div class="login-error-body">
+          <div class="login-error-title">${esc(err.title)}</div>
+          <div class="login-error-msg">${esc(err.msg)}</div>
+        </div>
+      </div>`;
+
+    // Focus no campo que precisa de atencao
+    if (errorType === '1') document.getElementById('password').focus();
   }
 </script>
 </body>
