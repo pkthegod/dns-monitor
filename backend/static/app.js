@@ -6,6 +6,7 @@ const API_BASE = '/api/v1';
 
 // ── Token ──
 function token() {
+  if (window.__TOKEN__) return window.__TOKEN__;
   const el = document.getElementById('tokenInput') || document.getElementById('token-input');
   return el ? el.value.trim() : '';
 }

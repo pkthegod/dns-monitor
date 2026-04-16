@@ -606,6 +606,12 @@ async def admin_logout():
     return resp
 
 
+def _inject_token(html: str) -> str:
+    """Injeta AGENT_TOKEN no HTML para sessoes autenticadas (admin/dashboard)."""
+    snippet = f'<script>window.__TOKEN__="{AGENT_TOKEN}";</script>'
+    return html.replace("</head>", snippet + "\n</head>", 1)
+
+
 @app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
 async def admin_panel(request: Request) -> HTMLResponse:
     """Painel de administração — protegido por cookie de sessão."""
@@ -613,7 +619,8 @@ async def admin_panel(request: Request) -> HTMLResponse:
     if not _verify_admin_cookie(cookie):
         return RedirectResponse("/admin/login", status_code=303)
     html_path = pathlib.Path(__file__).parent / "static" / "admin.html"
-    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+    html = _inject_token(html_path.read_text(encoding="utf-8"))
+    return HTMLResponse(html)
 
 
 @v1.get("/commands/history")
@@ -712,11 +719,16 @@ async def get_command_status(command_id: int, request: Request) -> _SafeJSONResp
 
 @app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
 async def dashboard_page(request: Request) -> HTMLResponse:
-    """Dashboard público de métricas — gráficos de latência, CPU, RAM, DNS."""
+    """Dashboard de métricas — injeta token se sessão admin válida."""
     html_path = pathlib.Path(__file__).parent / "static" / "dashboard.html"
     if not html_path.exists():
         raise HTTPException(status_code=404, detail="Dashboard não encontrado")
-    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+    html = html_path.read_text(encoding="utf-8")
+    # Injeta token automaticamente se o admin esta logado
+    cookie = request.cookies.get("admin_session", "")
+    if _verify_admin_cookie(cookie):
+        html = _inject_token(html)
+    return HTMLResponse(html)
 
 
 @v1.get("/dashboard/data", dependencies=[Depends(require_token)])

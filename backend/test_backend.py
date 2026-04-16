@@ -2397,6 +2397,90 @@ class TestApiVersioning:
 
 
 # ===========================================================================
+# Token embutido no admin — Feature 010 Fase 1
+# ===========================================================================
+
+class TestEmbeddedToken:
+    """Verifica que o admin/dashboard injeta o token na sessao autenticada."""
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def test_admin_html_contains_embedded_token(self):
+        """GET /admin com sessao valida deve injetar __TOKEN__ no HTML."""
+        import importlib
+        import main as m
+
+        with patch.dict(os.environ, {"AGENT_TOKEN": "secret-tok-xyz"}):
+            importlib.reload(m)
+
+            async def run():
+                request = MagicMock()
+                cookie_val = m._sign_admin_cookie("admin")
+                request.cookies = {"admin_session": cookie_val}
+                resp = await m.admin_panel(request)
+                return resp
+
+            resp = self._run(run())
+            body = resp.body.decode()
+            assert "window.__TOKEN__" in body
+            assert "secret-tok-xyz" in body
+
+    def test_admin_html_no_token_without_session(self):
+        """GET /admin sem sessao deve redirecionar, nao expor token."""
+        import importlib
+        import main as m
+        importlib.reload(m)
+
+        async def run():
+            request = MagicMock()
+            request.cookies = {}
+            resp = await m.admin_panel(request)
+            return resp
+
+        resp = self._run(run())
+        assert resp.status_code == 303
+
+    def test_dashboard_has_embedded_token_with_session(self):
+        """GET /dashboard com sessao admin deve injetar __TOKEN__."""
+        import importlib
+        import main as m
+
+        with patch.dict(os.environ, {"AGENT_TOKEN": "dash-tok-123"}):
+            importlib.reload(m)
+
+            async def run():
+                request = MagicMock()
+                cookie_val = m._sign_admin_cookie("admin")
+                request.cookies = {"admin_session": cookie_val}
+                resp = await m.dashboard_page(request)
+                return resp
+
+            resp = self._run(run())
+            body = resp.body.decode()
+            assert "window.__TOKEN__" in body
+            assert "dash-tok-123" in body
+
+    def test_dashboard_no_token_value_without_session(self):
+        """GET /dashboard sem sessao nao deve injetar o valor do token."""
+        import importlib
+        import main as m
+
+        with patch.dict(os.environ, {"AGENT_TOKEN": "should-not-appear"}):
+            importlib.reload(m)
+
+            async def run():
+                request = MagicMock()
+                request.cookies = {}
+                resp = await m.dashboard_page(request)
+                return resp
+
+            resp = self._run(run())
+            body = resp.body.decode()
+            assert "should-not-appear" not in body
+
+
+# ===========================================================================
 # Entry point
 # ===========================================================================
 

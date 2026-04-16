@@ -257,6 +257,12 @@ async function loadDashboard() {
     diff: (a,b,u) => { const ms=new Date(a)-new Date(b); return u==='hour'?ms/36e5:u==='day'?ms/864e5:u==='minute'?ms/6e4:ms; }
   });
 })();
+
+// Auto-load se token embutido via sessao admin
+if (window.__TOKEN__) {
+  document.querySelector('.token-bar').style.display = 'none';
+  loadDashboard();
+}
 </script>
 </body>
 </html>
