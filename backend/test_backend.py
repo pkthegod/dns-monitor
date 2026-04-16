@@ -2216,6 +2216,120 @@ class TestCreateCommandWithParams:
 
 
 # ===========================================================================
+# 27. HEARTBEAT COM DNS CHECKS (Quick Probe)
+# ===========================================================================
+
+class TestHeartbeatWithDnsChecks:
+    """
+    Testa que o backend processa dns_checks de payloads heartbeat.
+    Antes do quick probe, dns_checks só era processado para type="check".
+    Agora dns_checks é processado independente do type.
+    """
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def _make_mocks(self, has_open=False):
+        mock_db = MagicMock()
+        mock_db.upsert_agent = AsyncMock(return_value={"is_new": False})
+        mock_db.upsert_fingerprint = AsyncMock(return_value={"changed": False})
+        mock_db.insert_heartbeat = AsyncMock()
+        mock_db.insert_metrics_cpu = AsyncMock()
+        mock_db.insert_metrics_ram = AsyncMock()
+        mock_db.insert_metrics_disk = AsyncMock()
+        mock_db.insert_metrics_io = AsyncMock()
+        mock_db.insert_dns_service_status = AsyncMock()
+        mock_db.insert_dns_checks = AsyncMock()
+        mock_db.insert_alert = AsyncMock(return_value=42)
+        mock_db.mark_alert_notified = AsyncMock()
+        mock_db.has_open_alert = AsyncMock(return_value=has_open)
+        mock_db.resolve_alert = AsyncMock()
+
+        mock_tg = MagicMock()
+        mock_tg.alert_dns_failure = AsyncMock(return_value=True)
+        mock_tg.alert_dns_latency = AsyncMock(return_value=True)
+        mock_tg.alert_dns_service_down = AsyncMock(return_value=True)
+        mock_tg.alert_cpu = AsyncMock(return_value=True)
+        mock_tg.alert_ram = AsyncMock(return_value=True)
+        mock_tg.alert_agent_recovered = AsyncMock(return_value=True)
+        mock_tg.send_new_agent_detected = AsyncMock()
+
+        return mock_db, mock_tg
+
+    def test_heartbeat_with_dns_checks_stores_in_db(self):
+        """Heartbeat com dns_checks deve gravar em dns_checks table."""
+        import importlib
+        import main as m
+        importlib.reload(m)
+
+        mock_db, mock_tg = self._make_mocks()
+        payload_data = make_payload(type_="heartbeat", dns_success=True, dns_latency=12.5)
+
+        async def run():
+            payload = m.AgentPayload(**payload_data)
+            with patch.object(m, 'db', mock_db), patch.object(m, 'tg', mock_tg):
+                await m.receive_metrics(payload)
+
+        self._run(run())
+        mock_db.insert_dns_checks.assert_called_once()
+
+    def test_heartbeat_with_dns_failure_triggers_alert(self):
+        """Heartbeat com quick probe falhando deve disparar alerta DNS."""
+        import importlib
+        import main as m
+        importlib.reload(m)
+
+        mock_db, mock_tg = self._make_mocks()
+        payload_data = make_payload(
+            type_="heartbeat", dns_success=False,
+            dns_error="TIMEOUT", dns_latency=None
+        )
+
+        async def run():
+            payload = m.AgentPayload(**payload_data)
+            with patch.object(m, 'db', mock_db), patch.object(m, 'tg', mock_tg):
+                await m.receive_metrics(payload)
+
+        self._run(run())
+        mock_tg.alert_dns_failure.assert_called_once()
+
+    def test_heartbeat_empty_dns_checks_no_insert(self):
+        """Heartbeat sem dns_checks (probe desabilitado) não deve chamar insert_dns_checks."""
+        import importlib
+        import main as m
+        importlib.reload(m)
+
+        mock_db, mock_tg = self._make_mocks()
+        payload_data = make_payload(type_="heartbeat")
+        payload_data["dns_checks"] = []
+
+        async def run():
+            payload = m.AgentPayload(**payload_data)
+            with patch.object(m, 'db', mock_db), patch.object(m, 'tg', mock_tg):
+                await m.receive_metrics(payload)
+
+        self._run(run())
+        mock_db.insert_dns_checks.assert_not_called()
+
+    def test_heartbeat_stores_dns_service_status(self):
+        """Heartbeat deve gravar dns_service_status (antes só check fazia isso)."""
+        import importlib
+        import main as m
+        importlib.reload(m)
+
+        mock_db, mock_tg = self._make_mocks()
+        payload_data = make_payload(type_="heartbeat")
+
+        async def run():
+            payload = m.AgentPayload(**payload_data)
+            with patch.object(m, 'db', mock_db), patch.object(m, 'tg', mock_tg):
+                await m.receive_metrics(payload)
+
+        self._run(run())
+        mock_db.insert_dns_service_status.assert_called_once()
+
+
+# ===========================================================================
 # Entry point
 # ===========================================================================
 

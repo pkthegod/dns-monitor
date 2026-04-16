@@ -541,12 +541,52 @@ def run_full_check(cfg: configparser.ConfigParser, logger: logging.Logger) -> No
     logger.info("Ciclo completo concluído em %.2fs", elapsed)
 
 
+# ---------------------------------------------------------------------------
+# Quick Probe — teste DNS leve de alta frequência
+# ---------------------------------------------------------------------------
+
+_latest_quick_probe: dict = None  # type: ignore[assignment]
+
+
+def run_quick_probe(cfg: configparser.ConfigParser, logger: logging.Logger) -> None:
+    """
+    Executa um teste DNS leve em um único domínio com timeout curto e sem retries.
+    Armazena o resultado em _latest_quick_probe para o próximo heartbeat.
+    """
+    global _latest_quick_probe
+
+    domain = cfg.get("schedule", "quick_probe_domain", fallback="").strip()
+    if not domain:
+        domains_raw = cfg.get("dns", "test_domains", fallback="google.com")
+        domain = domains_raw.split(",")[0].strip()
+
+    resolver_ip = cfg.get("dns", "local_resolver", fallback="").strip() or None
+    dns_port    = cfg.getint("dns", "dns_port", fallback=53)
+    timeout     = cfg.getfloat("schedule", "quick_probe_timeout", fallback=2.0)
+
+    result = _resolve_domain(domain, resolver_ip, dns_port, timeout, 1, logger)
+    _latest_quick_probe = result
+
+    logger.debug("quick_probe: %s → %s (%.1fms)",
+                 domain,
+                 "OK" if result["success"] else result.get("error", "FAIL"),
+                 result.get("latency_ms") or 0)
+
+
 def run_heartbeat(cfg: configparser.ConfigParser, logger: logging.Logger) -> None:
-    """Heartbeat leve: apenas sinal de vida + métricas rápidas."""
+    """Heartbeat leve: sinal de vida + métricas rápidas + quick probe se disponível."""
+    global _latest_quick_probe
     logger.debug("Enviando heartbeat...")
     dns_service    = detect_dns_service()
     system_metrics = collect_system_metrics(cfg)
-    payload = build_payload(cfg, dns_service, [], system_metrics, "heartbeat")
+
+    # Inclui resultado do quick probe no heartbeat se disponível
+    dns_checks = []
+    if _latest_quick_probe is not None:
+        dns_checks = [_latest_quick_probe]
+        _latest_quick_probe = None
+
+    payload = build_payload(cfg, dns_service, dns_checks, system_metrics, "heartbeat")
     send_payload(cfg, payload, logger)
 
 
@@ -1229,6 +1269,12 @@ def setup_schedule(cfg: configparser.ConfigParser, logger: logging.Logger) -> No
     heartbeat_interval = cfg.getint("schedule", "heartbeat_interval", fallback=300)
     schedule.every(heartbeat_interval).seconds.do(run_heartbeat, cfg=cfg, logger=logger)
     logger.info("Heartbeat agendado a cada %ds", heartbeat_interval)
+
+    # Quick Probe DNS — teste leve de alta frequência
+    if cfg.getboolean("schedule", "quick_probe_enabled", fallback=True):
+        probe_interval = max(10, cfg.getint("schedule", "quick_probe_interval", fallback=60))
+        schedule.every(probe_interval).seconds.do(run_quick_probe, cfg=cfg, logger=logger)
+        logger.info("Quick probe DNS agendado a cada %ds", probe_interval)
 
     # Polling de comandos remotos (12h por padrão)
     cmd_interval_h = cfg.getint("schedule", "command_poll_interval_h", fallback=12)

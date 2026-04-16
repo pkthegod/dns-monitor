@@ -367,12 +367,11 @@ async def receive_metrics(payload: AgentPayload) -> JSONResponse:
         if sys.io:
             await db.insert_metrics_io(hostname, ts, sys.io.model_dump())
 
-    # Checks DNS e status do serviço (somente em "check")
-    if payload.type == "check":
-        if payload.dns_service:
-            await db.insert_dns_service_status(hostname, ts, payload.dns_service.model_dump())
-        if payload.dns_checks:
-            await db.insert_dns_checks(hostname, ts, [c.model_dump() for c in payload.dns_checks])
+    # Checks DNS e status do serviço (check e heartbeat com quick probe)
+    if payload.dns_service:
+        await db.insert_dns_service_status(hostname, ts, payload.dns_service.model_dump())
+    if payload.dns_checks:
+        await db.insert_dns_checks(hostname, ts, [c.model_dump() for c in payload.dns_checks])
 
     # Avalia e dispara alertas assincronamente
     await _evaluate_alerts(payload)

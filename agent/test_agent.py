@@ -1566,6 +1566,210 @@ class TestPollCommandsWithParams:
 
 
 # ===========================================================================
+# 21. Quick Probe — run_quick_probe
+# ===========================================================================
+
+class TestQuickProbe:
+    """Testa a função run_quick_probe e integração com heartbeat."""
+
+    def _reset_probe(self):
+        import dns_agent as da
+        da._latest_quick_probe = None
+
+    def test_probe_resolves_single_domain_and_stores_result(self):
+        import dns_agent as da
+        self._reset_probe()
+        cfg = make_cfg()
+        logger = make_logger()
+        fake_result = {
+            "domain": "google.com", "resolver": "127.0.0.1",
+            "success": True, "latency_ms": 12.5,
+            "response_ips": ["142.250.218.46"], "error": None, "attempts": 1,
+        }
+        with patch("dns_agent._resolve_domain", return_value=fake_result):
+            da.run_quick_probe(cfg, logger)
+        assert da._latest_quick_probe is not None
+        assert da._latest_quick_probe["success"] is True
+        assert da._latest_quick_probe["domain"] == "google.com"
+
+    def test_probe_records_timeout_without_retrying(self):
+        import dns_agent as da
+        self._reset_probe()
+        cfg = make_cfg()
+        logger = make_logger()
+        timeout_result = {
+            "domain": "google.com", "resolver": "127.0.0.1",
+            "success": False, "latency_ms": None,
+            "response_ips": [], "error": "TIMEOUT", "attempts": 1,
+        }
+        with patch("dns_agent._resolve_domain", return_value=timeout_result) as mock_resolve:
+            da.run_quick_probe(cfg, logger)
+        assert da._latest_quick_probe["error"] == "TIMEOUT"
+        assert da._latest_quick_probe["attempts"] == 1
+        # Chamou _resolve_domain com retries=1 (fail-fast)
+        call_args = mock_resolve.call_args
+        assert call_args[0][4] == 1  # 5th positional arg = retries
+
+    def test_probe_records_nxdomain(self):
+        import dns_agent as da
+        self._reset_probe()
+        cfg = make_cfg()
+        logger = make_logger()
+        nxdomain_result = {
+            "domain": "google.com", "resolver": "127.0.0.1",
+            "success": False, "latency_ms": None,
+            "response_ips": [], "error": "NXDOMAIN", "attempts": 1,
+        }
+        with patch("dns_agent._resolve_domain", return_value=nxdomain_result):
+            da.run_quick_probe(cfg, logger)
+        assert da._latest_quick_probe["error"] == "NXDOMAIN"
+
+    def test_probe_uses_custom_domain_from_config(self):
+        import dns_agent as da
+        self._reset_probe()
+        cfg = make_cfg({"schedule": {"quick_probe_domain": "cloudflare.com"}})
+        logger = make_logger()
+        with patch("dns_agent._resolve_domain", return_value={"domain": "cloudflare.com", "success": True, "latency_ms": 5, "response_ips": [], "error": None, "attempts": 1}) as mock_resolve:
+            da.run_quick_probe(cfg, logger)
+        assert mock_resolve.call_args[0][0] == "cloudflare.com"
+
+    def test_probe_defaults_to_first_test_domain(self):
+        import dns_agent as da
+        self._reset_probe()
+        cfg = make_cfg()  # test_domains = "google.com, cloudflare.com"
+        logger = make_logger()
+        with patch("dns_agent._resolve_domain", return_value={"domain": "google.com", "success": True, "latency_ms": 5, "response_ips": [], "error": None, "attempts": 1}) as mock_resolve:
+            da.run_quick_probe(cfg, logger)
+        assert mock_resolve.call_args[0][0] == "google.com"
+
+    def test_probe_uses_custom_timeout(self):
+        import dns_agent as da
+        self._reset_probe()
+        cfg = make_cfg({"schedule": {"quick_probe_timeout": "1.5"}})
+        logger = make_logger()
+        with patch("dns_agent._resolve_domain", return_value={"domain": "google.com", "success": True, "latency_ms": 5, "response_ips": [], "error": None, "attempts": 1}) as mock_resolve:
+            da.run_quick_probe(cfg, logger)
+        assert mock_resolve.call_args[0][3] == 1.5  # 4th positional = timeout
+
+
+# ===========================================================================
+# 22. Heartbeat com Quick Probe
+# ===========================================================================
+
+class TestHeartbeatQuickProbeIntegration:
+    """Testa que run_heartbeat inclui quick probe no payload."""
+
+    def _reset_probe(self):
+        import dns_agent as da
+        da._latest_quick_probe = None
+
+    def test_heartbeat_includes_probe_in_dns_checks(self):
+        import dns_agent as da
+        self._reset_probe()
+        cfg = make_cfg()
+        logger = make_logger()
+
+        da._latest_quick_probe = {
+            "domain": "google.com", "resolver": "127.0.0.1",
+            "success": True, "latency_ms": 10.0,
+            "response_ips": ["1.2.3.4"], "error": None, "attempts": 1,
+        }
+
+        with patch("dns_agent.detect_dns_service", return_value={"name": "unbound", "active": True, "version": "1.17"}), \
+             patch("dns_agent.collect_system_metrics", return_value={}), \
+             patch("dns_agent.send_payload") as mock_send:
+            da.run_heartbeat(cfg, logger)
+
+        payload = mock_send.call_args[0][1]
+        assert len(payload["dns_checks"]) == 1
+        assert payload["dns_checks"][0]["domain"] == "google.com"
+        assert payload["type"] == "heartbeat"
+
+    def test_heartbeat_clears_probe_after_reading(self):
+        import dns_agent as da
+        self._reset_probe()
+        cfg = make_cfg()
+        logger = make_logger()
+
+        da._latest_quick_probe = {"domain": "google.com", "success": True, "latency_ms": 5, "response_ips": [], "error": None, "attempts": 1, "resolver": "127.0.0.1"}
+
+        with patch("dns_agent.detect_dns_service", return_value={"name": "unbound", "active": True, "version": "1.17"}), \
+             patch("dns_agent.collect_system_metrics", return_value={}), \
+             patch("dns_agent.send_payload"):
+            da.run_heartbeat(cfg, logger)
+
+        assert da._latest_quick_probe is None
+
+    def test_heartbeat_empty_dns_checks_when_no_probe(self):
+        import dns_agent as da
+        self._reset_probe()
+        cfg = make_cfg()
+        logger = make_logger()
+
+        with patch("dns_agent.detect_dns_service", return_value={"name": "unbound", "active": True, "version": "1.17"}), \
+             patch("dns_agent.collect_system_metrics", return_value={}), \
+             patch("dns_agent.send_payload") as mock_send:
+            da.run_heartbeat(cfg, logger)
+
+        payload = mock_send.call_args[0][1]
+        assert payload["dns_checks"] == []
+
+
+# ===========================================================================
+# 23. Setup Schedule com Quick Probe
+# ===========================================================================
+
+class TestSetupScheduleQuickProbe:
+    """Testa que setup_schedule agenda quick probe corretamente."""
+
+    def test_quick_probe_scheduled_when_enabled(self):
+        import dns_agent as da
+        import schedule as sched
+        sched.clear()
+        cfg = make_cfg({"schedule": {
+            "check_times": "00:00",
+            "quick_probe_enabled": "true",
+            "quick_probe_interval": "60",
+        }})
+        logger = make_logger()
+        da.setup_schedule(cfg, logger)
+        # Deve ter jobs: 1 check_time + 1 heartbeat + 1 quick_probe + 1 command_poll
+        assert len(sched.get_jobs()) == 4
+        sched.clear()
+
+    def test_quick_probe_not_scheduled_when_disabled(self):
+        import dns_agent as da
+        import schedule as sched
+        sched.clear()
+        cfg = make_cfg({"schedule": {
+            "check_times": "00:00",
+            "quick_probe_enabled": "false",
+            "quick_probe_interval": "60",
+        }})
+        logger = make_logger()
+        da.setup_schedule(cfg, logger)
+        # Sem quick probe: 1 check_time + 1 heartbeat + 1 command_poll = 3
+        assert len(sched.get_jobs()) == 3
+        sched.clear()
+
+    def test_quick_probe_interval_minimum_10s(self):
+        import dns_agent as da
+        import schedule as sched
+        sched.clear()
+        cfg = make_cfg({"schedule": {
+            "check_times": "00:00",
+            "quick_probe_enabled": "true",
+            "quick_probe_interval": "5",  # abaixo do mínimo
+        }})
+        logger = make_logger()
+        da.setup_schedule(cfg, logger)
+        # Deve ter sido agendado com 10s (mínimo), não 5s
+        jobs = sched.get_jobs()
+        sched.clear()
+        assert len(jobs) == 4  # quick probe still scheduled, just with min interval
+
+
+# ===========================================================================
 # Entry point
 # ===========================================================================
 
