@@ -725,3 +725,27 @@ async def health() -> JSONResponse:
 # Registra o router versionado
 # ---------------------------------------------------------------------------
 app.include_router(v1)
+
+# ---------------------------------------------------------------------------
+# Compatibilidade com agentes antigos (v1.0.0) — rotas sem /api/v1 prefix
+# Encaminha para os mesmos handlers do router v1.
+# Remover quando todos os agentes estiverem atualizados.
+# ---------------------------------------------------------------------------
+_legacy = APIRouter(tags=["legacy"], deprecated=True, include_in_schema=False)
+
+_legacy.post("/metrics", dependencies=[Depends(require_token)])(receive_metrics)
+_legacy.get("/agents", dependencies=[Depends(require_token)])(list_agents)
+_legacy.patch("/agents/{hostname}", dependencies=[Depends(require_token)])(update_agent)
+_legacy.delete("/agents/{hostname}", dependencies=[Depends(require_token)])(delete_agent)
+_legacy.get("/alerts", dependencies=[Depends(require_token)])(list_alerts)
+_legacy.get("/commands/{hostname}")(get_commands)
+_legacy.post("/commands/{command_id}/result")(post_command_result)
+_legacy.post("/commands")(create_command)
+_legacy.get("/commands/{hostname}/history")(get_command_history)
+_legacy.get("/commands/history")(get_all_commands_history)
+_legacy.get("/commands/{command_id}/status")(get_command_status)
+_legacy.get("/agent/version")(agent_version_info)
+_legacy.get("/agent/latest")(agent_latest_download)
+_legacy.post("/tools/geolocate", dependencies=[Depends(require_token)])(geolocate_ips)
+
+app.include_router(_legacy)

@@ -2388,10 +2388,10 @@ class TestApiVersioning:
         assert "/admin/login" in routes
         assert "/admin/logout" in routes
 
-    def test_old_metrics_path_not_registered(self):
-        """Rota antiga /metrics NAO deve existir como endpoint direto."""
+    def test_legacy_metrics_path_still_works(self):
+        """Rota antiga /metrics deve existir para backward compat com agentes v1.0.0."""
         routes = self._get_routes()
-        assert "/metrics" not in routes
+        assert "/metrics" in routes
 
 
 # ===========================================================================
