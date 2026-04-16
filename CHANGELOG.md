@@ -2,6 +2,50 @@
 
 ---
 
+## [v0.4.0] — 2026-04-16 — API Versioning, TOML Config & Adaptive Polling
+
+### Novidades
+
+#### API Versioning (feature 008)
+
+- Todas as rotas de API movidas para `/api/v1/` via `APIRouter`
+- `/health`, `/admin/*`, `/static/*` permanecem na raiz
+- Rotas legacy (sem prefixo) mantidas para backward compat com agentes v1.0.0
+- Admin panel atualizado (`API_BASE = '/api/v1'`)
+- +10 testes de verificacao de rotas
+
+#### Migracao ConfigParser para TOML (feature 009)
+
+- Nova classe `Config` com interface identica a ConfigParser (`get`, `getint`, `getfloat`, `getboolean`)
+- `load_config()` le `.toml` (preferencial) com expansao `${VAR}`, fallback para `.conf`
+- `agent.toml` criado com tipos nativos (int, float, bool)
+- `tomli` adicionado ao `requirements.txt` para Python <3.11
+- `install_agent.sh` prioriza `.toml`, preserva `.conf` legado
+- +16 testes Config/TOML
+
+#### Polling adaptativo de comandos
+
+- Poll a cada 60s (era 12h) — comandos remotos respondem em ate 60s
+- Apos 2 polls vazios (2 min), entra em idle (`command_poll_idle_interval`, default 600s)
+- Quando encontra comando, reseta para polling ativo (60s)
+- +5 testes TestAdaptivePolling
+
+### Correcoes
+
+| # | Problema | Correcao |
+|---|---|---|
+| 18 | CRLF em install_agent.sh quebrava bash no Linux | `sed -i 's/\r$//'` + `.gitattributes` forcando LF |
+| 19 | Agentes v1.0.0 davam 404 apos API versioning | Rotas legacy registradas no backend para backward compat |
+
+### Testes
+
+- `test_agent.py`: 138 testes (+21)
+- `test_backend.py`: 151 testes (+10)
+- Total: **289 testes** (anterior: 258)
+- `AGENT_VERSION`: `1.1.0` -> `1.2.0`
+
+---
+
 ## [v0.3.0] — 2026-04-16 — Painel Admin, Quick Probe & Auto-update
 
 ### Novidades

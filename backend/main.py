@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 import pathlib
 import json
@@ -307,6 +307,11 @@ app = FastAPI(
 
 app.mount("/static", StaticFiles(directory=str(pathlib.Path(__file__).parent / "static")), name="static")
 
+# ---------------------------------------------------------------------------
+# API Router versionado — todas as rotas de API ficam sob /api/v1
+# ---------------------------------------------------------------------------
+v1 = APIRouter(prefix="/api/v1")
+
 # Caminho do arquivo do agente servido para auto-update.
 # Pode ser sobrescrito pela variável de ambiente AGENT_FILE_PATH.
 import re as _re
@@ -322,7 +327,7 @@ AGENT_FILE_PATH = pathlib.Path(
 # Endpoints
 # ---------------------------------------------------------------------------
 
-@app.post("/metrics", dependencies=[Depends(require_token)])
+@v1.post("/metrics", dependencies=[Depends(require_token)])
 async def receive_metrics(payload: AgentPayload) -> JSONResponse:
     """
     Recebe o payload do agente (check ou heartbeat),
@@ -449,7 +454,7 @@ class AgentMetaUpdate(BaseModel):
     active:       Optional[bool] = None
 
 
-@app.patch("/agents/{hostname}", dependencies=[Depends(require_token)])
+@v1.patch("/agents/{hostname}", dependencies=[Depends(require_token)])
 async def update_agent(hostname: str, body: AgentMetaUpdate) -> JSONResponse:
     """Atualiza display_name, location e notes de um agente."""
     found = await db.update_agent_meta(
@@ -460,7 +465,7 @@ async def update_agent(hostname: str, body: AgentMetaUpdate) -> JSONResponse:
     return JSONResponse({"status": "ok", "hostname": hostname})
 
 
-@app.delete("/agents/{hostname}", dependencies=[Depends(require_token)])
+@v1.delete("/agents/{hostname}", dependencies=[Depends(require_token)])
 async def delete_agent(hostname: str) -> JSONResponse:
     """Remove o agente e todo o histórico de dados do banco."""
     found = await db.delete_agent(hostname)
@@ -470,7 +475,7 @@ async def delete_agent(hostname: str) -> JSONResponse:
     return JSONResponse({"status": "ok", "hostname": hostname})
 
 
-@app.get("/agents", dependencies=[Depends(require_token)])
+@v1.get("/agents", dependencies=[Depends(require_token)])
 async def list_agents(request: Request) -> _SafeJSONResponse:
     """Lista status atual de todos os agentes registrados."""
     async with db.get_conn() as conn:
@@ -478,14 +483,14 @@ async def list_agents(request: Request) -> _SafeJSONResponse:
     return _SafeJSONResponse([dict(r) for r in rows])
 
 
-@app.get("/alerts", dependencies=[Depends(require_token)])
+@v1.get("/alerts", dependencies=[Depends(require_token)])
 async def list_alerts(hostname: Optional[str] = None) -> _SafeJSONResponse:
     """Lista alertas abertos."""
     alerts = await db.get_open_alerts(hostname)
     return _SafeJSONResponse(alerts)
 
 
-@app.get("/commands/{hostname}")
+@v1.get("/commands/{hostname}")
 async def get_commands(hostname: str, request: Request) -> _SafeJSONResponse:
     """Retorna comandos pendentes para o agente. Chamado pelo agente no poll."""
     await require_token(request)
@@ -493,7 +498,7 @@ async def get_commands(hostname: str, request: Request) -> _SafeJSONResponse:
     return _SafeJSONResponse(commands)
 
 
-@app.post("/commands/{command_id}/result")
+@v1.post("/commands/{command_id}/result")
 async def post_command_result(command_id: int, request: Request) -> JSONResponse:
     """Agente reporta o resultado de um comando executado."""
     await require_token(request)
@@ -520,7 +525,7 @@ async def post_command_result(command_id: int, request: Request) -> JSONResponse
     return JSONResponse({"status": "ok"})
 
 
-@app.post("/commands")
+@v1.post("/commands")
 async def create_command(request: Request) -> JSONResponse:
     """
     Cria um comando para um agente executar no próximo poll.
@@ -558,7 +563,7 @@ async def create_command(request: Request) -> JSONResponse:
     return JSONResponse(response, status_code=201)
 
 
-@app.get("/commands/{hostname}/history")
+@v1.get("/commands/{hostname}/history")
 async def get_command_history(hostname: str, request: Request) -> _SafeJSONResponse:
     """Histórico de comandos executados em um host."""
     await require_token(request)
@@ -577,7 +582,7 @@ async def admin_login_page() -> HTMLResponse:
 async def admin_login_post(request: Request):
     """Valida credenciais e seta cookie de sessão."""
     if not ADMIN_USER or not ADMIN_PASSWORD:
-        return HTMLResponse("ADMIN_USER/ADMIN_PASSWORD não configurados", status_code=503)
+        return RedirectResponse("/admin/login?error=config", status_code=303)
 
     form = await request.form()
     username = form.get("username", "")
@@ -585,7 +590,7 @@ async def admin_login_post(request: Request):
 
     if not secrets.compare_digest(username, ADMIN_USER) or \
        not secrets.compare_digest(password, ADMIN_PASSWORD):
-        return HTMLResponse("Credenciais inválidas", status_code=401)
+        return RedirectResponse("/admin/login?error=1", status_code=303)
 
     resp = RedirectResponse("/admin", status_code=303)
     cookie_val = _sign_admin_cookie(username)
@@ -601,6 +606,12 @@ async def admin_logout():
     return resp
 
 
+def _inject_token(html: str) -> str:
+    """Injeta AGENT_TOKEN no HTML para sessoes autenticadas (admin/dashboard)."""
+    snippet = f'<script>window.__TOKEN__="{AGENT_TOKEN}";</script>'
+    return html.replace("</head>", snippet + "\n</head>", 1)
+
+
 @app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
 async def admin_panel(request: Request) -> HTMLResponse:
     """Painel de administração — protegido por cookie de sessão."""
@@ -608,10 +619,11 @@ async def admin_panel(request: Request) -> HTMLResponse:
     if not _verify_admin_cookie(cookie):
         return RedirectResponse("/admin/login", status_code=303)
     html_path = pathlib.Path(__file__).parent / "static" / "admin.html"
-    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+    html = _inject_token(html_path.read_text(encoding="utf-8"))
+    return HTMLResponse(html)
 
 
-@app.get("/commands/history")
+@v1.get("/commands/history")
 async def get_all_commands_history(request: Request, limit: int = 50) -> _SafeJSONResponse:
     """Histórico recente de todos os comandos (para o painel admin)."""
     await require_token(request)
@@ -619,7 +631,7 @@ async def get_all_commands_history(request: Request, limit: int = 50) -> _SafeJS
     return _SafeJSONResponse(history)
 
 
-@app.get("/agent/version")
+@v1.get("/agent/version")
 async def agent_version_info(request: Request) -> JSONResponse:
     """
     Retorna a versão atual do agente disponível para download.
@@ -639,7 +651,7 @@ async def agent_version_info(request: Request) -> JSONResponse:
     })
 
 
-@app.get("/agent/latest")
+@v1.get("/agent/latest")
 async def agent_latest_download(request: Request):
     """
     Serve o arquivo dns_agent.py atual para o agente baixar durante auto-update.
@@ -658,7 +670,7 @@ async def agent_latest_download(request: Request):
     )
 
 
-@app.post("/tools/geolocate", dependencies=[Depends(require_token)])
+@v1.post("/tools/geolocate", dependencies=[Depends(require_token)])
 async def geolocate_ips(request: Request) -> JSONResponse:
     """
     Geolocaliza uma lista de IPs usando ip-api.com (gratuito, sem chave).
@@ -695,7 +707,7 @@ async def geolocate_ips(request: Request) -> JSONResponse:
     return JSONResponse(data)
 
 
-@app.get("/commands/{command_id}/status")
+@v1.get("/commands/{command_id}/status")
 async def get_command_status(command_id: int, request: Request) -> _SafeJSONResponse:
     """Retorna o status atual de um comando específico (para polling no painel)."""
     await require_token(request)
@@ -703,6 +715,97 @@ async def get_command_status(command_id: int, request: Request) -> _SafeJSONResp
     if not cmd:
         raise HTTPException(status_code=404, detail="Comando não encontrado")
     return _SafeJSONResponse(cmd)
+
+
+@app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
+async def dashboard_page(request: Request) -> HTMLResponse:
+    """Dashboard de métricas — injeta token se sessão admin válida."""
+    html_path = pathlib.Path(__file__).parent / "static" / "dashboard.html"
+    if not html_path.exists():
+        raise HTTPException(status_code=404, detail="Dashboard não encontrado")
+    html = html_path.read_text(encoding="utf-8")
+    # Injeta token automaticamente se o admin esta logado
+    cookie = request.cookies.get("admin_session", "")
+    if _verify_admin_cookie(cookie):
+        html = _inject_token(html)
+    return HTMLResponse(html)
+
+
+@v1.get("/dashboard/data", dependencies=[Depends(require_token)])
+async def dashboard_data() -> _SafeJSONResponse:
+    """Dados agregados para o dashboard de métricas."""
+    async with db.get_conn() as conn:
+        # Agentes com status atual
+        agents = [dict(r) for r in await conn.fetch(
+            "SELECT * FROM v_agent_current_status ORDER BY hostname"
+        )]
+
+        # Top 10 domínios por latência média (últimas 24h)
+        dns_latency = [dict(r) for r in await conn.fetch("""
+            SELECT domain,
+                   ROUND(AVG(latency_ms)::numeric, 1) AS avg_ms,
+                   ROUND(MAX(latency_ms)::numeric, 1) AS max_ms,
+                   COUNT(*) AS checks,
+                   SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failures
+            FROM dns_checks
+            WHERE ts > NOW() - INTERVAL '24 hours' AND latency_ms IS NOT NULL
+            GROUP BY domain
+            ORDER BY avg_ms DESC
+            LIMIT 10
+        """)]
+
+        # CPU por host (últimas 2h, média por hora)
+        cpu_history = [dict(r) for r in await conn.fetch("""
+            SELECT hostname,
+                   time_bucket('1 hour', ts) AS bucket,
+                   ROUND(AVG(cpu_percent)::numeric, 1) AS cpu_avg
+            FROM metrics_cpu
+            WHERE ts > NOW() - INTERVAL '24 hours'
+            GROUP BY hostname, bucket
+            ORDER BY bucket
+        """)]
+
+        # RAM por host (últimas 2h, média por hora)
+        ram_history = [dict(r) for r in await conn.fetch("""
+            SELECT hostname,
+                   time_bucket('1 hour', ts) AS bucket,
+                   ROUND(AVG(ram_percent)::numeric, 1) AS ram_avg
+            FROM metrics_ram
+            WHERE ts > NOW() - INTERVAL '24 hours'
+            GROUP BY hostname, bucket
+            ORDER BY bucket
+        """)]
+
+        # Latência DNS por hora (últimas 24h)
+        dns_history = [dict(r) for r in await conn.fetch("""
+            SELECT hostname,
+                   time_bucket('1 hour', ts) AS bucket,
+                   ROUND(AVG(latency_ms)::numeric, 1) AS latency_avg,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failures
+            FROM dns_checks
+            WHERE ts > NOW() - INTERVAL '24 hours'
+            GROUP BY hostname, bucket
+            ORDER BY bucket
+        """)]
+
+        # Alertas recentes (últimas 24h)
+        recent_alerts = [dict(r) for r in await conn.fetch("""
+            SELECT hostname, alert_type, severity, message, ts
+            FROM alerts_log
+            WHERE ts > NOW() - INTERVAL '24 hours'
+            ORDER BY ts DESC
+            LIMIT 20
+        """)]
+
+    return _SafeJSONResponse({
+        "agents": agents,
+        "dns_latency": dns_latency,
+        "cpu_history": cpu_history,
+        "ram_history": ram_history,
+        "dns_history": dns_history,
+        "recent_alerts": recent_alerts,
+    })
 
 
 @app.get("/health")
@@ -714,3 +817,33 @@ async def health() -> JSONResponse:
         return JSONResponse({"status": "ok", "db": "connected"})
     except Exception as exc:
         return JSONResponse({"status": "error", "db": str(exc)}, status_code=503)
+
+
+# ---------------------------------------------------------------------------
+# Registra o router versionado
+# ---------------------------------------------------------------------------
+app.include_router(v1)
+
+# ---------------------------------------------------------------------------
+# Compatibilidade com agentes antigos (v1.0.0) — rotas sem /api/v1 prefix
+# Encaminha para os mesmos handlers do router v1.
+# Remover quando todos os agentes estiverem atualizados.
+# ---------------------------------------------------------------------------
+_legacy = APIRouter(tags=["legacy"], deprecated=True, include_in_schema=False)
+
+_legacy.post("/metrics", dependencies=[Depends(require_token)])(receive_metrics)
+_legacy.get("/agents", dependencies=[Depends(require_token)])(list_agents)
+_legacy.patch("/agents/{hostname}", dependencies=[Depends(require_token)])(update_agent)
+_legacy.delete("/agents/{hostname}", dependencies=[Depends(require_token)])(delete_agent)
+_legacy.get("/alerts", dependencies=[Depends(require_token)])(list_alerts)
+_legacy.get("/commands/{hostname}")(get_commands)
+_legacy.post("/commands/{command_id}/result")(post_command_result)
+_legacy.post("/commands")(create_command)
+_legacy.get("/commands/{hostname}/history")(get_command_history)
+_legacy.get("/commands/history")(get_all_commands_history)
+_legacy.get("/commands/{command_id}/status")(get_command_status)
+_legacy.get("/agent/version")(agent_version_info)
+_legacy.get("/agent/latest")(agent_latest_download)
+_legacy.post("/tools/geolocate", dependencies=[Depends(require_token)])(geolocate_ips)
+
+app.include_router(_legacy)

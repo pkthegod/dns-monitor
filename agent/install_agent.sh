@@ -104,18 +104,30 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cp "$SCRIPT_DIR/dns_agent.py"     "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/requirements.txt" "$INSTALL_DIR/"
 
-# agent.conf — preserva se já existir
-if [ ! -f "$CONFIG_DIR/agent.conf" ]; then
+# agent.toml — preferencial (TOML); preserva se já existir
+if [ -f "$SCRIPT_DIR/agent.toml" ]; then
+    if [ ! -f "$CONFIG_DIR/agent.toml" ]; then
+        cp "$SCRIPT_DIR/agent.toml" "$CONFIG_DIR/agent.toml"
+        chmod 640 "$CONFIG_DIR/agent.toml"
+        chown root:"$SERVICE_USER" "$CONFIG_DIR/agent.toml"
+        echo "   agent.toml copiado para $CONFIG_DIR/agent.toml"
+    else
+        echo "   agent.toml existente preservado."
+    fi
+    ln -sfn "$CONFIG_DIR/agent.toml" "$INSTALL_DIR/agent.toml"
+fi
+
+# agent.conf — fallback legado; preserva se já existir
+if [ ! -f "$CONFIG_DIR/agent.toml" ] && [ ! -f "$CONFIG_DIR/agent.conf" ]; then
     cp "$SCRIPT_DIR/agent.conf" "$CONFIG_DIR/agent.conf"
     chmod 640 "$CONFIG_DIR/agent.conf"
     chown root:"$SERVICE_USER" "$CONFIG_DIR/agent.conf"
-    echo "   agent.conf copiado para $CONFIG_DIR/agent.conf"
-else
-    echo "   agent.conf existente preservado."
+    echo "   agent.conf copiado para $CONFIG_DIR/agent.conf (fallback)"
+    ln -sfn "$CONFIG_DIR/agent.conf" "$INSTALL_DIR/agent.conf"
+elif [ -f "$CONFIG_DIR/agent.conf" ] && [ ! -f "$CONFIG_DIR/agent.toml" ]; then
+    echo "   agent.conf legado preservado (considere migrar para agent.toml)."
+    ln -sfn "$CONFIG_DIR/agent.conf" "$INSTALL_DIR/agent.conf"
 fi
-
-# Link simbólico para o agente encontrar o conf no diretório de trabalho
-ln -sfn "$CONFIG_DIR/agent.conf" "$INSTALL_DIR/agent.conf"
 
 # Arquivo de segredos — prioridade:
 #   1. env na mesma pasta do install_agent.sh → copia (sempre atualiza)

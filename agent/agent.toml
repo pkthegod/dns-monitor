@@ -1,0 +1,78 @@
+# ===========================================================================
+# dns-monitor agent — configuracao TOML
+# Valores com ${VAR} sao expandidos a partir de variaveis de ambiente.
+# Defina em /etc/dns-agent/env: AGENT_HOSTNAME, AGENT_TOKEN, AGENT_BACKEND
+# ===========================================================================
+
+[agent]
+# Identificador unico desta maquina
+hostname = "${AGENT_HOSTNAME}"
+# Token de autenticacao compartilhado com o backend
+auth_token = "${AGENT_TOKEN}"
+
+[backend]
+# URL do collector API central
+url = "${AGENT_BACKEND}"
+# Timeout para envio (segundos)
+timeout = 10
+# Tentativas de reenvio em caso de falha
+retries = 3
+# Intervalo entre tentativas (segundos)
+retry_delay = 5
+
+[dns]
+# Dominios testados a cada ciclo (separados por virgula)
+test_domains = "google.com, cloudflare.com, gov.br, aliexpress.com"
+# Servidor DNS local a consultar (vazio = sistema)
+local_resolver = "127.0.0.1"
+# Porta do DNS
+dns_port = 53
+# Timeout de cada consulta DNS (segundos)
+query_timeout = 5
+# Numero de tentativas por dominio antes de marcar como falha
+query_retries = 3
+
+[schedule]
+# Horarios dos testes completos (HH:MM, separados por virgula)
+check_times = "00:00, 02:00, 04:00, 06:00, 08:00, 10:00, 12:00, 14:00, 16:00, 18:00, 20:00, 22:00"
+# Intervalo do heartbeat em segundos (padrao: 300 = 5 minutos)
+heartbeat_interval = 300
+# Polling de comandos remotos — adaptativo
+# Intervalo base em segundos (poll ativo)
+command_poll_interval = 60
+# Após 2 polls vazios, entra em idle por este intervalo (segundos)
+command_poll_idle_interval = 600
+
+# ── Quick Probe — teste DNS leve de alta frequencia ──
+# Habilita/desabilita o quick probe
+quick_probe_enabled = true
+# Intervalo do quick probe em segundos (minimo: 10)
+quick_probe_interval = 60
+# Dominio testado pelo quick probe (vazio = primeiro de test_domains)
+quick_probe_domain = ""
+# Timeout do quick probe em segundos (fail-fast, sem retries)
+quick_probe_timeout = 2.0
+
+[thresholds]
+# Percentual de uso de disco para alerta (0-100)
+disk_warning = 80
+disk_critical = 90
+# Percentual de uso de CPU para alerta (media 5 min)
+cpu_warning = 80
+cpu_critical = 95
+# Percentual de uso de RAM para alerta
+ram_warning = 85
+ram_critical = 95
+# Latencia DNS para alerta (milissegundos)
+dns_latency_warning = 200
+dns_latency_critical = 1000
+
+[logging]
+# Nivel: DEBUG, INFO, WARNING, ERROR
+level = "INFO"
+# Arquivo de log (vazio = stdout/journald)
+file = "/var/log/dns-agent/dns-agent.log"
+# Rotacao: tamanho maximo em MB antes de rotacionar
+max_size_mb = 10
+# Quantos arquivos de backup manter
+backup_count = 5

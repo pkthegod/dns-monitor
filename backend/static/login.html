@@ -5,109 +5,89 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>DNS Monitor — Login</title>
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/base.css">
 <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    font-family: 'Segoe UI', system-ui, sans-serif;
-    background: #0f1117;
-    color: #e2e8f0;
-    min-height: 100vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
+  body { display: flex; align-items: center; justify-content: center; }
+
   .login-card {
-    background: #151820;
-    border: 1px solid #2d3748;
-    border-radius: 12px;
-    padding: 40px 36px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 44px 40px;
     width: 100%;
     max-width: 380px;
-    box-shadow: 0 20px 60px rgba(0,0,0,.5);
+    box-shadow: 0 24px 80px rgba(0,0,0,.6);
   }
-  .login-card h1 {
-    font-size: 1.2rem;
-    font-weight: 600;
-    color: #f8fafc;
-    margin-bottom: 8px;
+  .login-logo { height: 56px; width: 56px; margin-bottom: 20px; opacity: .9; }
+  .login-card h1 { font-size: 1.2rem; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+  .login-card .subtitle { font-size: .85rem; color: var(--text-dim); margin-bottom: 28px; }
+  .field { margin-bottom: 18px; }
+  .field label { display: block; font-size: .78rem; color: var(--text-dim); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .05em; }
+  .field input { width: 100%; font-family: var(--font); }
+  .btn-login { width: 100%; margin-top: 8px; padding: 11px; font-size: .9rem; }
+
+  .login-error {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 14px 16px;
+    border-radius: var(--radius);
+    margin-bottom: 20px;
+    background: #f7768e0a;
+    border: 1px solid #f7768e22;
+    animation: fadeIn .4s ease both;
   }
-  .login-card p {
-    font-size: .82rem;
-    color: #64748b;
-    margin-bottom: 24px;
-  }
-  .field { margin-bottom: 16px; }
-  .field label {
-    display: block;
-    font-size: .78rem;
-    color: #64748b;
-    margin-bottom: 6px;
-  }
-  .field input {
-    width: 100%;
-    background: #0f1117;
-    border: 1px solid #2d3748;
-    color: #e2e8f0;
-    border-radius: 6px;
-    padding: 10px 12px;
-    font-size: .9rem;
-    font-family: inherit;
-    transition: border-color .2s;
-  }
-  .field input:focus {
-    outline: none;
-    border-color: #3b82f6;
-  }
-  .btn-login {
-    width: 100%;
-    background: #1d4ed8;
-    color: #eff6ff;
-    border: none;
-    border-radius: 6px;
-    padding: 10px;
-    font-size: .9rem;
-    font-weight: 600;
-    cursor: pointer;
-    margin-top: 8px;
-    transition: opacity .15s;
-  }
-  .btn-login:hover { opacity: .85; }
-  .error-msg {
-    background: #2d1515;
-    border: 1px solid #7f1d1d;
-    border-radius: 6px;
-    color: #fca5a5;
-    padding: 8px 12px;
-    font-size: .82rem;
-    margin-bottom: 16px;
-    display: none;
-  }
+  .login-error-icon { flex-shrink: 0; color: var(--red); margin-top: 1px; }
+  .login-error-body { flex: 1; }
+  .login-error-title { font-weight: 600; color: var(--red); font-size: .85rem; margin-bottom: 4px; }
+  .login-error-msg { color: var(--text-mid); font-size: .82rem; line-height: 1.5; }
+  .login-error .btn { margin-top: 12px; font-size: .78rem; padding: 6px 16px; }
 </style>
 </head>
 <body>
-<div class="login-card">
-  <img src="/static/logo.svg" alt="DNS Monitor" style="height:64px;width:64px;margin-bottom:16px">
+<div class="login-card scale-in">
+  <img src="/static/logo.svg" alt="" class="login-logo">
   <h1>DNS Monitor</h1>
-  <p>Painel de administração</p>
-  <div class="error-msg" id="error-msg"></div>
+  <p class="subtitle" id="subtitle">Painel de administracao</p>
+  <div id="error-box"></div>
   <form method="POST" action="/admin/login" id="login-form">
     <div class="field">
-      <label for="username">Usuário</label>
+      <label for="username">Usuario</label>
       <input type="text" id="username" name="username" autocomplete="username" required autofocus>
     </div>
     <div class="field">
       <label for="password">Senha</label>
       <input type="password" id="password" name="password" autocomplete="current-password" required>
     </div>
-    <button type="submit" class="btn-login">Entrar</button>
+    <button type="submit" class="btn btn-primary btn-login">Entrar</button>
   </form>
 </div>
+<script src="/static/app.js"></script>
 <script>
-  const params = new URLSearchParams(window.location.search);
-  if (params.get('error')) {
-    const el = document.getElementById('error-msg');
-    el.textContent = 'Credenciais inválidas.';
-    el.style.display = 'block';
+  const params = new URLSearchParams(location.search);
+  const errorType = params.get('error');
+  if (errorType) {
+    const box = document.getElementById('error-box');
+    const errors = {
+      '1':      { title: 'Credenciais invalidas', msg: 'Usuario ou senha incorretos. Verifique e tente novamente.' },
+      'config': { title: 'Admin nao configurado', msg: 'As variaveis ADMIN_USER e ADMIN_PASSWORD nao estao definidas no servidor.' },
+    };
+    const err = errors[errorType] || { title: 'Erro', msg: 'Ocorreu um erro ao fazer login.' };
+
+    box.innerHTML = `
+      <div class="login-error">
+        <span class="login-error-icon">${ICONS.error}</span>
+        <div class="login-error-body">
+          <div class="login-error-title">${esc(err.title)}</div>
+          <div class="login-error-msg">${esc(err.msg)}</div>
+        </div>
+      </div>`;
+
+    // Focus no campo que precisa de atencao
+    if (errorType === '1') document.getElementById('password').focus();
   }
 </script>
 </body>

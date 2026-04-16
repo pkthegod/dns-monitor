@@ -1708,8 +1708,8 @@ class TestAdminLogin:
             cookie_header = resp.headers.get("set-cookie", "")
             assert "admin_session" in cookie_header
 
-    def test_login_post_invalid_credentials_returns_401(self):
-        """POST /admin/login com credenciais erradas deve retornar 401."""
+    def test_login_post_invalid_credentials_redirects_with_error(self):
+        """POST /admin/login com credenciais erradas deve redirecionar para login?error=1."""
         import importlib
         import main as m
 
@@ -1723,10 +1723,11 @@ class TestAdminLogin:
                 return resp
 
             resp = self._run(run())
-            assert resp.status_code == 401
+            assert resp.status_code == 303
+            assert "/admin/login?error=1" in resp.headers.get("location", "")
 
-    def test_login_post_missing_env_returns_503(self):
-        """POST /admin/login sem ADMIN_USER/PASSWORD configurados deve retornar 503."""
+    def test_login_post_missing_env_redirects_with_config_error(self):
+        """POST /admin/login sem ADMIN_USER/PASSWORD deve redirecionar para login?error=config."""
         import importlib
         import main as m
 
@@ -1740,7 +1741,8 @@ class TestAdminLogin:
                 return resp
 
             resp = self._run(run())
-            assert resp.status_code == 503
+            assert resp.status_code == 303
+            assert "/admin/login?error=config" in resp.headers.get("location", "")
 
     def test_sign_and_verify_cookie_roundtrip(self):
         """Cookie assinado deve ser verificável."""
@@ -2327,6 +2329,155 @@ class TestHeartbeatWithDnsChecks:
 
         self._run(run())
         mock_db.insert_dns_service_status.assert_called_once()
+
+
+# ===========================================================================
+# API Versioning — /api/v1/ prefix
+# ===========================================================================
+
+class TestApiVersioning:
+    """Verifica que todas as rotas de API estao registradas sob /api/v1/."""
+
+    def _get_routes(self):
+        import importlib
+        import main as m
+        importlib.reload(m)
+        return {r.path for r in m.app.routes if hasattr(r, 'path')}
+
+    def test_metrics_endpoint_under_v1(self):
+        routes = self._get_routes()
+        assert "/api/v1/metrics" in routes
+
+    def test_agents_endpoint_under_v1(self):
+        routes = self._get_routes()
+        assert "/api/v1/agents" in routes
+
+    def test_agents_hostname_patch_under_v1(self):
+        routes = self._get_routes()
+        assert "/api/v1/agents/{hostname}" in routes
+
+    def test_alerts_endpoint_under_v1(self):
+        routes = self._get_routes()
+        assert "/api/v1/alerts" in routes
+
+    def test_commands_endpoints_under_v1(self):
+        routes = self._get_routes()
+        assert "/api/v1/commands" in routes
+        assert "/api/v1/commands/{hostname}" in routes
+        assert "/api/v1/commands/{command_id}/result" in routes
+        assert "/api/v1/commands/{hostname}/history" in routes
+        assert "/api/v1/commands/history" in routes
+        assert "/api/v1/commands/{command_id}/status" in routes
+
+    def test_agent_version_under_v1(self):
+        routes = self._get_routes()
+        assert "/api/v1/agent/version" in routes
+        assert "/api/v1/agent/latest" in routes
+
+    def test_tools_under_v1(self):
+        routes = self._get_routes()
+        assert "/api/v1/tools/geolocate" in routes
+
+    def test_health_stays_at_root(self):
+        """Health check deve permanecer na raiz — nao faz parte da API versionada."""
+        routes = self._get_routes()
+        assert "/health" in routes
+
+    def test_admin_stays_at_root(self):
+        """Admin panel e rotas de UI nao sao versionadas."""
+        routes = self._get_routes()
+        assert "/admin" in routes
+        assert "/admin/login" in routes
+        assert "/admin/logout" in routes
+
+    def test_legacy_metrics_path_still_works(self):
+        """Rota antiga /metrics deve existir para backward compat com agentes v1.0.0."""
+        routes = self._get_routes()
+        assert "/metrics" in routes
+
+
+# ===========================================================================
+# Token embutido no admin — Feature 010 Fase 1
+# ===========================================================================
+
+class TestEmbeddedToken:
+    """Verifica que o admin/dashboard injeta o token na sessao autenticada."""
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def test_admin_html_contains_embedded_token(self):
+        """GET /admin com sessao valida deve injetar __TOKEN__ no HTML."""
+        import importlib
+        import main as m
+
+        with patch.dict(os.environ, {"AGENT_TOKEN": "secret-tok-xyz"}):
+            importlib.reload(m)
+
+            async def run():
+                request = MagicMock()
+                cookie_val = m._sign_admin_cookie("admin")
+                request.cookies = {"admin_session": cookie_val}
+                resp = await m.admin_panel(request)
+                return resp
+
+            resp = self._run(run())
+            body = resp.body.decode()
+            assert "window.__TOKEN__" in body
+            assert "secret-tok-xyz" in body
+
+    def test_admin_html_no_token_without_session(self):
+        """GET /admin sem sessao deve redirecionar, nao expor token."""
+        import importlib
+        import main as m
+        importlib.reload(m)
+
+        async def run():
+            request = MagicMock()
+            request.cookies = {}
+            resp = await m.admin_panel(request)
+            return resp
+
+        resp = self._run(run())
+        assert resp.status_code == 303
+
+    def test_dashboard_has_embedded_token_with_session(self):
+        """GET /dashboard com sessao admin deve injetar __TOKEN__."""
+        import importlib
+        import main as m
+
+        with patch.dict(os.environ, {"AGENT_TOKEN": "dash-tok-123"}):
+            importlib.reload(m)
+
+            async def run():
+                request = MagicMock()
+                cookie_val = m._sign_admin_cookie("admin")
+                request.cookies = {"admin_session": cookie_val}
+                resp = await m.dashboard_page(request)
+                return resp
+
+            resp = self._run(run())
+            body = resp.body.decode()
+            assert "window.__TOKEN__" in body
+            assert "dash-tok-123" in body
+
+    def test_dashboard_no_token_value_without_session(self):
+        """GET /dashboard sem sessao nao deve injetar o valor do token."""
+        import importlib
+        import main as m
+
+        with patch.dict(os.environ, {"AGENT_TOKEN": "should-not-appear"}):
+            importlib.reload(m)
+
+            async def run():
+                request = MagicMock()
+                request.cookies = {}
+                resp = await m.dashboard_page(request)
+                return resp
+
+            resp = self._run(run())
+            body = resp.body.decode()
+            assert "should-not-appear" not in body
 
 
 # ===========================================================================
