@@ -846,7 +846,7 @@
 
   // ── Send command ───────────────────────────────────────────────────────────
   async function sendCommand(hostname, command, btn) {
-    if (!token()) { toast('INSIRA O TOKEN ANTES DE ENVIAR COMANDOS.', false); return; }
+    if (!token()) { toast.warn('Insira o token antes de enviar comandos.'); return; }
     if (command === 'disable') {
       if (!confirm(`Desabilitar o serviço DNS em "${hostname}"?\nO serviço não iniciará no boot.`)) return;
     }
@@ -859,7 +859,7 @@
       toast(`"${command.toUpperCase()}" enfileirado para ${hostname}.`);
       await loadHistory();
     } catch (e) {
-      toast(`Erro: ${e.message}`, false);
+      toast.err(e.message);
     } finally {
       if (btn) btn.disabled = false;
     }
@@ -867,7 +867,7 @@
 
   // ── Delete agent ───────────────────────────────────────────────────────────
   async function deleteAgent(hostname, btn) {
-    if (!token()) { toast('INSIRA O TOKEN ANTES DE REMOVER AGENTES.', false); return; }
+    if (!token()) { toast.warn('Insira o token antes de remover agentes.'); return; }
     if (!confirm(`Remover "${hostname}" do banco de dados?\n\nTodos os dados históricos serão apagados permanentemente.`)) return;
     if (!confirm(`Confirmar remoção definitiva de "${hostname}"?`)) return;
     if (btn) btn.disabled = true;
@@ -876,7 +876,7 @@
       toast(`Agente "${hostname}" removido.`);
       await loadAgents();
     } catch (e) {
-      toast(`Erro ao remover: ${e.message}`, false);
+      toast.err('Erro ao remover: ' + e.message);
       if (btn) btn.disabled = false;
     }
   }
@@ -885,7 +885,7 @@
   let agentsCache = [];
 
   function openEditModal(hostname) {
-    if (!token()) { toast('INSIRA O TOKEN ANTES DE EDITAR.', false); return; }
+    if (!token()) { toast.warn('Insira o token antes de editar.'); return; }
     editingHostname = hostname;
     const a = agentsCache.find(x => x.hostname === hostname) || {};
     document.getElementById('modal-title').textContent = `EDITAR — ${hostname}`;
@@ -933,7 +933,7 @@
       closeEditModal();
       await loadAgents();
     } catch (e) {
-      toast(`Erro ao salvar: ${e.message}`, false);
+      toast.err('Erro ao salvar: ' + e.message);
     }
   }
 
@@ -943,7 +943,7 @@
 
   // ── Diagnostic modal ───────────────────────────────────────────────────────
   function openDiagModal(hostname) {
-    if (!token()) { toast('INSIRA O TOKEN ANTES DE EXECUTAR DIAGNÓSTICO.', false); return; }
+    if (!token()) { toast.warn('Insira o token antes de executar diagnostico.'); return; }
     diagHostname = hostname;
     document.getElementById('diag-hostname-label').textContent = `// ${hostname}`;
     document.getElementById('diag-result-area').innerHTML = '';
@@ -990,7 +990,7 @@
       });
       cmdId = resp.id;
     } catch (e) {
-      area.innerHTML = `<div class="diag-result"><div class="diag-error">Erro ao criar comando: ${esc(e.message)}</div></div>`;
+      area.innerHTML = `<div class="diag-result"><div class="inline-msg inline-error"><span class="inline-msg-icon">${ICONS.error}</span><p>${esc(e.message)}</p></div></div>`;
       runBtn.disabled = false;
       return;
     }
@@ -1030,7 +1030,7 @@
   function renderDiagResult(cmd) {
     const area = document.getElementById('diag-result-area');
     if (cmd.status === 'failed') {
-      area.innerHTML = `<div class="diag-result"><div class="diag-error">Falha: ${esc(cmd.result || 'Erro desconhecido')}</div></div>`;
+      area.innerHTML = `<div class="diag-result"><div class="inline-msg inline-error"><span class="inline-msg-icon">${ICONS.error}</span><p>${esc(cmd.result || 'Erro desconhecido')}</p></div></div>`;
       return;
     }
     let data;
@@ -1182,7 +1182,7 @@
   }
 
   async function sendUpdate(hostname, btn) {
-    if (!token()) { toast('INSIRA O TOKEN.', false); return; }
+    if (!token()) { toast.warn('Insira o token.'); return; }
     if (!confirm(
       `Atualizar agente em "${hostname}"?\n\n` +
       `Versão atual do servidor: ${serverVersion || '?'}\n\n` +
@@ -1197,7 +1197,7 @@
       toast(`UPDATE enfileirado para ${hostname}. Aguarde o próximo poll do agente.`);
       await loadHistory();
     } catch (e) {
-      toast(`Erro: ${e.message}`, false);
+      toast.err(e.message);
       if (btn) btn.disabled = false;
     }
   }
@@ -1249,7 +1249,7 @@
         </tr>`;
       }).join('');
     } catch (e) {
-      tbody.innerHTML = `<tr><td colspan="11" class="error-msg">Erro ao carregar agentes: ${e.message}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="11"><div class="inline-msg inline-error fade-in"><span class="inline-msg-icon">${ICONS.error}</span><div><strong>Erro ao carregar agentes</strong><p>${esc(e.message)}</p></div></div></td></tr>`;
     }
   }
 
@@ -1298,7 +1298,7 @@
         </tr>`;
       }).join('');
     } catch (e) {
-      tbody.innerHTML = `<tr><td colspan="7" class="error-msg">Erro ao carregar histórico: ${e.message}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="7"><div class="inline-msg inline-error fade-in"><span class="inline-msg-icon">${ICONS.error}</span><div><strong>Erro ao carregar historico</strong><p>${esc(e.message)}</p></div></div></td></tr>`;
     }
   }
 
@@ -1325,7 +1325,7 @@
   });
 
   function openTraceModal(hostname) {
-    if (!token()) { toast('INSIRA O TOKEN ANTES DE EXECUTAR TRACE.', false); return; }
+    if (!token()) { toast.warn('Insira o token antes de executar trace.'); return; }
     traceHostname = hostname;
     document.getElementById('trace-hostname-label').textContent = `// ${hostname}`;
     document.getElementById('trace-area').innerHTML = '';
@@ -1354,7 +1354,7 @@
     if (!traceHostname) return;
     const domain   = document.getElementById('trace-domain').value.trim();
     const resolver = getTraceResolver();
-    if (!domain) { toast('Informe um domínio.', false); return; }
+    if (!domain) { toast.warn('Informe um dominio.'); return; }
 
     const runBtn = document.getElementById('trace-run-btn');
     const area   = document.getElementById('trace-area');
@@ -1376,7 +1376,7 @@
       });
       cmdId = resp.id;
     } catch (e) {
-      area.innerHTML = `<div class="trace-area"><div class="diag-error">Erro ao criar comando: ${esc(e.message)}</div></div>`;
+      area.innerHTML = `<div class="trace-area"><div class="inline-msg inline-error"><span class="inline-msg-icon">${ICONS.error}</span><p>${esc(e.message)}</p></div></div>`;
       runBtn.disabled = false;
       return;
     }
@@ -1410,7 +1410,7 @@
   async function renderTraceResult(cmd) {
     const area = document.getElementById('trace-area');
     if (cmd.status === 'failed') {
-      area.innerHTML = `<div class="trace-area"><div class="diag-error">Falha: ${esc(cmd.result || 'Erro desconhecido')}</div></div>`;
+      area.innerHTML = `<div class="trace-area"><div class="inline-msg inline-error"><span class="inline-msg-icon">${ICONS.error}</span><p>${esc(cmd.result || 'Erro desconhecido')}</p></div></div>`;
       return;
     }
     let data;

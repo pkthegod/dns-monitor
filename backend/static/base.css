@@ -209,6 +209,99 @@ a:hover { opacity: .85; }
 .stagger-5     { animation-delay: .25s; }
 .stagger-6     { animation-delay: .30s; }
 
+/* ── Toast system ── */
+#toast-container {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 9999;
+  pointer-events: none;
+  max-width: 420px;
+}
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: var(--bg-card);
+  border-left: 3px solid var(--text-mid);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  padding: 12px 14px;
+  font-size: 13px;
+  pointer-events: auto;
+  box-shadow: 0 8px 32px rgba(0,0,0,.5);
+  opacity: 0;
+  transform: translateX(40px);
+  transition: opacity .3s ease, transform .3s ease;
+}
+.toast-visible { opacity: 1; transform: translateX(0); }
+.toast-exit    { opacity: 0; transform: translateX(40px); }
+.toast-success { border-left-color: var(--green); color: var(--green); }
+.toast-error   { border-left-color: var(--red); color: var(--red); }
+.toast-warning { border-left-color: var(--yellow); color: var(--yellow); }
+.toast-info    { border-left-color: var(--accent); color: var(--accent); }
+.toast-icon { flex-shrink: 0; margin-top: 1px; }
+.toast-msg  { flex: 1; color: var(--text); line-height: 1.4; }
+.toast-close {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+  transition: color var(--transition);
+}
+.toast-close:hover { color: var(--text); }
+
+/* ── Inline messages (error, empty, loading) ── */
+.inline-msg {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 18px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.inline-msg p { margin: 2px 0 0; }
+.inline-msg strong { font-weight: 600; display: block; margin-bottom: 2px; }
+.inline-msg-icon { flex-shrink: 0; margin-top: 2px; }
+
+.inline-error {
+  background: #f7768e0a;
+  border: 1px solid #f7768e22;
+  color: var(--red);
+}
+.inline-error p { color: var(--text-mid); }
+.inline-error strong { color: var(--red); }
+
+.inline-empty {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+
+.inline-loading {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  color: var(--text-mid);
+}
+
+/* ── Spinner ── */
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin { animation: spin .8s linear infinite; }
+
+/* ── Button loading ── */
+.btn-loading {
+  opacity: .6;
+  pointer-events: none;
+}
+.btn-loading svg { margin-right: 4px; }
+
 /* ── Footer ── */
 .footer {
   text-align: center;

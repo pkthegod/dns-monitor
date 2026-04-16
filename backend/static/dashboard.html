@@ -219,7 +219,7 @@ function renderAlerts(data) {
 
 async function loadDashboard() {
   const st = document.getElementById('loadStatus');
-  st.innerHTML = 'Carregando...'; st.style.color = 'var(--text-dim)';
+  st.innerHTML = ICONS.loading + ' Carregando...'; st.style.color = 'var(--text-mid)';
   try {
     chartDefaults();
     const data = await apiFetch('/dashboard/data');
@@ -235,7 +235,8 @@ async function loadDashboard() {
     if (refreshTimer) clearInterval(refreshTimer);
     refreshTimer = setInterval(loadDashboard, 60000);
   } catch (e) {
-    st.innerHTML = 'Erro: ' + e.message; st.style.color = 'var(--red)';
+    st.innerHTML = ICONS.error + ' Erro ao carregar'; st.style.color = 'var(--red)';
+    toast.err(e.message);
   }
 }
 

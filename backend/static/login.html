@@ -49,7 +49,7 @@
   <img src="/static/logo.svg" alt="" style="height:56px;width:56px;margin-bottom:20px;opacity:.9">
   <h1>DNS Monitor</h1>
   <p>Painel de administracao</p>
-  <div class="error-msg" id="error-msg"></div>
+  <div class="inline-msg inline-error" id="error-msg" style="display:none;margin-bottom:16px"></div>
   <form method="POST" action="/admin/login">
     <div class="field">
       <label for="username">Usuario</label>
@@ -67,8 +67,9 @@
   const params = new URLSearchParams(location.search);
   if (params.get('error')) {
     const el = document.getElementById('error-msg');
-    el.textContent = 'Credenciais invalidas.';
-    el.style.display = 'block';
+    el.innerHTML = '<span class="inline-msg-icon">' + ICONS.error + '</span><p>Credenciais invalidas.</p>';
+    el.style.display = 'flex';
+    el.classList.add('fade-in');
   }
 </script>
 </body>
