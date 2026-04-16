@@ -2,6 +2,66 @@
 
 ---
 
+## [v0.3.0] — 2026-04-16 — Painel Admin, Quick Probe & Auto-update
+
+### Novidades
+
+#### Painel Admin (`/admin`)
+
+- Tela de login com autenticação por usuário/senha (`ADMIN_USER` / `ADMIN_PASSWORD`)
+- CRUD completo de agentes: adicionar, editar, remover, ativar/desativar
+- Visualização de status ao vivo (online/offline/stale) com auto-refresh
+- Emissão de comandos remotos (restart, stop, enable, disable, purge)
+- Histórico de comandos por agente
+- Auto-purge de agentes inativos configurável
+- Logo e favicon SVG próprios
+- Proteção de todas as rotas admin via sessão/cookie
+
+#### DNS Quick Probe (feature 007)
+
+- Teste DNS leve a cada 60s (configurável via `quick_probe_interval`)
+- Resultado armazenado em memória, enviado no próximo heartbeat como `dns_checks[]`
+- Domínio configurável via `quick_probe_domain` (default: primeiro domínio do `agent.conf`)
+- Timeout independente via `quick_probe_timeout` (default: 2s)
+- Habilitar/desabilitar via `quick_probe_enabled` (default: true)
+- Intervalo mínimo enforced: 10s
+- Backend processa `dns_checks` tanto em `type=check` quanto em `type=heartbeat`
+
+#### Auto-update do agente
+
+- Endpoint `GET /agent/version` retorna versão atual do agente no servidor
+- Endpoint `GET /agent/download` serve o `dns_agent.py` mais recente
+- Agente verifica versão remota e faz self-update com validação de sintaxe (`py_compile`)
+- Rollback automático se o novo arquivo não compilar
+
+#### Geolocalização e diagnóstico
+
+- Script de diagnóstico para troubleshooting remoto
+- Script de geolocalização de agentes
+- `AGENT_VERSION` bumped para `1.1.0`
+
+#### Continuous aggregates (TimescaleDB)
+
+- `metrics_cpu_1h`, `metrics_ram_1h`, `dns_checks_1h` — views materializadas por hora
+- Políticas de refresh automático a cada 1h
+- Reduz volume de dados ~90% para queries históricas no Grafana
+
+### Correções
+
+| # | Problema | Correção |
+|---|---|---|
+| 17 | `ADMIN_USER`/`ADMIN_PASSWORD` não passavam pro container | Adicionados ao `docker-compose.yaml` |
+
+### Testes
+
+- `test_agent.py`: 117 testes (+37 cobrindo Quick Probe, schedule, auto-update)
+- `test_backend.py`: 141 testes (+71 cobrindo admin, login, heartbeat+dns_checks)
+- Total: **258 testes** (anterior: 242)
+- Testes `TestCollectLoad` marcados `skipif` no Windows (`os.getloadavg` é Unix-only)
+- Assert de `agent_version` usa `da.AGENT_VERSION` em vez de string hardcoded
+
+---
+
 ## [v0.2.0] — 2026-03-20 — Controle Remoto de Agentes
 
 ### Novidades

@@ -598,6 +598,7 @@ class TestCollectIo:
 # 8. _collect_load
 # ===========================================================================
 
+@pytest.mark.skipif(not hasattr(os, "getloadavg"), reason="os.getloadavg only on Unix")
 class TestCollectLoad:
 
     def test_returns_load_averages(self):
@@ -640,7 +641,7 @@ class TestBuildPayload:
 
         assert payload["type"] == "check"
         assert payload["hostname"] == "test-host"
-        assert payload["agent_version"] == "1.0.0"
+        assert payload["agent_version"] == da.AGENT_VERSION
         assert payload["dns_service"] == dns_service
         assert payload["dns_checks"] == dns_results
         assert payload["system"] == system
