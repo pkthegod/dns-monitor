@@ -2,7 +2,7 @@
 
 **Feature Branch**: `007-dns-quick-probe`
 **Created**: 2026-04-15
-**Status**: Draft
+**Status**: Complete
 **Input**: User description: "Lightweight DNS resolution test that runs every 60 seconds (configurable) alongside the heartbeat. Tests 1 domain (configurable) with 2s timeout, 0 retries (fail-fast). Results sent as dns_checks in the heartbeat payload so backend stores them in dns_checks table. Full checks every 2h remain unchanged. Goal: near-real-time DNS availability monitoring without the overhead of full checks."
 
 ## User Scenarios & Testing *(mandatory)*

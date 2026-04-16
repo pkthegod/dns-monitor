@@ -2330,6 +2330,71 @@ class TestHeartbeatWithDnsChecks:
 
 
 # ===========================================================================
+# API Versioning — /api/v1/ prefix
+# ===========================================================================
+
+class TestApiVersioning:
+    """Verifica que todas as rotas de API estao registradas sob /api/v1/."""
+
+    def _get_routes(self):
+        import importlib
+        import main as m
+        importlib.reload(m)
+        return {r.path for r in m.app.routes if hasattr(r, 'path')}
+
+    def test_metrics_endpoint_under_v1(self):
+        routes = self._get_routes()
+        assert "/api/v1/metrics" in routes
+
+    def test_agents_endpoint_under_v1(self):
+        routes = self._get_routes()
+        assert "/api/v1/agents" in routes
+
+    def test_agents_hostname_patch_under_v1(self):
+        routes = self._get_routes()
+        assert "/api/v1/agents/{hostname}" in routes
+
+    def test_alerts_endpoint_under_v1(self):
+        routes = self._get_routes()
+        assert "/api/v1/alerts" in routes
+
+    def test_commands_endpoints_under_v1(self):
+        routes = self._get_routes()
+        assert "/api/v1/commands" in routes
+        assert "/api/v1/commands/{hostname}" in routes
+        assert "/api/v1/commands/{command_id}/result" in routes
+        assert "/api/v1/commands/{hostname}/history" in routes
+        assert "/api/v1/commands/history" in routes
+        assert "/api/v1/commands/{command_id}/status" in routes
+
+    def test_agent_version_under_v1(self):
+        routes = self._get_routes()
+        assert "/api/v1/agent/version" in routes
+        assert "/api/v1/agent/latest" in routes
+
+    def test_tools_under_v1(self):
+        routes = self._get_routes()
+        assert "/api/v1/tools/geolocate" in routes
+
+    def test_health_stays_at_root(self):
+        """Health check deve permanecer na raiz — nao faz parte da API versionada."""
+        routes = self._get_routes()
+        assert "/health" in routes
+
+    def test_admin_stays_at_root(self):
+        """Admin panel e rotas de UI nao sao versionadas."""
+        routes = self._get_routes()
+        assert "/admin" in routes
+        assert "/admin/login" in routes
+        assert "/admin/logout" in routes
+
+    def test_old_metrics_path_not_registered(self):
+        """Rota antiga /metrics NAO deve existir como endpoint direto."""
+        routes = self._get_routes()
+        assert "/metrics" not in routes
+
+
+# ===========================================================================
 # Entry point
 # ===========================================================================
 

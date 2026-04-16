@@ -26,6 +26,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+try:
+    import tomllib                    # Python 3.11+
+except ModuleNotFoundError:
+    try:
+        import tomli as tomllib       # pip install tomli  (Python 3.8-3.10)
+    except ModuleNotFoundError:
+        tomllib = None                # fallback: só .conf
+
 import dns.resolver
 import psutil
 import requests
@@ -36,12 +44,67 @@ import schedule
 # ---------------------------------------------------------------------------
 
 CONFIG_PATHS = [
+    Path(__file__).parent / "agent.toml",
     Path(__file__).parent / "agent.conf",
+    Path("/etc/dns-agent/agent.toml"),
     Path("/etc/dns-agent/agent.conf"),
 ]
 
 
-AGENT_VERSION = "1.1.0"
+AGENT_VERSION = "1.2.0"
+
+
+# ---------------------------------------------------------------------------
+# Config — wrapper compatível com ConfigParser sobre dict TOML
+# ---------------------------------------------------------------------------
+
+_UNSET = object()
+
+
+class Config:
+    """
+    Configuração baseada em TOML com interface idêntica a ConfigParser.
+    Todos os callsites (cfg.get, cfg.getint, etc.) funcionam sem mudança.
+    """
+
+    def __init__(self, data: dict):
+        self._data = data
+
+    def get(self, section: str, key: str, fallback=_UNSET) -> str:
+        try:
+            val = self._data[section][key]
+            return str(val) if val is not None else ""
+        except KeyError:
+            if fallback is not _UNSET:
+                return fallback
+            raise
+
+    def getint(self, section: str, key: str, fallback=_UNSET) -> int:
+        try:
+            return int(self._data[section][key])
+        except (KeyError, TypeError, ValueError):
+            if fallback is not _UNSET:
+                return fallback
+            raise
+
+    def getfloat(self, section: str, key: str, fallback=_UNSET) -> float:
+        try:
+            return float(self._data[section][key])
+        except (KeyError, TypeError, ValueError):
+            if fallback is not _UNSET:
+                return fallback
+            raise
+
+    def getboolean(self, section: str, key: str, fallback=_UNSET) -> bool:
+        try:
+            val = self._data[section][key]
+            if isinstance(val, bool):
+                return val
+            return str(val).lower() in ("true", "1", "yes")
+        except KeyError:
+            if fallback is not _UNSET:
+                return fallback
+            raise
 
 
 # ---------------------------------------------------------------------------
@@ -83,25 +146,58 @@ def generate_fingerprint() -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def load_config() -> configparser.ConfigParser:
-    """
-    Carrega agent.conf com interpolação de variáveis de ambiente.
+def _expand_env(data: dict) -> dict:
+    """Expande ${VAR} para o valor da variável de ambiente em strings do TOML."""
+    _env_re = re.compile(r"\$\{(\w+)\}")
+    out = {}
+    for section, values in data.items():
+        if isinstance(values, dict):
+            out[section] = {}
+            for key, val in values.items():
+                if isinstance(val, str):
+                    out[section][key] = _env_re.sub(
+                        lambda m: os.environ.get(m.group(1), ""), val
+                    )
+                else:
+                    out[section][key] = val
+        else:
+            out[section] = values
+    return out
 
-    O arquivo suporta a sintaxe %(AGENT_HOSTNAME)s, %(AGENT_TOKEN)s e
-    %(AGENT_BACKEND)s — expandidas automaticamente a partir do ambiente.
-    Isso evita duplicar valores entre /etc/dns-agent/env e agent.conf.
+
+def load_config() -> Config:
     """
-    defaults = {
-        "AGENT_HOSTNAME": os.environ.get("AGENT_HOSTNAME", ""),
-        "AGENT_TOKEN":    os.environ.get("AGENT_TOKEN",    ""),
-        "AGENT_BACKEND":  os.environ.get("AGENT_BACKEND",  ""),
-    }
-    cfg = configparser.ConfigParser(defaults=defaults)
+    Carrega configuração em TOML (preferencial) ou .conf (legado).
+
+    - agent.toml: lido com tomllib, variáveis expandidas via ${VAR}
+    - agent.conf: fallback via ConfigParser com interpolação %(VAR)s
+    Ambos retornam um objeto Config com interface idêntica.
+    """
     for path in CONFIG_PATHS:
-        if path.exists():
-            cfg.read(path)
-            return cfg
-    print("ERRO: agent.conf não encontrado. Copie agent.conf.example e configure.", file=sys.stderr)
+        if not path.exists():
+            continue
+
+        # ── TOML ────────────────────────────────────────────────────
+        if path.suffix == ".toml":
+            if tomllib is None:
+                continue          # sem parser TOML — pula pro .conf
+            with open(path, "rb") as f:
+                data = tomllib.load(f)
+            return Config(_expand_env(data))
+
+        # ── .conf (legado) ──────────────────────────────────────────
+        defaults = {
+            "AGENT_HOSTNAME": os.environ.get("AGENT_HOSTNAME", ""),
+            "AGENT_TOKEN":    os.environ.get("AGENT_TOKEN",    ""),
+            "AGENT_BACKEND":  os.environ.get("AGENT_BACKEND",  ""),
+        }
+        cfg_parser = configparser.ConfigParser(defaults=defaults)
+        cfg_parser.read(path)
+        # Converte para dict e retorna como Config
+        data = {s: dict(cfg_parser.items(s)) for s in cfg_parser.sections()}
+        return Config(data)
+
+    print("ERRO: agent.toml/agent.conf não encontrado. Copie o exemplo e configure.", file=sys.stderr)
     sys.exit(1)
 
 
@@ -477,7 +573,7 @@ def send_payload(cfg: configparser.ConfigParser, payload: dict, logger: logging.
     Envia o payload ao backend com retry automático.
     Retorna True se enviado com sucesso.
     """
-    url     = cfg.get("backend", "url").rstrip("/") + "/metrics"
+    url     = cfg.get("backend", "url").rstrip("/") + "/api/v1/metrics"
     token   = cfg.get("agent", "auth_token")
     timeout = cfg.getint("backend", "timeout", fallback=10)
     retries = cfg.getint("backend", "retries", fallback=3)
@@ -882,7 +978,7 @@ def _execute_update_agent(
     # ── 1. Verificar versão disponível ───────────────────────────────────────
     try:
         ver_resp = requests.get(
-            f"{backend_url}/agent/version",
+            f"{backend_url}/api/v1/agent/version",
             headers=headers, timeout=10,
         )
         if ver_resp.status_code != 200:
@@ -902,7 +998,7 @@ def _execute_update_agent(
     # ── 2. Baixar novo arquivo ───────────────────────────────────────────────
     try:
         dl_resp = requests.get(
-            f"{backend_url}/agent/latest",
+            f"{backend_url}/api/v1/agent/latest",
             headers=headers, timeout=60,
         )
         if dl_resp.status_code != 200:
@@ -1208,7 +1304,7 @@ def poll_commands(cfg: configparser.ConfigParser, logger: logging.Logger) -> Non
 
     try:
         resp = requests.get(
-            f"{url}/commands/{hostname}",
+            f"{url}/api/v1/commands/{hostname}",
             headers=headers, timeout=timeout
         )
         if resp.status_code == 401:
@@ -1240,7 +1336,7 @@ def poll_commands(cfg: configparser.ConfigParser, logger: logging.Logger) -> Non
             # Reportar resultado ao backend
             try:
                 requests.post(
-                    f"{url}/commands/{cmd_id}/result",
+                    f"{url}/api/v1/commands/{cmd_id}/result",
                     json={"status": status, "result": result},
                     headers=headers, timeout=timeout
                 )

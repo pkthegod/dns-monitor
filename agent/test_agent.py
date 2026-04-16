@@ -18,7 +18,6 @@ Dependências: pip install pytest psutil dnspython requests schedule
 Execução: pytest test_agent.py -v
 """
 
-import configparser
 import io
 import json
 import logging
@@ -39,55 +38,55 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "agent"))
 # Fixtures
 # ---------------------------------------------------------------------------
 
-def make_cfg(overrides: dict = None) -> configparser.ConfigParser:
-    """Cria um ConfigParser mínimo válido para os testes."""
-    cfg = configparser.ConfigParser()
-    cfg.read_dict({
+def make_cfg(overrides: dict = None):
+    """Cria um Config (TOML-backed) mínimo válido para os testes."""
+    import dns_agent as da
+    data = {
         "agent": {
             "hostname":   "test-host",
             "auth_token": "test-token-abc123",
         },
         "backend": {
             "url":         "http://localhost:8000",
-            "timeout":     "10",
-            "retries":     "3",
-            "retry_delay": "0",   # sem espera nos testes
+            "timeout":     10,
+            "retries":     3,
+            "retry_delay": 0,
         },
         "dns": {
             "test_domains":   "google.com, cloudflare.com",
             "local_resolver": "127.0.0.1",
-            "dns_port":       "53",
-            "query_timeout":  "2",
-            "query_retries":  "2",
+            "dns_port":       53,
+            "query_timeout":  2,
+            "query_retries":  2,
         },
         "schedule": {
             "check_times":        "06:00, 18:00",
-            "heartbeat_interval": "300",
+            "heartbeat_interval": 300,
         },
         "thresholds": {
-            "disk_warning":          "80",
-            "disk_critical":         "90",
-            "cpu_warning":           "80",
-            "cpu_critical":          "95",
-            "ram_warning":           "85",
-            "ram_critical":          "95",
-            "dns_latency_warning":   "200",
-            "dns_latency_critical":  "1000",
+            "disk_warning":          80,
+            "disk_critical":         90,
+            "cpu_warning":           80,
+            "cpu_critical":          95,
+            "ram_warning":           85,
+            "ram_critical":          95,
+            "dns_latency_warning":   200,
+            "dns_latency_critical":  1000,
         },
         "logging": {
             "level":        "WARNING",
             "file":         "",
-            "max_size_mb":  "10",
-            "backup_count": "5",
+            "max_size_mb":  10,
+            "backup_count": 5,
         },
-    })
+    }
     if overrides:
         for section, values in overrides.items():
-            if not cfg.has_section(section):
-                cfg.add_section(section)
+            if section not in data:
+                data[section] = {}
             for key, val in values.items():
-                cfg.set(section, key, val)
-    return cfg
+                data[section][key] = val
+    return da.Config(data)
 
 
 def make_logger() -> logging.Logger:
@@ -1768,6 +1767,122 @@ class TestSetupScheduleQuickProbe:
         jobs = sched.get_jobs()
         sched.clear()
         assert len(jobs) == 4  # quick probe still scheduled, just with min interval
+
+
+# ===========================================================================
+# 22. Config TOML — classe Config e load_config com TOML
+# ===========================================================================
+
+class TestConfig:
+    """Testa a classe Config com interface compatível com ConfigParser."""
+
+    def test_get_returns_string(self):
+        import dns_agent as da
+        cfg = da.Config({"agent": {"hostname": "test-host"}})
+        assert cfg.get("agent", "hostname") == "test-host"
+
+    def test_get_int_value_returns_string(self):
+        import dns_agent as da
+        cfg = da.Config({"backend": {"timeout": 10}})
+        assert cfg.get("backend", "timeout") == "10"
+
+    def test_get_fallback_on_missing_key(self):
+        import dns_agent as da
+        cfg = da.Config({"agent": {}})
+        assert cfg.get("agent", "missing", fallback="default") == "default"
+
+    def test_get_fallback_on_missing_section(self):
+        import dns_agent as da
+        cfg = da.Config({})
+        assert cfg.get("nope", "key", fallback="fb") == "fb"
+
+    def test_getint_returns_int(self):
+        import dns_agent as da
+        cfg = da.Config({"backend": {"timeout": 10}})
+        assert cfg.getint("backend", "timeout") == 10
+        assert isinstance(cfg.getint("backend", "timeout"), int)
+
+    def test_getint_from_string(self):
+        import dns_agent as da
+        cfg = da.Config({"backend": {"timeout": "10"}})
+        assert cfg.getint("backend", "timeout") == 10
+
+    def test_getint_fallback(self):
+        import dns_agent as da
+        cfg = da.Config({})
+        assert cfg.getint("x", "y", fallback=42) == 42
+
+    def test_getfloat_returns_float(self):
+        import dns_agent as da
+        cfg = da.Config({"dns": {"query_timeout": 2.5}})
+        assert cfg.getfloat("dns", "query_timeout") == 2.5
+
+    def test_getfloat_from_string(self):
+        import dns_agent as da
+        cfg = da.Config({"dns": {"query_timeout": "2.5"}})
+        assert cfg.getfloat("dns", "query_timeout") == 2.5
+
+    def test_getboolean_true_values(self):
+        import dns_agent as da
+        for val in [True, "true", "True", "1", "yes"]:
+            cfg = da.Config({"schedule": {"quick_probe_enabled": val}})
+            assert cfg.getboolean("schedule", "quick_probe_enabled") is True
+
+    def test_getboolean_false_values(self):
+        import dns_agent as da
+        for val in [False, "false", "False", "0", "no"]:
+            cfg = da.Config({"schedule": {"quick_probe_enabled": val}})
+            assert cfg.getboolean("schedule", "quick_probe_enabled") is False
+
+    def test_getboolean_fallback(self):
+        import dns_agent as da
+        cfg = da.Config({})
+        assert cfg.getboolean("x", "y", fallback=True) is True
+
+
+class TestLoadConfigToml:
+    """Testa que load_config lê .toml e faz fallback para .conf."""
+
+    def test_loads_toml_file(self, tmp_path):
+        import dns_agent as da
+        toml_content = '[agent]\nhostname = "toml-host"\nauth_token = "tok"\n\n[backend]\nurl = "http://localhost:8000"\n'
+        toml_file = tmp_path / "agent.toml"
+        toml_file.write_text(toml_content, encoding="utf-8")
+
+        with patch.object(da, "CONFIG_PATHS", [tmp_path / "agent.toml", tmp_path / "agent.conf"]):
+            cfg = da.load_config()
+        assert cfg.get("agent", "hostname") == "toml-host"
+
+    def test_falls_back_to_conf(self, tmp_path):
+        import dns_agent as da
+        conf_file = tmp_path / "agent.conf"
+        conf_file.write_text("[agent]\nhostname = conf-host\nauth_token = tok\n\n[backend]\nurl = http://localhost:8000\n", encoding="utf-8")
+
+        with patch.object(da, "CONFIG_PATHS", [tmp_path / "agent.toml", tmp_path / "agent.conf"]):
+            cfg = da.load_config()
+        assert cfg.get("agent", "hostname") == "conf-host"
+
+    def test_env_var_expansion(self, tmp_path):
+        import dns_agent as da
+        toml_content = '[agent]\nhostname = "${AGENT_HOSTNAME}"\nauth_token = "${AGENT_TOKEN}"\n\n[backend]\nurl = "${AGENT_BACKEND}"\n'
+        toml_file = tmp_path / "agent.toml"
+        toml_file.write_text(toml_content, encoding="utf-8")
+
+        env = {"AGENT_HOSTNAME": "expanded-host", "AGENT_TOKEN": "tok123", "AGENT_BACKEND": "http://srv:8000"}
+        with patch.object(da, "CONFIG_PATHS", [tmp_path / "agent.toml", tmp_path / "agent.conf"]), \
+             patch.dict(os.environ, env):
+            cfg = da.load_config()
+        assert cfg.get("agent", "hostname") == "expanded-host"
+        assert cfg.get("backend", "url") == "http://srv:8000"
+
+    def test_returns_config_instance(self, tmp_path):
+        import dns_agent as da
+        toml_file = tmp_path / "agent.toml"
+        toml_file.write_text('[agent]\nhostname = "h"\nauth_token = "t"\n\n[backend]\nurl = "http://x"\n', encoding="utf-8")
+
+        with patch.object(da, "CONFIG_PATHS", [tmp_path / "agent.toml", tmp_path / "agent.conf"]):
+            cfg = da.load_config()
+        assert isinstance(cfg, da.Config)
 
 
 # ===========================================================================
