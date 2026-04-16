@@ -7,31 +7,33 @@
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   :root {
-    --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
-    --bg:        #0b0e14;
-    --bg-card:   #111520;
-    --bg-input:  #0d1017;
-    --border:    #1e2640;
-    --border-lo: #161c2e;
-    --text:      #cdd6f4;
-    --text-dim:  #495680;
-    --text-mid:  #6e7fa8;
-    --accent:    #89b4fa;
-    --green:     #a6e3a1;
-    --red:       #f38ba8;
-    --yellow:    #f9e2af;
-    --orange:    #fab387;
-    --blue:      #89b4fa;
-    --purple:    #cba6f7;
+    --font:      'Inter', -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+    --bg:        #08090d;
+    --bg-card:   #12151e;
+    --bg-input:  #0e1018;
+    --border:    #1c2038;
+    --border-lo: #151a2a;
+    --text:      #d4daf0;
+    --text-dim:  #44506e;
+    --text-mid:  #6a7ba0;
+    --accent:    #7aa2f7;
+    --green:     #9ece6a;
+    --red:       #f7768e;
+    --yellow:    #e0af68;
+    --orange:    #ff9e64;
+    --blue:      #7aa2f7;
+    --purple:    #bb9af7;
   }
 
   body {
-    font-family: var(--font-mono);
+    font-family: var(--font);
+    -webkit-font-smoothing: antialiased;
     background: var(--bg);
     color: var(--text);
     min-height: 100vh;
