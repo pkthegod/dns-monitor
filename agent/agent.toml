@@ -37,8 +37,11 @@ query_retries = 3
 check_times = "00:00, 02:00, 04:00, 06:00, 08:00, 10:00, 12:00, 14:00, 16:00, 18:00, 20:00, 22:00"
 # Intervalo do heartbeat em segundos (padrao: 300 = 5 minutos)
 heartbeat_interval = 300
-# Intervalo de polling por comandos remotos em horas
-command_poll_interval_h = 12
+# Polling de comandos remotos — adaptativo
+# Intervalo base em segundos (poll ativo)
+command_poll_interval = 60
+# Após 2 polls vazios, entra em idle por este intervalo (segundos)
+command_poll_idle_interval = 600
 
 # ── Quick Probe — teste DNS leve de alta frequencia ──
 # Habilita/desabilita o quick probe

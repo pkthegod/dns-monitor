@@ -205,7 +205,7 @@ def load_config() -> Config:
 # Logging
 # ---------------------------------------------------------------------------
 
-def setup_logging(cfg: configparser.ConfigParser) -> logging.Logger:
+def setup_logging(cfg: Config) -> logging.Logger:
     level_name = cfg.get("logging", "level", fallback="INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
 
@@ -309,7 +309,7 @@ def _get_dns_version(service: str) -> Optional[str]:
 # Testes DNS
 # ---------------------------------------------------------------------------
 
-def test_dns_resolution(cfg: configparser.ConfigParser, logger: logging.Logger) -> list:
+def test_dns_resolution(cfg: Config, logger: logging.Logger) -> list:
     """
     Testa resolução DNS para cada domínio configurado.
     Retorna lista de resultados por domínio.
@@ -395,7 +395,7 @@ def _resolve_domain(
 # Métricas do sistema
 # ---------------------------------------------------------------------------
 
-def collect_system_metrics(cfg: configparser.ConfigParser) -> dict:
+def collect_system_metrics(cfg: Config) -> dict:
     """
     Coleta CPU, RAM, disco e I/O do sistema.
     Retorna dicionário com todas as métricas.
@@ -434,7 +434,7 @@ def _collect_ram() -> dict:
     }
 
 
-def _collect_disk(cfg: configparser.ConfigParser) -> list:
+def _collect_disk(cfg: Config) -> list:
     """
     Coleta uso de cada partição física montada (exclui tmpfs, devtmpfs).
 
@@ -537,7 +537,7 @@ def _collect_load() -> dict:
 # ---------------------------------------------------------------------------
 
 def build_payload(
-    cfg: configparser.ConfigParser,
+    cfg: Config,
     dns_service: dict,
     dns_results: list,
     system_metrics: dict,
@@ -568,7 +568,7 @@ def build_payload(
 # Envio ao backend
 # ---------------------------------------------------------------------------
 
-def send_payload(cfg: configparser.ConfigParser, payload: dict, logger: logging.Logger) -> bool:
+def send_payload(cfg: Config, payload: dict, logger: logging.Logger) -> bool:
     """
     Envia o payload ao backend com retry automático.
     Retorna True se enviado com sucesso.
@@ -618,7 +618,7 @@ def send_payload(cfg: configparser.ConfigParser, payload: dict, logger: logging.
 # Jobs agendados
 # ---------------------------------------------------------------------------
 
-def run_full_check(cfg: configparser.ConfigParser, logger: logging.Logger) -> None:
+def run_full_check(cfg: Config, logger: logging.Logger) -> None:
     """Ciclo completo: DNS + sistema + envio."""
     logger.info("Iniciando ciclo completo de verificação...")
     start = time.perf_counter()
@@ -644,7 +644,7 @@ def run_full_check(cfg: configparser.ConfigParser, logger: logging.Logger) -> No
 _latest_quick_probe: dict = None  # type: ignore[assignment]
 
 
-def run_quick_probe(cfg: configparser.ConfigParser, logger: logging.Logger) -> None:
+def run_quick_probe(cfg: Config, logger: logging.Logger) -> None:
     """
     Executa um teste DNS leve em um único domínio com timeout curto e sem retries.
     Armazena o resultado em _latest_quick_probe para o próximo heartbeat.
@@ -669,7 +669,7 @@ def run_quick_probe(cfg: configparser.ConfigParser, logger: logging.Logger) -> N
                  result.get("latency_ms") or 0)
 
 
-def run_heartbeat(cfg: configparser.ConfigParser, logger: logging.Logger) -> None:
+def run_heartbeat(cfg: Config, logger: logging.Logger) -> None:
     """Heartbeat leve: sinal de vida + métricas rápidas + quick probe se disponível."""
     global _latest_quick_probe
     logger.debug("Enviando heartbeat...")
@@ -943,7 +943,7 @@ SERVICE_ALIASES = {
     "bind9": "named",
 }
 
-def _get_dns_service_name(cfg: configparser.ConfigParser) -> str:
+def _get_dns_service_name(cfg: Config) -> str:
     """
     Retorna o nome real do serviço DNS para uso com systemctl.
     Resolve aliases — ex: bind9 → named no Debian.
@@ -1191,7 +1191,7 @@ def _run_dig_trace(domain: str, resolver: str, logger: logging.Logger) -> tuple[
     return "done", json.dumps(result, ensure_ascii=False)
 
 
-def _execute_command(command: str, confirm_token: str, cfg: configparser.ConfigParser,
+def _execute_command(command: str, confirm_token: str, cfg: Config,
                      logger: logging.Logger, params: str = None) -> tuple[str, str]:
     """
     Executa um comando remoto no serviço DNS.
@@ -1286,11 +1286,33 @@ def _execute_command(command: str, confirm_token: str, cfg: configparser.ConfigP
         return "failed", str(exc)[:500]
 
 
-def poll_commands(cfg: configparser.ConfigParser, logger: logging.Logger) -> None:
+# ---------------------------------------------------------------------------
+# Polling adaptativo — estado global
+# Ativo: poll a cada 60s | Idle: após 2 polls vazios, espera idle_interval
+# ---------------------------------------------------------------------------
+_poll_empty_count: int   = 0
+_poll_last_active: float = 0.0
+
+
+def poll_commands(cfg, logger: logging.Logger) -> None:
     """
     Consulta o backend por comandos pendentes e os executa.
-    Chamado pelo scheduler a cada 12h e também na inicialização.
+    Polling adaptativo: roda a cada 60s, mas pula quando em idle
+    (2 polls consecutivos sem comandos) até idle_interval expirar.
     """
+    global _poll_empty_count, _poll_last_active
+
+    # ── Idle gate: pula se em idle e intervalo não expirou ───────────────
+    idle_threshold = 2
+    idle_interval = cfg.getint("schedule", "command_poll_idle_interval", fallback=600)
+
+    if _poll_empty_count >= idle_threshold:
+        elapsed = time.time() - _poll_last_active
+        if elapsed < idle_interval:
+            return          # ainda em idle — pula
+        # idle expirou — faz poll de verificação
+
+    # ── Poll efetivo ────────────────────────────────────────────────────
     url   = cfg.get("backend", "url").rstrip("/")
     token = cfg.get("agent", "auth_token")
     hostname = cfg.get("agent", "hostname", fallback=socket.gethostname())
@@ -1316,9 +1338,17 @@ def poll_commands(cfg: configparser.ConfigParser, logger: logging.Logger) -> Non
 
         commands = resp.json()
         if not commands:
-            logger.debug("poll_commands: nenhum comando pendente")
+            _poll_empty_count += 1
+            if _poll_empty_count >= idle_threshold:
+                _poll_last_active = time.time()
+                logger.debug("poll_commands: idle ativado após %d polls vazios", _poll_empty_count)
+            else:
+                logger.debug("poll_commands: nenhum comando pendente (%d/%d)", _poll_empty_count, idle_threshold)
             return
 
+        # Comandos encontrados — reseta idle
+        _poll_empty_count = 0
+        _poll_last_active = time.time()
         logger.info("poll_commands: %d comando(s) recebido(s)", len(commands))
 
         for cmd in commands:
@@ -1351,7 +1381,7 @@ def poll_commands(cfg: configparser.ConfigParser, logger: logging.Logger) -> Non
         logger.error("poll_commands: erro inesperado: %s", exc)
 
 
-def setup_schedule(cfg: configparser.ConfigParser, logger: logging.Logger) -> None:
+def setup_schedule(cfg: Config, logger: logging.Logger) -> None:
     """Configura os jobs agendados com base no agent.conf."""
     # Testes completos nos horários configurados
     times_raw = cfg.get("schedule", "check_times", fallback="00:00,02:00,04:00,06:00,08:00,10:00,12:00,14:00,16:00,18:00,20:00,22:00")
@@ -1372,10 +1402,10 @@ def setup_schedule(cfg: configparser.ConfigParser, logger: logging.Logger) -> No
         schedule.every(probe_interval).seconds.do(run_quick_probe, cfg=cfg, logger=logger)
         logger.info("Quick probe DNS agendado a cada %ds", probe_interval)
 
-    # Polling de comandos remotos (12h por padrão)
-    cmd_interval_h = cfg.getint("schedule", "command_poll_interval_h", fallback=12)
-    schedule.every(cmd_interval_h).hours.do(poll_commands, cfg=cfg, logger=logger)
-    logger.info("Polling de comandos agendado a cada %dh", cmd_interval_h)
+    # Polling de comandos remotos — adaptativo (60s ativo, idle após 2 vazios)
+    cmd_interval = cfg.getint("schedule", "command_poll_interval", fallback=60)
+    schedule.every(cmd_interval).seconds.do(poll_commands, cfg=cfg, logger=logger)
+    logger.info("Polling de comandos agendado a cada %ds (adaptativo)", cmd_interval)
 
 
 # ---------------------------------------------------------------------------

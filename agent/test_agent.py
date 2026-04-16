@@ -1770,7 +1770,87 @@ class TestSetupScheduleQuickProbe:
 
 
 # ===========================================================================
-# 22. Config TOML — classe Config e load_config com TOML
+# 22. Adaptive command polling
+# ===========================================================================
+
+class TestAdaptivePolling:
+    """Testa que poll_commands usa polling adaptativo: 60s ativo, idle após 2 vazios."""
+
+    def test_empty_poll_increments_counter(self):
+        import dns_agent as da
+        da._poll_empty_count = 0
+        da._poll_last_active = 0.0
+        cfg = make_cfg()
+        logger = make_logger()
+
+        with patch("dns_agent.requests.get") as mock_get:
+            mock_get.return_value = MagicMock(status_code=200, json=MagicMock(return_value=[]))
+            da.poll_commands(cfg, logger)
+
+        assert da._poll_empty_count == 1
+
+    def test_found_commands_resets_counter(self):
+        import dns_agent as da
+        da._poll_empty_count = 5
+        da._poll_last_active = 0.0
+        cfg = make_cfg()
+        logger = make_logger()
+
+        cmd = {"id": 1, "command": "restart", "confirm_token": None, "params": None}
+        with patch("dns_agent.requests.get") as mock_get, \
+             patch("dns_agent.requests.post"), \
+             patch("dns_agent._execute_command", return_value=("done", "ok")):
+            mock_get.return_value = MagicMock(status_code=200, json=MagicMock(return_value=[cmd]))
+            da.poll_commands(cfg, logger)
+
+        assert da._poll_empty_count == 0
+
+    def test_skips_poll_when_idle(self):
+        """Após 2 polls vazios, deve pular até idle_interval passar."""
+        import dns_agent as da
+        da._poll_empty_count = 2
+        da._poll_last_active = time.time()  # acabou de entrar em idle
+        cfg = make_cfg()
+        logger = make_logger()
+
+        with patch("dns_agent.requests.get") as mock_get:
+            da.poll_commands(cfg, logger)
+
+        mock_get.assert_not_called()  # deve pular — ainda em idle
+
+    def test_resumes_poll_after_idle_interval(self):
+        """Após idle_interval, volta a consultar mesmo em idle."""
+        import dns_agent as da
+        idle_interval = cfg_idle_interval = 600
+        da._poll_empty_count = 2
+        da._poll_last_active = time.time() - idle_interval - 1  # expirou
+
+        cfg = make_cfg({"schedule": {"command_poll_idle_interval": str(idle_interval)}})
+        logger = make_logger()
+
+        with patch("dns_agent.requests.get") as mock_get:
+            mock_get.return_value = MagicMock(status_code=200, json=MagicMock(return_value=[]))
+            da.poll_commands(cfg, logger)
+
+        mock_get.assert_called_once()
+
+    def test_setup_schedule_uses_60s_interval(self):
+        """setup_schedule deve agendar poll a cada 60s (não 12h)."""
+        import dns_agent as da
+        import schedule as sched
+        cfg = make_cfg({"schedule": {"command_poll_interval": "60"}})
+        logger = make_logger()
+
+        sched.clear()
+        da.setup_schedule(cfg, logger)
+        jobs = sched.get_jobs()
+        sched.clear()
+        # Deve ter: check_times (2) + heartbeat + quick_probe + command_poll = 5+
+        assert len(jobs) >= 5
+
+
+# ===========================================================================
+# 23. Config TOML — classe Config e load_config com TOML
 # ===========================================================================
 
 class TestConfig:
