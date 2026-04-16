@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DNS Monitor — Dashboard</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --font: 'JetBrains Mono', monospace;
+    --bg:       #0b0e14;
+    --bg-card:  #111520;
+    --bg-input: #0d1017;
+    --border:   #1e2640;
+    --text:     #cdd6f4;
+    --text-dim: #495680;
+    --text-mid: #6e7fa8;
+    --accent:   #89b4fa;
+    --green:    #a6e3a1;
+    --red:      #f38ba8;
+    --yellow:   #f9e2af;
+    --orange:   #fab387;
+    --blue:     #89b4fa;
+    --purple:   #cba6f7;
+    --teal:     #94e2d5;
+    --pink:     #f5c2e7;
+  }
+
+  body {
+    font-family: var(--font);
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 20px 24px 40px;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .header img { height: 32px; }
+  .header h1 { flex: 1; font-size: 1.1rem; font-weight: 700; color: var(--accent); letter-spacing: .04em; }
+  .header h1 span { color: var(--text-mid); font-weight: 400; }
+  .header .links { display: flex; gap: 12px; }
+  .header .links a {
+    color: var(--text-mid); text-decoration: none; font-size: 12px;
+    padding: 4px 10px; border: 1px solid var(--border); border-radius: 4px;
+    transition: all .2s;
+  }
+  .header .links a:hover { color: var(--accent); border-color: var(--accent); }
+
+  .token-bar {
+    display: flex; gap: 8px; margin-bottom: 20px; align-items: center;
+  }
+  .token-bar input {
+    flex: 1; max-width: 360px; padding: 6px 10px;
+    background: var(--bg-input); border: 1px solid var(--border); border-radius: 4px;
+    color: var(--text); font-family: var(--font); font-size: 12px;
+  }
+  .token-bar button {
+    padding: 6px 14px; background: var(--accent); color: var(--bg); border: none;
+    border-radius: 4px; font-family: var(--font); font-size: 12px; font-weight: 600;
+    cursor: pointer;
+  }
+  .token-bar .status { font-size: 11px; color: var(--text-dim); }
+
+  /* KPI cards */
+  .kpis {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+  .kpi {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    text-align: center;
+  }
+  .kpi .value {
+    font-size: 2rem;
+    font-weight: 700;
+    line-height: 1.2;
+  }
+  .kpi .label {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-top: 4px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+  }
+  .kpi.green .value { color: var(--green); }
+  .kpi.red .value { color: var(--red); }
+  .kpi.yellow .value { color: var(--yellow); }
+  .kpi.blue .value { color: var(--blue); }
+  .kpi.purple .value { color: var(--purple); }
+  .kpi.teal .value { color: var(--teal); }
+
+  /* Grid de graficos */
+  .charts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(460px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .chart-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .chart-card h3 {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-mid);
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    margin-bottom: 12px;
+  }
+  .chart-card canvas { width: 100% !important; max-height: 260px; }
+
+  /* Tabela de alertas */
+  .alerts-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 24px;
+  }
+  .alerts-card h3 {
+    font-size: 12px; font-weight: 600; color: var(--text-mid);
+    text-transform: uppercase; letter-spacing: .06em; margin-bottom: 12px;
+  }
+  .alerts-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .alerts-table th {
+    text-align: left; color: var(--text-dim); font-weight: 500; padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .alerts-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  .alerts-table tr:last-child td { border-bottom: none; }
+  .sev-critical { color: var(--red); font-weight: 600; }
+  .sev-warning { color: var(--yellow); }
+
+  .footer {
+    text-align: center; color: var(--text-dim); font-size: 11px; margin-top: 32px;
+    padding-top: 16px; border-top: 1px solid var(--border);
+  }
+
+  @media (max-width: 520px) {
+    .charts { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <img src="/static/logo.svg" alt="DNS Monitor">
+  <h1>DNS Monitor <span>Dashboard</span></h1>
+  <div class="links">
+    <a href="/admin">Admin Panel</a>
+  </div>
+</div>
+
+<div class="token-bar">
+  <input type="password" id="tokenInput" placeholder="Bearer token" />
+  <button onclick="loadDashboard()">Carregar</button>
+  <span class="status" id="loadStatus"></span>
+</div>
+
+<!-- KPIs -->
+<div class="kpis" id="kpiContainer">
+  <div class="kpi blue"><div class="value" id="kpiAgents">-</div><div class="label">Agentes</div></div>
+  <div class="kpi green"><div class="value" id="kpiOnline">-</div><div class="label">Online</div></div>
+  <div class="kpi red"><div class="value" id="kpiOffline">-</div><div class="label">Offline</div></div>
+  <div class="kpi teal"><div class="value" id="kpiAvgLatency">-</div><div class="label">Latencia DNS Avg</div></div>
+  <div class="kpi purple"><div class="value" id="kpiCpuAvg">-</div><div class="label">CPU Avg</div></div>
+  <div class="kpi yellow"><div class="value" id="kpiAlerts24h">-</div><div class="label">Alertas 24h</div></div>
+</div>
+
+<!-- Graficos -->
+<div class="charts">
+  <div class="chart-card">
+    <h3>Latencia DNS por Dominio (24h)</h3>
+    <canvas id="chartDnsLatency"></canvas>
+  </div>
+  <div class="chart-card">
+    <h3>CPU por Host (24h)</h3>
+    <canvas id="chartCpu"></canvas>
+  </div>
+  <div class="chart-card">
+    <h3>RAM por Host (24h)</h3>
+    <canvas id="chartRam"></canvas>
+  </div>
+  <div class="chart-card">
+    <h3>DNS Latencia por Host (24h)</h3>
+    <canvas id="chartDnsHistory"></canvas>
+  </div>
+</div>
+
+<!-- Alertas recentes -->
+<div class="alerts-card">
+  <h3>Alertas Recentes (24h)</h3>
+  <table class="alerts-table">
+    <thead><tr><th>Hora</th><th>Host</th><th>Tipo</th><th>Severidade</th><th>Mensagem</th></tr></thead>
+    <tbody id="alertsBody"><tr><td colspan="5" style="color:var(--text-dim)">Carregue o dashboard com o token acima.</td></tr></tbody>
+  </table>
+</div>
+
+<div class="footer">DNS Monitor Dashboard — auto-refresh a cada 60s</div>
+
+<script>
+const API = '/api/v1';
+const COLORS = ['#89b4fa','#a6e3a1','#f9e2af','#fab387','#f38ba8','#cba6f7','#94e2d5','#f5c2e7','#74c7ec','#b4befe'];
+let charts = {};
+let refreshTimer = null;
+
+function token() { return document.getElementById('tokenInput').value.trim(); }
+
+async function apiFetch(path) {
+  const t = token();
+  if (!t) throw new Error('Token vazio');
+  const resp = await fetch(API + path, { headers: { 'Authorization': 'Bearer ' + t, 'Content-Type': 'application/json' } });
+  if (!resp.ok) throw new Error(resp.status + ' ' + resp.statusText);
+  return resp.json();
+}
+
+function fmtTime(iso) {
+  if (!iso) return '-';
+  const d = new Date(iso);
+  return d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+}
+
+function fmtHour(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }) + ' ' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+}
+
+function chartDefaults() {
+  Chart.defaults.color = '#6e7fa8';
+  Chart.defaults.borderColor = '#1e2640';
+  Chart.defaults.font.family = "'JetBrains Mono', monospace";
+  Chart.defaults.font.size = 11;
+}
+
+function makeOrUpdate(id, config) {
+  if (charts[id]) { charts[id].destroy(); }
+  charts[id] = new Chart(document.getElementById(id), config);
+}
+
+function groupBy(arr, key) {
+  const map = {};
+  arr.forEach(r => { (map[r[key]] = map[r[key]] || []).push(r); });
+  return map;
+}
+
+function renderKPIs(data) {
+  const agents = data.agents || [];
+  const online = agents.filter(a => a.agent_status === 'online').length;
+  const offline = agents.filter(a => a.agent_status === 'offline' || a.agent_status === 'never_seen').length;
+  const cpus = agents.map(a => a.cpu_percent).filter(v => v != null);
+  const cpuAvg = cpus.length ? (cpus.reduce((a,b) => a+b, 0) / cpus.length).toFixed(1) : '-';
+  const latencies = (data.dns_latency || []).map(d => d.avg_ms).filter(v => v != null);
+  const latAvg = latencies.length ? (latencies.reduce((a,b) => a+b, 0) / latencies.length).toFixed(1) : '-';
+
+  document.getElementById('kpiAgents').textContent = agents.length;
+  document.getElementById('kpiOnline').textContent = online;
+  document.getElementById('kpiOffline').textContent = offline;
+  document.getElementById('kpiAvgLatency').textContent = latAvg !== '-' ? latAvg + 'ms' : '-';
+  document.getElementById('kpiCpuAvg').textContent = cpuAvg !== '-' ? cpuAvg + '%' : '-';
+  document.getElementById('kpiAlerts24h').textContent = (data.recent_alerts || []).length;
+}
+
+function renderDnsLatencyBar(data) {
+  const rows = (data.dns_latency || []).sort((a,b) => b.avg_ms - a.avg_ms);
+  const labels = rows.map(r => r.domain);
+  const avgData = rows.map(r => r.avg_ms);
+  const maxData = rows.map(r => r.max_ms);
+
+  makeOrUpdate('chartDnsLatency', {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Avg (ms)', data: avgData, backgroundColor: '#89b4fa88', borderColor: '#89b4fa', borderWidth: 1 },
+        { label: 'Max (ms)', data: maxData, backgroundColor: '#f38ba844', borderColor: '#f38ba8', borderWidth: 1 },
+      ]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      plugins: { legend: { position: 'top' } },
+      scales: { x: { beginAtZero: true, grid: { color: '#1e264066' } } }
+    }
+  });
+}
+
+function renderTimeSeries(canvasId, grouped, valueKey, label, colorIdx) {
+  const hosts = Object.keys(grouped);
+  const datasets = hosts.map((host, i) => ({
+    label: host,
+    data: grouped[host].map(r => ({ x: r.bucket, y: r[valueKey] })),
+    borderColor: COLORS[i % COLORS.length],
+    backgroundColor: COLORS[i % COLORS.length] + '22',
+    borderWidth: 2,
+    tension: 0.3,
+    pointRadius: 1,
+    fill: true,
+  }));
+
+  makeOrUpdate(canvasId, {
+    type: 'line',
+    data: { datasets },
+    options: {
+      responsive: true,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { position: 'top' } },
+      scales: {
+        x: {
+          type: 'time',
+          time: { unit: 'hour', displayFormats: { hour: 'HH:mm' }, tooltipFormat: 'dd/MM HH:mm' },
+          grid: { color: '#1e264066' },
+          adapters: { date: {} },
+        },
+        y: { beginAtZero: true, grid: { color: '#1e264066' } }
+      }
+    }
+  });
+}
+
+function renderAlerts(data) {
+  const alerts = data.recent_alerts || [];
+  const tbody = document.getElementById('alertsBody');
+  if (!alerts.length) {
+    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--text-dim)">Nenhum alerta nas ultimas 24h.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = alerts.map(a => `<tr>
+    <td>${fmtTime(a.ts)}</td>
+    <td>${a.hostname}</td>
+    <td>${a.alert_type}</td>
+    <td class="sev-${a.severity}">${a.severity}</td>
+    <td>${a.message || ''}</td>
+  </tr>`).join('');
+}
+
+async function loadDashboard() {
+  const st = document.getElementById('loadStatus');
+  st.textContent = 'Carregando...';
+  st.style.color = 'var(--text-dim)';
+  try {
+    chartDefaults();
+    const data = await apiFetch('/dashboard/data');
+
+    renderKPIs(data);
+    renderDnsLatencyBar(data);
+
+    const cpuGrouped = groupBy(data.cpu_history || [], 'hostname');
+    renderTimeSeries('chartCpu', cpuGrouped, 'cpu_avg', 'CPU %', 0);
+
+    const ramGrouped = groupBy(data.ram_history || [], 'hostname');
+    renderTimeSeries('chartRam', ramGrouped, 'ram_avg', 'RAM %', 2);
+
+    const dnsGrouped = groupBy(data.dns_history || [], 'hostname');
+    renderTimeSeries('chartDnsHistory', dnsGrouped, 'latency_avg', 'Latency ms', 4);
+
+    renderAlerts(data);
+
+    st.textContent = 'Atualizado ' + new Date().toLocaleTimeString('pt-BR');
+    st.style.color = 'var(--green)';
+
+    if (refreshTimer) clearInterval(refreshTimer);
+    refreshTimer = setInterval(loadDashboard, 60000);
+  } catch (e) {
+    st.textContent = 'Erro: ' + e.message;
+    st.style.color = 'var(--red)';
+  }
+}
+
+// Chart.js time adapter — lightweight
+(function(){
+  const a = { formats: () => ({}), parse: v => new Date(v), format: (d, f) => {
+    const dt = new Date(d);
+    const pad = n => String(n).padStart(2,'0');
+    if (f === 'HH:mm') return pad(dt.getHours()) + ':' + pad(dt.getMinutes());
+    if (f === 'dd/MM HH:mm') return pad(dt.getDate()) + '/' + pad(dt.getMonth()+1) + ' ' + pad(dt.getHours()) + ':' + pad(dt.getMinutes());
+    return dt.toLocaleString('pt-BR');
+  }, startOf: (d, u) => {
+    const dt = new Date(d);
+    if (u==='hour'){dt.setMinutes(0,0,0);} else if(u==='day'){dt.setHours(0,0,0,0);}
+    return dt;
+  }, add: (d, n, u) => {
+    const dt = new Date(d);
+    if(u==='hour') dt.setHours(dt.getHours()+n);
+    else if(u==='day') dt.setDate(dt.getDate()+n);
+    else if(u==='minute') dt.setMinutes(dt.getMinutes()+n);
+    return dt;
+  }, diff: (a, b, u) => {
+    const ms = new Date(a) - new Date(b);
+    if(u==='hour') return ms/3600000;
+    if(u==='day') return ms/86400000;
+    if(u==='minute') return ms/60000;
+    return ms;
+  }};
+  Chart._adapters._date.override(a);
+})();
+</script>
+</body>
+</html>

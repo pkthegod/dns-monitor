@@ -710,6 +710,92 @@ async def get_command_status(command_id: int, request: Request) -> _SafeJSONResp
     return _SafeJSONResponse(cmd)
 
 
+@app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
+async def dashboard_page(request: Request) -> HTMLResponse:
+    """Dashboard público de métricas — gráficos de latência, CPU, RAM, DNS."""
+    html_path = pathlib.Path(__file__).parent / "static" / "dashboard.html"
+    if not html_path.exists():
+        raise HTTPException(status_code=404, detail="Dashboard não encontrado")
+    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+
+
+@v1.get("/dashboard/data", dependencies=[Depends(require_token)])
+async def dashboard_data() -> _SafeJSONResponse:
+    """Dados agregados para o dashboard de métricas."""
+    async with db.get_conn() as conn:
+        # Agentes com status atual
+        agents = [dict(r) for r in await conn.fetch(
+            "SELECT * FROM v_agent_current_status ORDER BY hostname"
+        )]
+
+        # Top 10 domínios por latência média (últimas 24h)
+        dns_latency = [dict(r) for r in await conn.fetch("""
+            SELECT domain,
+                   ROUND(AVG(latency_ms)::numeric, 1) AS avg_ms,
+                   ROUND(MAX(latency_ms)::numeric, 1) AS max_ms,
+                   COUNT(*) AS checks,
+                   SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failures
+            FROM dns_checks
+            WHERE ts > NOW() - INTERVAL '24 hours' AND latency_ms IS NOT NULL
+            GROUP BY domain
+            ORDER BY avg_ms DESC
+            LIMIT 10
+        """)]
+
+        # CPU por host (últimas 2h, média por hora)
+        cpu_history = [dict(r) for r in await conn.fetch("""
+            SELECT hostname,
+                   time_bucket('1 hour', ts) AS bucket,
+                   ROUND(AVG(cpu_percent)::numeric, 1) AS cpu_avg
+            FROM metrics_cpu
+            WHERE ts > NOW() - INTERVAL '24 hours'
+            GROUP BY hostname, bucket
+            ORDER BY bucket
+        """)]
+
+        # RAM por host (últimas 2h, média por hora)
+        ram_history = [dict(r) for r in await conn.fetch("""
+            SELECT hostname,
+                   time_bucket('1 hour', ts) AS bucket,
+                   ROUND(AVG(ram_percent)::numeric, 1) AS ram_avg
+            FROM metrics_ram
+            WHERE ts > NOW() - INTERVAL '24 hours'
+            GROUP BY hostname, bucket
+            ORDER BY bucket
+        """)]
+
+        # Latência DNS por hora (últimas 24h)
+        dns_history = [dict(r) for r in await conn.fetch("""
+            SELECT hostname,
+                   time_bucket('1 hour', ts) AS bucket,
+                   ROUND(AVG(latency_ms)::numeric, 1) AS latency_avg,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failures
+            FROM dns_checks
+            WHERE ts > NOW() - INTERVAL '24 hours'
+            GROUP BY hostname, bucket
+            ORDER BY bucket
+        """)]
+
+        # Alertas recentes (últimas 24h)
+        recent_alerts = [dict(r) for r in await conn.fetch("""
+            SELECT hostname, alert_type, severity, message, ts
+            FROM alerts_log
+            WHERE ts > NOW() - INTERVAL '24 hours'
+            ORDER BY ts DESC
+            LIMIT 20
+        """)]
+
+    return _SafeJSONResponse({
+        "agents": agents,
+        "dns_latency": dns_latency,
+        "cpu_history": cpu_history,
+        "ram_history": ram_history,
+        "dns_history": dns_history,
+        "recent_alerts": recent_alerts,
+    })
+
+
 @app.get("/health")
 async def health() -> JSONResponse:
     """Healthcheck para Docker e load balancer."""
