@@ -8,39 +8,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/base.css">
 <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-  :root {
-    --font:      'Inter', -apple-system, sans-serif;
-    --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
-    --bg:        #08090d;
-    --bg-card:   #12151e;
-    --bg-input:  #0e1018;
-    --border:    #1c2038;
-    --border-lo: #151a2a;
-    --text:      #d4daf0;
-    --text-dim:  #44506e;
-    --text-mid:  #6a7ba0;
-    --accent:    #7aa2f7;
-    --green:     #9ece6a;
-    --red:       #f7768e;
-    --yellow:    #e0af68;
-    --orange:    #ff9e64;
-    --blue:      #7aa2f7;
-    --purple:    #bb9af7;
-  }
-
-  body {
-    font-family: var(--font);
-    -webkit-font-smoothing: antialiased;
-    background: var(--bg);
-    color: var(--text);
-    min-height: 100vh;
-    padding: 20px 24px 40px;
-    font-size: 13px;
-    line-height: 1.5;
-  }
+  body { padding: 20px 24px 40px; font-size: 13px; }
 
   /* ── Header ── */
   .header {
@@ -815,16 +785,13 @@
 
 <div id="toast-container"></div>
 
+<script src="/static/app.js"></script>
 <script>
   const REFRESH_INTERVAL = 300;
   let editingHostname = null;
   let diagHostname    = null;
   let diagPollTimer   = null;
-  let serverVersion   = null;   // versão do agente disponível no servidor
-
-  function token() {
-    return document.getElementById('token-input').value.trim();
-  }
+  let serverVersion   = null;
 
   // ── Countdown ──────────────────────────────────────────────────────────────
   let remaining = REFRESH_INTERVAL;
@@ -836,15 +803,6 @@
     if (remaining < 0) { remaining = REFRESH_INTERVAL; loadAll(); }
   }
   setInterval(updateCountdown, 1000);
-
-  // ── Toast ──────────────────────────────────────────────────────────────────
-  function toast(msg, ok = true) {
-    const el = document.createElement('div');
-    el.className = `toast ${ok ? 'toast-ok' : 'toast-err'}`;
-    el.textContent = msg;
-    document.getElementById('toast-container').appendChild(el);
-    setTimeout(() => el.remove(), 4000);
-  }
 
   // ── Helpers ────────────────────────────────────────────────────────────────
   function statusPill(s) {
@@ -884,27 +842,6 @@
     if (agentVer === serverVersion)
       return `<span class="version-badge version-ok">${esc(agentVer)}</span>`;
     return `<span class="version-badge version-old" title="Servidor: ${esc(serverVersion)}">${esc(agentVer)} ↑${esc(serverVersion)}</span>`;
-  }
-
-  function fmtDate(iso) {
-    if (!iso) return '<span class="dim">—</span>';
-    return new Date(iso).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
-  }
-
-  function esc(s) {
-    return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-  }
-
-  // ── API ────────────────────────────────────────────────────────────────────
-  const API_BASE = '/api/v1';
-
-  async function apiFetch(path, opts = {}) {
-    const t = token();
-    const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
-    if (t) headers['Authorization'] = `Bearer ${t}`;
-    const resp = await fetch(API_BASE + path, { ...opts, headers });
-    if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
-    return resp.json();
   }
 
   // ── Send command ───────────────────────────────────────────────────────────
