@@ -58,6 +58,12 @@
     <a href="/client/logout" class="btn btn-ghost" style="margin-left:auto">Sair</a>
   </div>
 
+  <div class="controls fade-in" style="display:flex;gap:4px;margin-bottom:20px">
+    <button class="btn btn-ghost period-btn" data-period="1h">1h</button>
+    <button class="btn btn-ghost period-btn active" data-period="24h" style="background:var(--accent);color:var(--bg);border-color:var(--accent)">24h</button>
+    <button class="btn btn-ghost period-btn" data-period="7d">7d</button>
+  </div>
+
   <div class="kpis" id="kpiContainer">
     <div class="kpi green"><div class="label">Status</div><div class="value" id="kpiStatus">--</div></div>
     <div class="kpi teal"><div class="label">DNS Latencia Avg</div><div class="value" id="kpiLatency">--</div></div>
@@ -175,10 +181,12 @@ function renderAlerts(data) {
     <td class="mid">${esc(a.message||'')}</td></tr>`).join('');
 }
 
+let currentPeriod = '24h';
+
 async function loadPortal() {
   try {
     chartDefaults();
-    const data = await apiFetch('/client/data');
+    const data = await apiFetch(`/client/data?period=${currentPeriod}`);
     renderKPIs(data);
     renderLine('chartDns', groupBy(data.dns_history||[],'hostname'), 'latency_avg');
     renderLine('chartCpu', groupBy(data.cpu_history||[],'hostname'), 'cpu_avg');
@@ -204,6 +212,16 @@ async function loadPortal() {
     diff:(a,b,u)=>{const ms=new Date(a)-new Date(b);return u==='hour'?ms/36e5:u==='day'?ms/864e5:u==='minute'?ms/6e4:ms;}
   });
 })();
+
+// Period filter
+document.querySelectorAll('.period-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.period-btn').forEach(b => { b.style.background=''; b.style.color=''; b.style.borderColor=''; });
+    btn.style.background='var(--accent)'; btn.style.color='var(--bg)'; btn.style.borderColor='var(--accent)';
+    currentPeriod = btn.dataset.period;
+    loadPortal();
+  });
+});
 
 fetchSessionToken().then(() => loadPortal());
 </script>

@@ -73,6 +73,18 @@
     <span class="status" id="loadStatus"></span>
   </div>
 
+  <div class="controls fade-in stagger-2" style="display:flex;gap:8px;margin-bottom:20px;align-items:center;flex-wrap:wrap">
+    <div class="period-btns" style="display:flex;gap:4px">
+      <button class="btn btn-ghost period-btn" data-period="1h">1h</button>
+      <button class="btn btn-ghost period-btn active" data-period="24h" style="background:var(--accent);color:var(--bg);border-color:var(--accent)">24h</button>
+      <button class="btn btn-ghost period-btn" data-period="7d">7d</button>
+    </div>
+    <select id="hostFilter" style="background:var(--bg-input);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 10px;font-family:var(--font-mono);font-size:12px">
+      <option value="">Todos os hosts</option>
+    </select>
+    <span class="dim" style="font-size:11px;margin-left:auto" id="periodLabel">Periodo: 24h</span>
+  </div>
+
   <div class="kpis" id="kpiContainer">
     <div class="kpi blue"><div class="label">Agentes</div><div class="value" id="kpiAgents">--</div></div>
     <div class="kpi green"><div class="label">Online</div><div class="value" id="kpiOnline">--</div></div>
@@ -117,6 +129,8 @@
 const COLORS = ['#7aa2f7','#9ece6a','#e0af68','#ff9e64','#f7768e','#bb9af7','#73daca','#7dcfff','#c0caf5','#b4f9f8'];
 let charts = {};
 let refreshTimer = null;
+let currentPeriod = '24h';
+let currentHost = '';
 
 function chartDefaults() {
   Chart.defaults.color = '#6a7ba0';
@@ -222,7 +236,21 @@ async function loadDashboard() {
   st.innerHTML = ICONS.loading + ' Carregando...'; st.style.color = 'var(--text-mid)';
   try {
     chartDefaults();
-    const data = await apiFetch('/dashboard/data');
+    let url = `/dashboard/data?period=${currentPeriod}`;
+    if (currentHost) url += `&host=${encodeURIComponent(currentHost)}`;
+    const data = await apiFetch(url);
+
+    // Popula filtro de hosts
+    const sel = document.getElementById('hostFilter');
+    if (sel.options.length <= 1 && data.agents) {
+      data.agents.forEach(a => {
+        const opt = document.createElement('option');
+        opt.value = a.hostname; opt.textContent = a.hostname;
+        sel.appendChild(opt);
+      });
+    }
+    sel.value = currentHost;
+
     renderKPIs(data);
     renderDnsBar(data);
     renderLine('chartCpu', groupBy(data.cpu_history||[],'hostname'), 'cpu_avg');
@@ -232,6 +260,7 @@ async function loadDashboard() {
     animateChildren('#chartsContainer', 'slide-up');
     st.innerHTML = '<span class="live-dot"></span>Atualizado ' + new Date().toLocaleTimeString('pt-BR');
     st.style.color = 'var(--green)';
+    document.getElementById('periodLabel').textContent = 'Periodo: ' + currentPeriod + (currentHost ? ' | ' + currentHost : '');
     if (refreshTimer) clearInterval(refreshTimer);
     refreshTimer = setInterval(loadDashboard, 60000);
   } catch (e) {
@@ -239,6 +268,22 @@ async function loadDashboard() {
     toast.err(e.message);
   }
 }
+
+// Period + host filter handlers
+document.querySelectorAll('.period-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.period-btn').forEach(b => {
+      b.style.background = ''; b.style.color = ''; b.style.borderColor = '';
+    });
+    btn.style.background = 'var(--accent)'; btn.style.color = 'var(--bg)'; btn.style.borderColor = 'var(--accent)';
+    currentPeriod = btn.dataset.period;
+    loadDashboard();
+  });
+});
+document.getElementById('hostFilter').addEventListener('change', e => {
+  currentHost = e.target.value;
+  loadDashboard();
+});
 
 // Chart.js time adapter
 (function(){

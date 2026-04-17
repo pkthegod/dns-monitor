@@ -87,7 +87,7 @@ async def require_token(request: Request) -> None:
     if not AGENT_TOKEN:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="AGENT_TOKEN não configurado — backend recusa requests sem autenticação",
+            detail="Servico indisponivel",
         )
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer ") or auth[7:] != AGENT_TOKEN:
@@ -418,11 +418,21 @@ from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(
     title="DNS Monitor — Backend",
-    version="0.6.0",
+    version="0.6.1",
     lifespan=lifespan,
 )
 
 from starlette.middleware.base import BaseHTTPMiddleware
+
+class RequestLoggingMiddleware(BaseHTTPMiddleware):
+    """Loga chamadas de API mutativas (POST/PATCH/DELETE) para auditoria."""
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        if request.method in ("POST", "PATCH", "DELETE") and request.url.path.startswith("/api/"):
+            ip = request.client.host if request.client else "-"
+            logger.info("AUDIT %s %s %s → %d", request.method, request.url.path, ip, response.status_code)
+        return response
+
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
@@ -445,6 +455,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RequestLoggingMiddleware)
 
 app.mount("/static", StaticFiles(directory=str(pathlib.Path(__file__).parent / "static")), name="static")
 
@@ -895,72 +906,77 @@ async def dashboard_page(request: Request) -> HTMLResponse:
     return HTMLResponse(html_path.read_text(encoding="utf-8"))
 
 
+_VALID_PERIODS = {"1h": "1 hour", "6h": "6 hours", "24h": "24 hours", "7d": "7 days"}
+_BUCKET_MAP    = {"1h": "5 minutes", "6h": "30 minutes", "24h": "1 hour", "7d": "6 hours"}
+
+
 @v1.get("/dashboard/data", dependencies=[Depends(require_token)])
-async def dashboard_data() -> _SafeJSONResponse:
-    """Dados agregados para o dashboard de métricas."""
+async def dashboard_data(period: str = "24h", host: str = "") -> _SafeJSONResponse:
+    """Dados agregados para o dashboard. Aceita ?period=1h|6h|24h|7d&host=hostname."""
+    interval = _VALID_PERIODS.get(period, "24 hours")
+    bucket   = _BUCKET_MAP.get(period, "1 hour")
+
+    # Filtro de host opcional
+    host_filter = ""
+    host_params = []
+    if host and _re.match(r'^[a-zA-Z0-9._-]+$', host):
+        host_filter = " AND hostname = $1"
+        host_params = [host]
+
     async with db.get_conn() as conn:
-        # Agentes com status atual
         agents = [dict(r) for r in await conn.fetch(
             "SELECT * FROM v_agent_current_status ORDER BY hostname"
         )]
 
-        # Top 10 domínios por latência média (últimas 24h)
-        dns_latency = [dict(r) for r in await conn.fetch("""
+        p_offset = len(host_params) + 1  # param index offset
+
+        dns_latency = [dict(r) for r in await conn.fetch(f"""
             SELECT domain,
                    ROUND(AVG(latency_ms)::numeric, 1) AS avg_ms,
                    ROUND(MAX(latency_ms)::numeric, 1) AS max_ms,
                    COUNT(*) AS checks,
                    SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failures
             FROM dns_checks
-            WHERE ts > NOW() - INTERVAL '24 hours' AND latency_ms IS NOT NULL
-            GROUP BY domain
-            ORDER BY avg_ms DESC
-            LIMIT 10
-        """)]
+            WHERE ts > NOW() - INTERVAL '{interval}' AND latency_ms IS NOT NULL{host_filter}
+            GROUP BY domain ORDER BY avg_ms DESC LIMIT 10
+        """, *host_params)]
 
-        # CPU por host (últimas 2h, média por hora)
-        cpu_history = [dict(r) for r in await conn.fetch("""
+        cpu_history = [dict(r) for r in await conn.fetch(f"""
             SELECT hostname,
-                   time_bucket('1 hour', ts) AS bucket,
+                   time_bucket('{bucket}', ts) AS bucket,
                    ROUND(AVG(cpu_percent)::numeric, 1) AS cpu_avg
             FROM metrics_cpu
-            WHERE ts > NOW() - INTERVAL '24 hours'
-            GROUP BY hostname, bucket
-            ORDER BY bucket
-        """)]
+            WHERE ts > NOW() - INTERVAL '{interval}'{host_filter}
+            GROUP BY hostname, bucket ORDER BY bucket
+        """, *host_params)]
 
-        # RAM por host (últimas 2h, média por hora)
-        ram_history = [dict(r) for r in await conn.fetch("""
+        ram_history = [dict(r) for r in await conn.fetch(f"""
             SELECT hostname,
-                   time_bucket('1 hour', ts) AS bucket,
+                   time_bucket('{bucket}', ts) AS bucket,
                    ROUND(AVG(ram_percent)::numeric, 1) AS ram_avg
             FROM metrics_ram
-            WHERE ts > NOW() - INTERVAL '24 hours'
-            GROUP BY hostname, bucket
-            ORDER BY bucket
-        """)]
+            WHERE ts > NOW() - INTERVAL '{interval}'{host_filter}
+            GROUP BY hostname, bucket ORDER BY bucket
+        """, *host_params)]
 
-        # Latência DNS por hora (últimas 24h)
-        dns_history = [dict(r) for r in await conn.fetch("""
+        dns_history = [dict(r) for r in await conn.fetch(f"""
             SELECT hostname,
-                   time_bucket('1 hour', ts) AS bucket,
+                   time_bucket('{bucket}', ts) AS bucket,
                    ROUND(AVG(latency_ms)::numeric, 1) AS latency_avg,
                    COUNT(*) AS total,
                    SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failures
             FROM dns_checks
-            WHERE ts > NOW() - INTERVAL '24 hours'
+            WHERE ts > NOW() - INTERVAL '{interval}'{host_filter}
             GROUP BY hostname, bucket
             ORDER BY bucket
         """)]
 
-        # Alertas recentes (últimas 24h)
-        recent_alerts = [dict(r) for r in await conn.fetch("""
+        recent_alerts = [dict(r) for r in await conn.fetch(f"""
             SELECT hostname, alert_type, severity, message, ts
             FROM alerts_log
-            WHERE ts > NOW() - INTERVAL '24 hours'
-            ORDER BY ts DESC
-            LIMIT 20
-        """)]
+            WHERE ts > NOW() - INTERVAL '{interval}'{host_filter}
+            ORDER BY ts DESC LIMIT 30
+        """, *host_params)]
 
     return _SafeJSONResponse({
         "agents": agents,
@@ -1123,7 +1139,7 @@ async def client_portal(request: Request) -> HTMLResponse:
 
 
 @v1.get("/client/data")
-async def client_data(request: Request) -> _SafeJSONResponse:
+async def client_data(request: Request, period: str = "24h") -> _SafeJSONResponse:
     """Dados filtrados por hostnames do cliente logado. Auth via cookie."""
     # Extrai username do cookie de sessao — NAO do header (previne spoofing)
     cookie = request.cookies.get("client_session", "")
@@ -1142,6 +1158,8 @@ async def client_data(request: Request) -> _SafeJSONResponse:
         return _SafeJSONResponse({"agents": [], "dns_latency": [], "cpu_history": [],
                                    "ram_history": [], "dns_history": [], "recent_alerts": []})
 
+    interval = _VALID_PERIODS.get(period, "24 hours")
+    bucket   = _BUCKET_MAP.get(period, "1 hour")
     placeholders = ", ".join(f"${i+1}" for i in range(len(hostnames)))
 
     async with db.get_conn() as conn:
@@ -1155,41 +1173,41 @@ async def client_data(request: Request) -> _SafeJSONResponse:
                    COUNT(*) AS checks,
                    SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failures
             FROM dns_checks
-            WHERE ts > NOW() - INTERVAL '24 hours' AND latency_ms IS NOT NULL
+            WHERE ts > NOW() - INTERVAL '{interval}' AND latency_ms IS NOT NULL
                   AND hostname IN ({placeholders})
             GROUP BY domain ORDER BY avg_ms DESC LIMIT 10
         """, *hostnames)]
 
         cpu_history = [dict(r) for r in await conn.fetch(f"""
-            SELECT hostname, time_bucket('1 hour', ts) AS bucket,
+            SELECT hostname, time_bucket('{bucket}', ts) AS bucket,
                    ROUND(AVG(cpu_percent)::numeric, 1) AS cpu_avg
             FROM metrics_cpu
-            WHERE ts > NOW() - INTERVAL '24 hours' AND hostname IN ({placeholders})
+            WHERE ts > NOW() - INTERVAL '{interval}' AND hostname IN ({placeholders})
             GROUP BY hostname, bucket ORDER BY bucket
         """, *hostnames)]
 
         ram_history = [dict(r) for r in await conn.fetch(f"""
-            SELECT hostname, time_bucket('1 hour', ts) AS bucket,
+            SELECT hostname, time_bucket('{bucket}', ts) AS bucket,
                    ROUND(AVG(ram_percent)::numeric, 1) AS ram_avg
             FROM metrics_ram
-            WHERE ts > NOW() - INTERVAL '24 hours' AND hostname IN ({placeholders})
+            WHERE ts > NOW() - INTERVAL '{interval}' AND hostname IN ({placeholders})
             GROUP BY hostname, bucket ORDER BY bucket
         """, *hostnames)]
 
         dns_history = [dict(r) for r in await conn.fetch(f"""
-            SELECT hostname, time_bucket('1 hour', ts) AS bucket,
+            SELECT hostname, time_bucket('{bucket}', ts) AS bucket,
                    ROUND(AVG(latency_ms)::numeric, 1) AS latency_avg,
                    COUNT(*) AS total,
                    SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failures
             FROM dns_checks
-            WHERE ts > NOW() - INTERVAL '24 hours' AND hostname IN ({placeholders})
+            WHERE ts > NOW() - INTERVAL '{interval}' AND hostname IN ({placeholders})
             GROUP BY hostname, bucket ORDER BY bucket
         """, *hostnames)]
 
         recent_alerts = [dict(r) for r in await conn.fetch(f"""
             SELECT hostname, alert_type, severity, message, ts
             FROM alerts_log
-            WHERE ts > NOW() - INTERVAL '24 hours' AND hostname IN ({placeholders})
+            WHERE ts > NOW() - INTERVAL '{interval}' AND hostname IN ({placeholders})
             ORDER BY ts DESC LIMIT 20
         """, *hostnames)]
 
