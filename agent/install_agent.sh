@@ -218,6 +218,7 @@ echo "6) Criando virtualenv e instalando dependências..."
 python3 -m venv "$INSTALL_DIR/venv"
 "$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade pip
 "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
+"$INSTALL_DIR/venv/bin/pip" install --quiet nats-py 2>/dev/null || true
 echo "   Dependências instaladas."
 
 # ---------------------------------------------------------------------------
