@@ -4,11 +4,29 @@
 
 const API_BASE = '/api/v1';
 
-// ── Token ──
+// ── Token (buscado via sessao, nunca exposto no HTML) ──
+let _cachedToken = '';
+
 function token() {
-  if (window.__TOKEN__) return window.__TOKEN__;
+  if (_cachedToken) return _cachedToken;
   const el = document.getElementById('tokenInput') || document.getElementById('token-input');
   return el ? el.value.trim() : '';
+}
+
+async function fetchSessionToken() {
+  /**Busca token via cookie de sessao. Retorna true se sucesso.*/
+  try {
+    const resp = await fetch(API_BASE + '/session/token', { credentials: 'same-origin' });
+    if (resp.ok) {
+      const data = await resp.json();
+      _cachedToken = data.token || '';
+      // Esconde campo manual de token se obteve via sessao
+      const wrap = document.querySelector('.token-wrap') || document.querySelector('.token-bar');
+      if (wrap && _cachedToken) wrap.style.display = 'none';
+      return true;
+    }
+  } catch (_) {}
+  return false;
 }
 
 // ── API fetch ──
@@ -16,7 +34,7 @@ async function apiFetch(path, opts = {}) {
   const t = token();
   const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
   if (t) headers['Authorization'] = 'Bearer ' + t;
-  const resp = await fetch(API_BASE + path, { ...opts, headers });
+  const resp = await fetch(API_BASE + path, { ...opts, headers, credentials: 'same-origin' });
   if (!resp.ok) {
     let detail = resp.status + ' ' + resp.statusText;
     try { const body = await resp.json(); if (body.detail) detail = body.detail; } catch (_) {}

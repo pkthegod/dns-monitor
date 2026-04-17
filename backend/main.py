@@ -413,6 +413,21 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+from starlette.middleware.base import BaseHTTPMiddleware
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        if request.url.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
+
 app.mount("/static", StaticFiles(directory=str(pathlib.Path(__file__).parent / "static")), name="static")
 
 # ---------------------------------------------------------------------------
@@ -443,6 +458,11 @@ async def receive_metrics(payload: AgentPayload) -> JSONResponse:
     """
     hostname = payload.hostname
     ts       = payload.timestamp
+
+    # Validacao de hostname — previne injection via nomes maliciosos
+    import re as _re_val
+    if not _re_val.match(r'^[a-zA-Z0-9._-]{1,128}$', hostname):
+        return JSONResponse({"error": "hostname invalido"}, status_code=422)
 
     # Garante registro do agente — detecta novos automaticamente
     agent_meta = await db.upsert_agent(
@@ -731,10 +751,14 @@ async def admin_logout():
     return resp
 
 
-def _inject_token(html: str) -> str:
-    """Injeta AGENT_TOKEN no HTML para sessoes autenticadas (admin/dashboard)."""
-    snippet = f'<script>window.__TOKEN__="{AGENT_TOKEN}";</script>'
-    return html.replace("</head>", snippet + "\n</head>", 1)
+@app.get("/api/v1/session/token", include_in_schema=False)
+async def session_token(request: Request) -> JSONResponse:
+    """Retorna AGENT_TOKEN se sessao admin ou client valida. Nunca expoe no HTML."""
+    admin = _verify_admin_cookie(request.cookies.get("admin_session", ""))
+    client = _verify_client_cookie(request.cookies.get("client_session", ""))
+    if not admin and not client:
+        raise HTTPException(status_code=401, detail="Sessao invalida")
+    return JSONResponse({"token": AGENT_TOKEN})
 
 
 @app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
@@ -744,8 +768,7 @@ async def admin_panel(request: Request) -> HTMLResponse:
     if not _verify_admin_cookie(cookie):
         return RedirectResponse("/admin/login", status_code=303)
     html_path = pathlib.Path(__file__).parent / "static" / "admin.html"
-    html = _inject_token(html_path.read_text(encoding="utf-8"))
-    return HTMLResponse(html)
+    return HTMLResponse(html_path.read_text(encoding="utf-8"))
 
 
 @v1.get("/commands/history")
@@ -844,16 +867,11 @@ async def get_command_status(command_id: int, request: Request) -> _SafeJSONResp
 
 @app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
 async def dashboard_page(request: Request) -> HTMLResponse:
-    """Dashboard de métricas — injeta token se sessão admin válida."""
+    """Dashboard de métricas."""
     html_path = pathlib.Path(__file__).parent / "static" / "dashboard.html"
     if not html_path.exists():
         raise HTTPException(status_code=404, detail="Dashboard não encontrado")
-    html = html_path.read_text(encoding="utf-8")
-    # Injeta token automaticamente se o admin esta logado
-    cookie = request.cookies.get("admin_session", "")
-    if _verify_admin_cookie(cookie):
-        html = _inject_token(html)
-    return HTMLResponse(html)
+    return HTMLResponse(html_path.read_text(encoding="utf-8"))
 
 
 @v1.get("/dashboard/data", dependencies=[Depends(require_token)])
@@ -941,7 +959,8 @@ async def health() -> JSONResponse:
             await conn.fetchval("SELECT 1")
         return JSONResponse({"status": "ok", "db": "connected"})
     except Exception as exc:
-        return JSONResponse({"status": "error", "db": str(exc)}, status_code=503)
+        logger.error("Health check falhou: %s", exc)
+        return JSONResponse({"status": "error", "db": "unavailable"}, status_code=503)
 
 
 # ---------------------------------------------------------------------------
@@ -1072,7 +1091,7 @@ async def client_portal(request: Request) -> HTMLResponse:
     html_path = pathlib.Path(__file__).parent / "static" / "client.html"
     html = html_path.read_text(encoding="utf-8")
     # Injeta token + username no HTML
-    snippet = f'<script>window.__TOKEN__="{AGENT_TOKEN}";window.__CLIENT__="{username}";</script>'
+    snippet = f'<script>window.__CLIENT__="{username}";</script>'
     html = html.replace("</head>", snippet + "\n</head>", 1)
     return HTMLResponse(html)
 
