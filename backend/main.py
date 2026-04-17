@@ -141,20 +141,26 @@ _CLIENT_SECRET = os.environ.get("CLIENT_SESSION_SECRET", "").encode() or \
                  hashlib.sha256(b"client:" + (AGENT_TOKEN or "fallback").encode()).digest()
 
 
+_ADMIN_SESSION_TTL  = 14400   # 4 horas
+_CLIENT_SESSION_TTL = 43200   # 12 horas
+
+
 def _sign_admin_cookie(username: str) -> str:
-    """Gera cookie assinado com secret exclusivo do admin."""
-    sig = hmac.new(_ADMIN_SECRET, username.encode(), hashlib.sha256).hexdigest()
-    return f"{username}.{sig}"
+    """Gera cookie assinado com nonce aleatorio (previne session fixation)."""
+    nonce = secrets.token_hex(8)
+    payload = f"{username}:{nonce}"
+    sig = hmac.new(_ADMIN_SECRET, payload.encode(), hashlib.sha256).hexdigest()
+    return f"{payload}.{sig}"
 
 
 def _verify_admin_cookie(cookie: str) -> Optional[str]:
     """Verifica cookie admin. Retorna username ou None."""
     if not cookie or "." not in cookie:
         return None
-    username, sig = cookie.rsplit(".", 1)
-    expected = hmac.new(_ADMIN_SECRET, username.encode(), hashlib.sha256).hexdigest()
+    payload, sig = cookie.rsplit(".", 1)
+    expected = hmac.new(_ADMIN_SECRET, payload.encode(), hashlib.sha256).hexdigest()
     if hmac.compare_digest(sig, expected):
-        return username
+        return payload.split(":")[0] if ":" in payload else payload
     return None
 
 
@@ -175,9 +181,11 @@ def _verify_password(password: str, hashed: str) -> bool:
 
 
 def _sign_client_cookie(username: str) -> str:
-    """Cookie assinado com secret exclusivo do cliente."""
-    sig = hmac.new(_CLIENT_SECRET, f"client:{username}".encode(), hashlib.sha256).hexdigest()
-    return f"client:{username}.{sig}"
+    """Cookie assinado com nonce aleatorio."""
+    nonce = secrets.token_hex(8)
+    payload = f"client:{username}:{nonce}"
+    sig = hmac.new(_CLIENT_SECRET, payload.encode(), hashlib.sha256).hexdigest()
+    return f"{payload}.{sig}"
 
 
 def _verify_client_cookie(cookie: str) -> Optional[str]:
@@ -187,7 +195,8 @@ def _verify_client_cookie(cookie: str) -> Optional[str]:
     payload, sig = cookie.rsplit(".", 1)
     expected = hmac.new(_CLIENT_SECRET, payload.encode(), hashlib.sha256).hexdigest()
     if hmac.compare_digest(sig, expected) and payload.startswith("client:"):
-        return payload[7:]  # remove "client:" prefix
+        parts = payload[7:].split(":")  # remove "client:", split username:nonce
+        return parts[0] if parts else None
     return None
 
 
@@ -409,7 +418,7 @@ from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(
     title="DNS Monitor — Backend",
-    version="0.5.0",
+    version="0.6.0",
     lifespan=lifespan,
 )
 
@@ -422,8 +431,17 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline' fonts.googleapis.com; "
+            "font-src fonts.gstatic.com; "
+            "img-src 'self' data:; "
+            "connect-src 'self'"
+        )
         if request.url.path.startswith("/api/"):
-            response.headers["Cache-Control"] = "no-store"
+            response.headers["Cache-Control"] = "no-store, private"
         return response
 
 app.add_middleware(SecurityHeadersMiddleware)
@@ -690,6 +708,7 @@ async def create_command(request: Request) -> JSONResponse:
         response["warning"] = "purge é irreversível. Anote o confirm_token — o agente precisará dele para executar."
 
     # Publica no NATS para entrega instantanea (JetStream)
+    await db.audit(issued_by, "command", hostname, detail=command)
     nats_sent = False
     if nc and nc.is_connected():
         nats_sent = await nc.js_publish(f"dns.commands.{hostname}", {
@@ -734,12 +753,14 @@ async def admin_login_post(request: Request):
        not secrets.compare_digest(password, ADMIN_PASSWORD):
         _record_failed_login(ip)
         logger.warning("Login admin falhado de %s (user=%s)", ip, username)
+        await db.audit("admin", "login_failed", username, ip=ip)
         return RedirectResponse("/admin/login?error=1", status_code=303)
 
     _clear_login_attempts(ip)
+    await db.audit("admin", "login_ok", username, ip=ip)
     resp = RedirectResponse("/admin", status_code=303)
     cookie_val = _sign_admin_cookie(username)
-    resp.set_cookie("admin_session", cookie_val, httponly=True, samesite="strict", max_age=86400)
+    resp.set_cookie("admin_session", cookie_val, httponly=True, samesite="strict", max_age=_ADMIN_SESSION_TTL)
     return resp
 
 
@@ -1015,6 +1036,7 @@ async def create_client_endpoint(request: Request) -> JSONResponse:
         return JSONResponse({"error": "username ja existe"}, status_code=409)
     pw_hash = _hash_password(password)
     client_id = await db.create_client(username, pw_hash, hostnames, notes or None)
+    await db.audit("admin", "client_created", username, detail=str(hostnames))
     return JSONResponse({"id": client_id, "username": username}, status_code=201)
 
 
@@ -1064,14 +1086,18 @@ async def client_login_post(request: Request):
     username = form.get("username", "")
     password = form.get("password", "")
     user = await db.authenticate_client(username)
-    if not user or not _verify_password(password, user["password_hash"]):
+    # Dummy verify previne timing attack (tempo constante mesmo se user nao existe)
+    _dummy_hash = "$2b$12$000000000000000000000uGPOaHLkG6VgbGG7ZtBCRqGz4eXxWfS"
+    if not _verify_password(password, user["password_hash"] if user else _dummy_hash) or not user:
         _record_failed_login(ip)
         logger.warning("Login cliente falhado de %s (user=%s)", ip, username)
+        await db.audit("client", "login_failed", username, ip=ip)
         return RedirectResponse("/client/login?error=1", status_code=303)
     _clear_login_attempts(ip)
+    await db.audit("client", "login_ok", username, ip=ip)
     resp = RedirectResponse("/client", status_code=303)
     resp.set_cookie("client_session", _sign_client_cookie(username),
-                    httponly=True, samesite="strict", max_age=86400)
+                    httponly=True, samesite="strict", max_age=_CLIENT_SESSION_TTL)
     return resp
 
 

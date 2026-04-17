@@ -411,6 +411,22 @@ SELECT add_continuous_aggregate_policy('dns_checks_1h',
 -- ===========================================================================
 -- 9. USUARIOS CLIENTES (portal read-only por hostname)
 -- ===========================================================================
+-- ===========================================================================
+-- 10. AUDIT LOG — registro de acoes administrativas
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS audit_log (
+    id         BIGSERIAL    PRIMARY KEY,
+    ts         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    actor      TEXT         NOT NULL,
+    action     TEXT         NOT NULL,
+    target     TEXT,
+    detail     TEXT,
+    ip         TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log (ts DESC);
+
+
 CREATE TABLE IF NOT EXISTS client_users (
     id            SERIAL       PRIMARY KEY,
     username      TEXT         NOT NULL UNIQUE,
