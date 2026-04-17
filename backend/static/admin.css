@@ -20,10 +20,6 @@ body { padding: 20px 24px 40px; font-size: 13px; }
 
 .logo { height: 32px; width: 32px; flex-shrink: 0; }
 
-.token-wrap { display: flex; align-items: center; gap: 8px; }
-.token-wrap label { font-size: .72rem; color: var(--text-dim); white-space: nowrap; letter-spacing: .08em; text-transform: uppercase; }
-.token-wrap input { width: 240px; font-size: .8rem; }
-
 .refresh-info { font-size: .7rem; color: var(--text-dim); letter-spacing: .06em; }
 #countdown { color: var(--text-mid); font-variant-numeric: tabular-nums; }
 

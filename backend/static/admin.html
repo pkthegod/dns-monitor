@@ -17,10 +17,6 @@
   <h1>DNS Monitor <span>// Admin</span></h1>
   <a href="/dashboard" class="btn-nav btn-nav-highlight">Dashboard</a>
   <a href="/admin/logout" class="btn-nav">Sair</a>
-  <div class="token-wrap">
-    <label for="token-input">Token</label>
-    <input type="password" id="token-input" placeholder="Bearer token" autocomplete="off">
-  </div>
   <span class="refresh-info">REFRESH EM <span id="countdown">5:00</span></span>
 </div>
 
@@ -1050,12 +1046,9 @@
   // Busca token via sessao ANTES de carregar dados
   fetchSessionToken().then(ok => {
     if (!ok) {
-      const savedToken = sessionStorage.getItem('dns_admin_token');
-      if (savedToken) document.getElementById('token-input').value = savedToken;
-      document.getElementById('token-input').addEventListener('change', e => {
-        sessionStorage.setItem('dns_admin_token', e.target.value);
-        loadAll();
-      });
+      toast.err('Sessao expirada. Redirecionando...');
+      setTimeout(() => { window.location.href = '/admin/login'; }, 1500);
+      return;
     }
     loadAll();
   });
