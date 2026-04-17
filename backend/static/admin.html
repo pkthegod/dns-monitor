@@ -29,22 +29,31 @@
   <div class="section-title">
     <h2>Agentes</h2>
     <span class="section-badge" id="badge-agents">—</span>
+    <div style="display:flex;gap:8px;margin-left:auto;align-items:center">
+      <input type="text" id="agentSearch" placeholder="Buscar hostname..." style="width:200px;font-size:.75rem;padding:4px 8px">
+      <select id="statusFilter" style="background:var(--bg-input);border:1px solid var(--border);color:var(--text);border-radius:5px;padding:4px 8px;font-family:var(--font-mono);font-size:.75rem">
+        <option value="">Todos</option>
+        <option value="online">Online</option>
+        <option value="offline">Offline</option>
+        <option value="stale">Instavel</option>
+      </select>
+    </div>
   </div>
   <div class="table-wrap">
     <table>
       <thead>
         <tr>
-          <th>Hostname</th>
-          <th>Localização</th>
+          <th style="cursor:pointer" onclick="sortAgents('hostname')">Hostname ⇅</th>
+          <th>Localizacao</th>
           <th>Cliente</th>
-          <th>Status</th>
-          <th>CPU</th>
-          <th>RAM</th>
-          <th>Serviço</th>
+          <th style="cursor:pointer" onclick="sortAgents('agent_status')">Status ⇅</th>
+          <th style="cursor:pointer" onclick="sortAgents('cpu_percent')">CPU ⇅</th>
+          <th style="cursor:pointer" onclick="sortAgents('ram_percent')">RAM ⇅</th>
+          <th>Servico</th>
           <th>DNS</th>
-          <th>Versão</th>
-          <th>Último heartbeat</th>
-          <th>Ações</th>
+          <th>Versao</th>
+          <th style="cursor:pointer" onclick="sortAgents('last_seen')">Ultimo heartbeat ⇅</th>
+          <th>Acoes</th>
         </tr>
       </thead>
       <tbody id="tbody-agents"><tr><td colspan="11" class="dim" style="padding:14px">Carregando…</td></tr></tbody>
@@ -599,7 +608,46 @@
         return;
       }
 
-      tbody.innerHTML = agents.map(a => {
+      renderAgentRows(agents);
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="11"><div class="inline-msg inline-error fade-in"><span class="inline-msg-icon">${ICONS.error}</span><div><strong>Erro ao carregar agentes</strong><p>${esc(e.message)}</p></div></div></td></tr>`;
+    }
+  }
+
+  let _sortField = 'hostname', _sortAsc = true;
+  function sortAgents(field) {
+    if (_sortField === field) _sortAsc = !_sortAsc;
+    else { _sortField = field; _sortAsc = true; }
+    renderAgentRows(agentsCache);
+  }
+
+  function renderAgentRows(agents) {
+    const tbody = document.getElementById('tbody-agents');
+    const search = (document.getElementById('agentSearch')?.value || '').toLowerCase();
+    const statusF = document.getElementById('statusFilter')?.value || '';
+
+    let filtered = agents.filter(a => {
+      if (search && !a.hostname.toLowerCase().includes(search)) return false;
+      if (statusF && a.agent_status !== statusF) return false;
+      return true;
+    });
+
+    filtered.sort((a, b) => {
+      let va = a[_sortField], vb = b[_sortField];
+      if (va == null) va = ''; if (vb == null) vb = '';
+      if (typeof va === 'number' && typeof vb === 'number') return _sortAsc ? va - vb : vb - va;
+      return _sortAsc ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va));
+    });
+
+    document.getElementById('badge-agents').textContent =
+      `${filtered.filter(a=>a.agent_status==='online').length} online / ${filtered.length}${filtered.length !== agents.length ? ' de ' + agents.length : ''} total`;
+
+    if (!filtered.length) {
+      tbody.innerHTML = '<tr><td colspan="11" class="dim" style="padding:14px">Nenhum agente encontrado.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = filtered.map(a => {
         const isActive = a.active !== false;
         const purgeDate = a.inactive_since
           ? new Date(new Date(a.inactive_since).getTime() + 3 * 86400000) : null;
@@ -607,9 +655,10 @@
         const clientCell = isActive
           ? '<span class="pill pill-client-active">Ativo</span>'
           : `<span class="pill pill-client-inactive">Inativo</span>${daysLeft !== null ? `<div class="purge-warning">apaga em ${daysLeft}d</div>` : ''}`;
+        const statusBorder = {online:'var(--green)',stale:'var(--yellow)',offline:'var(--red)',never_seen:'var(--text-dim)'}[a.agent_status] || 'var(--border)';
 
         return `
-        <tr${isActive ? '' : ' style="opacity:.55"'}>
+        <tr style="border-left:3px solid ${statusBorder}${isActive ? '' : ';opacity:.55'}">
           <td>
             <strong>${esc(a.hostname)}</strong>
             ${a.display_name && a.display_name !== a.hostname ? `<br><span class="dim">${esc(a.display_name)}</span>` : ''}
@@ -993,6 +1042,10 @@
     document.getElementById('diag-script-select').parentElement.style.display = '';
     origCloseDiag();
   };
+
+  // Busca + filtro de agentes (realtime)
+  document.getElementById('agentSearch').addEventListener('input', () => renderAgentRows(agentsCache));
+  document.getElementById('statusFilter').addEventListener('change', () => renderAgentRows(agentsCache));
 
   // Busca token via sessao ANTES de carregar dados
   fetchSessionToken().then(ok => {

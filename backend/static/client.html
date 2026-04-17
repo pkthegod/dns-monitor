@@ -12,40 +12,84 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <style>
   .page { max-width: 1400px; margin: 0 auto; padding: 28px 36px 48px; }
-  .header { padding-bottom: 16px; border-bottom: 1px solid var(--border-lo); margin-bottom: 28px; }
+  .header { padding-bottom: 16px; border-bottom: 1px solid var(--border-lo); margin-bottom: 24px; }
   .header h1 span { font-weight: 300; }
   .user-badge { font-size: 12px; color: var(--teal); font-family: var(--font-mono); background: var(--bg-subtle); padding: 4px 12px; border-radius: 6px; border: 1px solid var(--border); }
 
-  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 28px; }
-  .kpi {
+  /* Hero */
+  .hero {
     background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg);
-    padding: 20px 16px; position: relative; overflow: hidden;
-    transition: border-color var(--transition), transform .15s;
+    padding: 28px 32px; margin-bottom: 20px; display: flex; align-items: center; gap: 24px;
+    flex-wrap: wrap; position: relative; overflow: hidden;
   }
-  .kpi:hover { border-color: var(--border-hi); transform: translateY(-1px); }
-  .kpi::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
-  .kpi.green::before { background: var(--green); }
-  .kpi.teal::before { background: var(--teal); }
-  .kpi.purple::before { background: var(--purple); }
-  .kpi.yellow::before { background: var(--yellow); }
-  .kpi .label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .08em; font-weight: 500; margin-bottom: 8px; }
-  .kpi .value { font-size: 1.75rem; font-weight: 700; font-family: var(--font-mono); line-height: 1; }
-  .kpi.green .value { color: var(--green); }
-  .kpi.teal .value { color: var(--teal); }
-  .kpi.purple .value { color: var(--purple); }
-  .kpi.yellow .value { color: var(--yellow); }
+  .hero::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; }
+  .hero.healthy::before { background: var(--green); }
+  .hero.degraded::before { background: var(--yellow); }
+  .hero.critical::before { background: var(--red); }
+  .hero-status { display: flex; align-items: center; gap: 12px; }
+  .hero-dot { width: 14px; height: 14px; border-radius: 50%; animation: pulse 2s ease-in-out infinite; }
+  .hero.healthy .hero-dot { background: var(--green); }
+  .hero.degraded .hero-dot { background: var(--yellow); }
+  .hero.critical .hero-dot { background: var(--red); }
+  .hero-label { font-size: 1.3rem; font-weight: 700; }
+  .hero.healthy .hero-label { color: var(--green); }
+  .hero.degraded .hero-label { color: var(--yellow); }
+  .hero.critical .hero-label { color: var(--red); }
+  .hero-metrics { display: flex; gap: 24px; flex-wrap: wrap; margin-left: auto; }
+  .hero-metric { text-align: center; }
+  .hero-metric .val { font-size: 1.4rem; font-weight: 700; font-family: var(--font-mono); color: var(--text); }
+  .hero-metric .lbl { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .08em; margin-top: 2px; }
+  .hero-ago { font-size: 11px; color: var(--text-dim); position: absolute; bottom: 10px; right: 16px; }
 
-  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 28px; }
+  /* Test DNS button */
+  .test-dns { display: flex; gap: 12px; margin-bottom: 20px; align-items: center; flex-wrap: wrap; }
+  .test-result { font-family: var(--font-mono); font-size: 12px; color: var(--text-mid); }
+
+  /* SLA card */
+  .sla-card {
+    background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg);
+    padding: 20px 24px; margin-bottom: 20px;
+  }
+  .sla-card h3 { font-size: 12px; font-weight: 500; color: var(--text-mid); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 14px; }
+  .sla-row { display: flex; align-items: center; gap: 16px; margin-bottom: 10px; flex-wrap: wrap; }
+  .sla-label { font-size: 13px; color: var(--text-dim); min-width: 120px; }
+  .sla-bar { flex: 1; height: 8px; background: var(--bg-subtle); border-radius: 4px; overflow: hidden; min-width: 200px; }
+  .sla-fill { height: 100%; border-radius: 4px; transition: width .6s ease; }
+  .sla-fill.ok { background: var(--green); }
+  .sla-fill.warn { background: var(--yellow); }
+  .sla-fill.bad { background: var(--red); }
+  .sla-value { font-family: var(--font-mono); font-size: 14px; font-weight: 700; min-width: 70px; text-align: right; }
+  .sla-target { font-size: 11px; color: var(--text-dim); }
+
+  /* Controls */
+  .controls { display: flex; gap: 4px; margin-bottom: 20px; }
+
+  /* Charts */
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 20px; }
   .chart-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 20px 22px; }
   .chart-card h3 { font-size: 12px; font-weight: 500; color: var(--text-mid); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
   .chart-card h3 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
-  .chart-card canvas { width: 100% !important; max-height: 280px; }
+  .chart-card canvas { width: 100% !important; max-height: 260px; }
+  .chart-card .tip { font-size: 11px; color: var(--text-dim); margin-top: 8px; font-style: italic; }
 
-  .alerts-section { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 20px 22px; margin-bottom: 28px; }
+  /* Gauge */
+  .gauges { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 20px; }
+  .gauge-card {
+    background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg);
+    padding: 20px; text-align: center;
+  }
+  .gauge-card .gauge-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 10px; }
+  .gauge-card .gauge-value { font-size: 2rem; font-weight: 700; font-family: var(--font-mono); }
+  .gauge-card .gauge-status { font-size: 12px; margin-top: 4px; font-weight: 600; }
+  .gauge-bar { height: 6px; background: var(--bg-subtle); border-radius: 3px; margin-top: 10px; overflow: hidden; }
+  .gauge-bar-fill { height: 100%; border-radius: 3px; transition: width .6s ease; }
+
+  /* Alerts */
+  .alerts-section { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 20px 22px; margin-bottom: 20px; }
   .alerts-section h3 { font-size: 12px; font-weight: 500; color: var(--text-mid); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 14px; }
   .ts-cell { font-family: var(--font-mono); font-size: 12px; color: var(--text-dim); white-space: nowrap; }
 
-  @media (max-width: 960px) { .charts { grid-template-columns: 1fr; } .kpis { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 960px) { .charts, .gauges { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
@@ -58,43 +102,84 @@
     <a href="/client/logout" class="btn btn-ghost" style="margin-left:auto">Sair</a>
   </div>
 
-  <div class="controls fade-in" style="display:flex;gap:4px;margin-bottom:20px">
+  <!-- Hero status -->
+  <div class="hero healthy fade-in" id="hero">
+    <div class="hero-status">
+      <div class="hero-dot"></div>
+      <div class="hero-label" id="heroLabel">Carregando...</div>
+    </div>
+    <div class="hero-metrics">
+      <div class="hero-metric"><div class="val" id="heroUptime">--</div><div class="lbl">Uptime</div></div>
+      <div class="hero-metric"><div class="val" id="heroLatency">--</div><div class="lbl">Latencia</div></div>
+      <div class="hero-metric"><div class="val" id="heroAlerts">--</div><div class="lbl">Alertas</div></div>
+    </div>
+    <div class="hero-ago" id="heroAgo"></div>
+  </div>
+
+  <!-- Test DNS -->
+  <div class="test-dns fade-in">
+    <button class="btn btn-primary" id="btnTestDns" onclick="runDnsTest()">Testar meu DNS</button>
+    <span class="test-result" id="testResult"></span>
+  </div>
+
+  <!-- Period selector -->
+  <div class="controls fade-in">
     <button class="btn btn-ghost period-btn" data-period="1h">1h</button>
     <button class="btn btn-ghost period-btn active" data-period="24h" style="background:var(--accent);color:var(--bg);border-color:var(--accent)">24h</button>
     <button class="btn btn-ghost period-btn" data-period="7d">7d</button>
   </div>
 
-  <div class="kpis" id="kpiContainer">
-    <div class="kpi green"><div class="label">Status</div><div class="value" id="kpiStatus">--</div></div>
-    <div class="kpi teal"><div class="label">DNS Latencia Avg</div><div class="value" id="kpiLatency">--</div></div>
-    <div class="kpi purple"><div class="label">CPU</div><div class="value" id="kpiCpu">--</div></div>
-    <div class="kpi yellow"><div class="label">RAM</div><div class="value" id="kpiRam">--</div></div>
+  <!-- SLA card -->
+  <div class="sla-card fade-in" id="slaCard">
+    <h3>SLA — Mes Atual</h3>
+    <div class="sla-row">
+      <span class="sla-label">Disponibilidade</span>
+      <div class="sla-bar"><div class="sla-fill ok" id="slaBar" style="width:0%"></div></div>
+      <span class="sla-value" id="slaValue">--</span>
+      <span class="sla-target">Meta: 99.9%</span>
+    </div>
+    <div class="sla-row">
+      <span class="sla-label">Downtime</span>
+      <span class="sla-value" id="slaDowntime" style="color:var(--text-mid)">--</span>
+    </div>
   </div>
 
+  <!-- Gauges CPU/RAM -->
+  <div class="gauges">
+    <div class="gauge-card fade-in">
+      <div class="gauge-label">Carga do Servidor (CPU)</div>
+      <div class="gauge-value" id="gaugeCpu">--</div>
+      <div class="gauge-status" id="gaugeCpuStatus">--</div>
+      <div class="gauge-bar"><div class="gauge-bar-fill" id="gaugeCpuBar" style="width:0%"></div></div>
+    </div>
+    <div class="gauge-card fade-in">
+      <div class="gauge-label">Memoria (RAM)</div>
+      <div class="gauge-value" id="gaugeRam">--</div>
+      <div class="gauge-status" id="gaugeRamStatus">--</div>
+      <div class="gauge-bar"><div class="gauge-bar-fill" id="gaugeRamBar" style="width:0%"></div></div>
+    </div>
+  </div>
+
+  <!-- Charts -->
   <div class="charts" id="chartsContainer">
     <div class="chart-card">
-      <h3><span class="dot" style="background:var(--teal)"></span> DNS Latencia (24h)</h3>
+      <h3><span class="dot" style="background:var(--teal)"></span> Latencia DNS</h3>
       <canvas id="chartDns"></canvas>
+      <div class="tip">Tempo de resposta do seu servidor DNS. Abaixo de 50ms e excelente.</div>
     </div>
     <div class="chart-card">
-      <h3><span class="dot" style="background:var(--purple)"></span> CPU (24h)</h3>
-      <canvas id="chartCpu"></canvas>
-    </div>
-    <div class="chart-card">
-      <h3><span class="dot" style="background:var(--green)"></span> RAM (24h)</h3>
-      <canvas id="chartRam"></canvas>
-    </div>
-    <div class="chart-card">
-      <h3><span class="dot" style="background:var(--blue)"></span> DNS por Dominio</h3>
-      <canvas id="chartDomains"></canvas>
+      <h3><span class="dot" style="background:var(--green)"></span> Disponibilidade</h3>
+      <canvas id="chartAvail"></canvas>
+      <div class="tip">Checks realizados por hora. Falhas aparecem em vermelho.</div>
     </div>
   </div>
 
+  <!-- Alerts -->
   <div class="alerts-section">
-    <h3>Alertas Recentes — 24h</h3>
+    <h3>Alertas Recentes</h3>
     <table class="table">
-      <thead><tr><th>Hora</th><th>Host</th><th>Tipo</th><th>Severidade</th><th>Mensagem</th></tr></thead>
-      <tbody id="alertsBody"><tr><td colspan="5" class="dim">Carregando...</td></tr></tbody>
+      <thead><tr><th>Hora</th><th>Tipo</th><th>Severidade</th><th>O que aconteceu</th></tr></thead>
+      <tbody id="alertsBody"><tr><td colspan="4" class="dim">Carregando...</td></tr></tbody>
     </table>
   </div>
 
@@ -106,112 +191,174 @@
 const COLORS = ['#7aa2f7','#9ece6a','#e0af68','#ff9e64','#f7768e','#bb9af7','#73daca','#7dcfff'];
 let charts = {};
 let refreshTimer = null;
+let currentPeriod = '24h';
 const clientUser = window.__CLIENT__ || '';
-
 document.getElementById('userBadge').textContent = clientUser;
 
-function chartDefaults() {
-  Chart.defaults.color = '#6a7ba0';
-  Chart.defaults.borderColor = '#1c203822';
-  Chart.defaults.font.family = "'Inter', sans-serif";
-  Chart.defaults.font.size = 11;
+function chartDefaults() { Chart.defaults.color='#6a7ba0'; Chart.defaults.borderColor='#1c203822'; Chart.defaults.font.family="'Inter',sans-serif"; Chart.defaults.font.size=11; }
+function mk(id,cfg) { if(charts[id]) charts[id].destroy(); charts[id]=new Chart(document.getElementById(id),cfg); }
+
+function setGauge(id, pct, statusId, barId) {
+  const el = document.getElementById(id);
+  const bar = document.getElementById(barId);
+  const st = document.getElementById(statusId);
+  el.textContent = pct != null ? pct.toFixed(1)+'%' : '--';
+  if (pct == null) { st.textContent = '--'; return; }
+  let color, label;
+  if (pct < 60) { color = 'var(--green)'; label = 'Baixa'; }
+  else if (pct < 80) { color = 'var(--yellow)'; label = 'Moderada'; }
+  else { color = 'var(--red)'; label = 'Alta'; }
+  el.style.color = color;
+  st.textContent = label; st.style.color = color;
+  bar.style.width = Math.min(pct, 100) + '%'; bar.style.background = color;
 }
 
-function mk(id, cfg) { if (charts[id]) charts[id].destroy(); charts[id] = new Chart(document.getElementById(id), cfg); }
-function groupBy(arr, key) { const m = {}; arr.forEach(r => { (m[r[key]] = m[r[key]] || []).push(r); }); return m; }
-
-function renderKPIs(data) {
+function renderHero(data) {
   const ag = data.agents || [];
   const online = ag.filter(a => a.agent_status === 'online').length;
   const total = ag.length;
-  document.getElementById('kpiStatus').textContent = online + '/' + total + (online === total ? ' OK' : '');
-  document.getElementById('kpiStatus').style.color = online === total ? 'var(--green)' : 'var(--red)';
-
-  const cpus = ag.map(a => a.cpu_percent).filter(v => v != null);
-  document.getElementById('kpiCpu').textContent = cpus.length ? (cpus.reduce((a,b)=>a+b,0)/cpus.length).toFixed(1)+'%' : '--';
-
-  const rams = ag.map(a => a.ram_percent).filter(v => v != null);
-  document.getElementById('kpiRam').textContent = rams.length ? (rams.reduce((a,b)=>a+b,0)/rams.length).toFixed(1)+'%' : '--';
-
+  const alerts = (data.recent_alerts || []).filter(a => a.severity === 'critical').length;
   const lats = (data.dns_latency||[]).map(d=>d.avg_ms).filter(v=>v!=null);
-  document.getElementById('kpiLatency').textContent = lats.length ? (lats.reduce((a,b)=>a+b,0)/lats.length).toFixed(1)+'ms' : '--';
+  const latAvg = lats.length ? (lats.reduce((a,b)=>a+b,0)/lats.length).toFixed(0) : '--';
 
-  animateChildren('#kpiContainer', 'fade-in');
+  const hero = document.getElementById('hero');
+  const label = document.getElementById('heroLabel');
+  let status;
+  if (online === total && alerts === 0) { status = 'healthy'; label.textContent = 'DNS Saudavel'; }
+  else if (online === 0) { status = 'critical'; label.textContent = 'DNS Indisponivel'; }
+  else { status = 'degraded'; label.textContent = 'DNS com Alertas'; }
+  hero.className = 'hero ' + status + ' fade-in';
+
+  document.getElementById('heroLatency').textContent = latAvg !== '--' ? latAvg+'ms' : '--';
+  document.getElementById('heroAlerts').textContent = (data.recent_alerts||[]).length;
 }
 
-function renderLine(id, grouped, valKey) {
-  const ds = Object.keys(grouped).map((h,i) => ({
-    label: h, data: grouped[h].map(r => ({x:r.bucket, y:r[valKey]})),
-    borderColor: COLORS[i%COLORS.length], backgroundColor: COLORS[i%COLORS.length]+'18',
-    borderWidth: 2, tension: .4, pointRadius: 0, pointHoverRadius: 4, fill: true,
+async function loadSLA() {
+  try {
+    const sla = await apiFetch('/client/report');
+    document.getElementById('heroUptime').textContent = sla.uptime_pct + '%';
+    document.getElementById('slaValue').textContent = sla.uptime_pct + '%';
+    document.getElementById('slaDowntime').textContent = sla.downtime_minutes + ' min';
+    const bar = document.getElementById('slaBar');
+    bar.style.width = Math.min(sla.uptime_pct, 100) + '%';
+    bar.className = 'sla-fill ' + (sla.uptime_pct >= 99.9 ? 'ok' : sla.uptime_pct >= 99 ? 'warn' : 'bad');
+    document.getElementById('slaValue').style.color = sla.uptime_pct >= 99.9 ? 'var(--green)' : sla.uptime_pct >= 99 ? 'var(--yellow)' : 'var(--red)';
+  } catch(e) { /* sla optional */ }
+}
+
+function renderCharts(data) {
+  // DNS latency line
+  const dnsG = {};
+  (data.dns_history||[]).forEach(r => { (dnsG[r.hostname]=dnsG[r.hostname]||[]).push(r); });
+  const dnsDs = Object.keys(dnsG).map((h,i) => ({
+    label:h, data:dnsG[h].map(r=>({x:r.bucket,y:r.latency_avg})),
+    borderColor:COLORS[i%COLORS.length], backgroundColor:COLORS[i%COLORS.length]+'18',
+    borderWidth:2, tension:.4, pointRadius:0, fill:true
   }));
-  mk(id, { type:'line', data:{datasets:ds}, options:{
-    responsive:true, maintainAspectRatio:false, interaction:{mode:'index',intersect:false},
-    plugins:{legend:{position:'top',labels:{boxWidth:10,padding:16}},
-      tooltip:{backgroundColor:'#12151eee',borderColor:'#1c2038',borderWidth:1,padding:10,cornerRadius:6,
-        titleFont:{family:"'JetBrains Mono'"},bodyFont:{family:"'JetBrains Mono'"}}},
-    scales:{
-      x:{type:'time',time:{unit:'hour',displayFormats:{hour:'HH:mm'},tooltipFormat:'dd/MM HH:mm'},
-        grid:{color:'#1c203822'},ticks:{maxTicksLimit:12,font:{family:"'JetBrains Mono'"}}},
-      y:{beginAtZero:true,grid:{color:'#1c203833'},ticks:{font:{family:"'JetBrains Mono'"}}}}
-  }});
+  mk('chartDns',{type:'line',data:{datasets:dnsDs},options:{responsive:true,maintainAspectRatio:false,
+    interaction:{mode:'index',intersect:false},plugins:{legend:{display:false}},
+    scales:{x:{type:'time',time:{unit:'hour',displayFormats:{hour:'HH:mm'}},grid:{color:'#1c203822'}},
+      y:{beginAtZero:true,grid:{color:'#1c203833'}}}}});
+
+  // Availability (checks vs failures)
+  const avG = {};
+  (data.dns_history||[]).forEach(r => { (avG[r.hostname]=avG[r.hostname]||[]).push(r); });
+  const avDs = [];
+  Object.keys(avG).forEach((h,i) => {
+    avDs.push({label:h+' OK',data:avG[h].map(r=>({x:r.bucket,y:(r.total||0)-(r.failures||0)})),
+      backgroundColor:'#9ece6a44',borderColor:'#9ece6a',borderWidth:1,type:'bar',stack:'s'+i});
+    avDs.push({label:h+' Falhas',data:avG[h].map(r=>({x:r.bucket,y:r.failures||0})),
+      backgroundColor:'#f7768e66',borderColor:'#f7768e',borderWidth:1,type:'bar',stack:'s'+i});
+  });
+  mk('chartAvail',{type:'bar',data:{datasets:avDs},options:{responsive:true,maintainAspectRatio:false,
+    plugins:{legend:{position:'top',labels:{boxWidth:10,padding:12}}},
+    scales:{x:{type:'time',time:{unit:'hour',displayFormats:{hour:'HH:mm'}},grid:{color:'#1c203822'},stacked:true},
+      y:{beginAtZero:true,grid:{color:'#1c203833'},stacked:true}}}});
 }
 
-function renderDomains(data) {
-  const rows = (data.dns_latency||[]).sort((a,b) => b.avg_ms - a.avg_ms);
-  mk('chartDomains', { type:'bar', data:{
-    labels: rows.map(r=>r.domain),
-    datasets:[
-      {label:'Avg (ms)',data:rows.map(r=>r.avg_ms),backgroundColor:'#7aa2f744',borderColor:'#7aa2f7',borderWidth:1.5,borderRadius:3},
-      {label:'Max (ms)',data:rows.map(r=>r.max_ms),backgroundColor:'#f7768e22',borderColor:'#f7768e88',borderWidth:1,borderRadius:3},
-    ]}, options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,
-      plugins:{legend:{position:'top',labels:{boxWidth:10,padding:16}}},
-      scales:{x:{beginAtZero:true,grid:{color:'#1c203833'}},y:{grid:{display:false}}}}
-  });
+function renderGauges(data) {
+  const ag = data.agents || [];
+  const cpus = ag.map(a=>a.cpu_percent).filter(v=>v!=null);
+  const rams = ag.map(a=>a.ram_percent).filter(v=>v!=null);
+  setGauge('gaugeCpu', cpus.length ? cpus.reduce((a,b)=>a+b,0)/cpus.length : null, 'gaugeCpuStatus', 'gaugeCpuBar');
+  setGauge('gaugeRam', rams.length ? rams.reduce((a,b)=>a+b,0)/rams.length : null, 'gaugeRamStatus', 'gaugeRamBar');
 }
+
+const ALERT_EXPLAIN = {
+  dns_fail: 'Seu servidor DNS nao respondeu a uma consulta. Se persistir, pode indicar problema no servico.',
+  dns_latency: 'A resposta DNS esta mais lenta que o normal. Pode ser carga alta ou rede congestionada.',
+  cpu: 'O processador do servidor esta sob carga alta. Pode afetar tempo de resposta DNS.',
+  ram: 'A memoria do servidor esta quase cheia. Risco de lentidao ou falha.',
+  disk: 'O disco esta ficando cheio. Libere espaco ou expanda o armazenamento.',
+  offline: 'O servidor nao enviou heartbeat recentemente. Pode estar desligado ou sem rede.',
+  dns_service: 'O servico DNS (bind/unbound) esta parado no servidor.',
+};
 
 function renderAlerts(data) {
   const alerts = data.recent_alerts || [];
   const tbody = document.getElementById('alertsBody');
-  if (!alerts.length) { tbody.innerHTML = '<tr><td colspan="5" class="dim">Nenhum alerta nas ultimas 24h.</td></tr>'; return; }
-  tbody.innerHTML = alerts.map(a => `<tr>
-    <td class="ts-cell">${fmtTime(a.ts)}</td><td>${esc(a.hostname)}</td>
-    <td><span class="badge">${esc(a.alert_type)}</span></td>
-    <td class="sev-${a.severity}">${a.severity}</td>
-    <td class="mid">${esc(a.message||'')}</td></tr>`).join('');
+  if (!alerts.length) {
+    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;padding:20px"><span style="color:var(--green);font-size:1.2rem">&#10003;</span> Nenhum alerta. DNS operando normalmente.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = alerts.map(a => {
+    const icon = a.severity === 'critical' ? '&#x1F534;' : '&#x1F7E1;';
+    const explain = ALERT_EXPLAIN[a.alert_type] || '';
+    return `<tr>
+      <td class="ts-cell">${fmtTime(a.ts)}</td>
+      <td><span class="badge">${esc(a.alert_type)}</span></td>
+      <td class="sev-${a.severity}">${icon} ${a.severity}</td>
+      <td class="mid">${esc(a.message||'')}${explain ? '<br><span class="dim" style="font-size:11px">'+explain+'</span>' : ''}</td>
+    </tr>`;
+  }).join('');
 }
-
-let currentPeriod = '24h';
 
 async function loadPortal() {
   try {
     chartDefaults();
     const data = await apiFetch(`/client/data?period=${currentPeriod}`);
-    renderKPIs(data);
-    renderLine('chartDns', groupBy(data.dns_history||[],'hostname'), 'latency_avg');
-    renderLine('chartCpu', groupBy(data.cpu_history||[],'hostname'), 'cpu_avg');
-    renderLine('chartRam', groupBy(data.ram_history||[],'hostname'), 'ram_avg');
-    renderDomains(data);
+    renderHero(data);
+    renderGauges(data);
+    renderCharts(data);
     renderAlerts(data);
-    animateChildren('#chartsContainer', 'slide-up');
+    document.getElementById('heroAgo').textContent = 'Atualizado ' + new Date().toLocaleTimeString('pt-BR');
     if (refreshTimer) clearInterval(refreshTimer);
     refreshTimer = setInterval(loadPortal, 60000);
-  } catch (e) {
-    toast.err(e.message);
-  }
+  } catch (e) { toast.err(e.message); }
 }
 
-// Chart.js time adapter
-(function(){
-  const pad = n => String(n).padStart(2,'0');
-  Chart._adapters._date.override({
-    formats:()=>({}), parse:v=>new Date(v),
-    format:(d,f)=>{const t=new Date(d);if(f==='HH:mm')return pad(t.getHours())+':'+pad(t.getMinutes());if(f==='dd/MM HH:mm')return pad(t.getDate())+'/'+pad(t.getMonth()+1)+' '+pad(t.getHours())+':'+pad(t.getMinutes());return t.toLocaleString('pt-BR');},
-    startOf:(d,u)=>{const t=new Date(d);if(u==='hour')t.setMinutes(0,0,0);else if(u==='day')t.setHours(0,0,0,0);return t;},
-    add:(d,n,u)=>{const t=new Date(d);if(u==='hour')t.setHours(t.getHours()+n);else if(u==='day')t.setDate(t.getDate()+n);else if(u==='minute')t.setMinutes(t.getMinutes()+n);return t;},
-    diff:(a,b,u)=>{const ms=new Date(a)-new Date(b);return u==='hour'?ms/36e5:u==='day'?ms/864e5:u==='minute'?ms/6e4:ms;}
-  });
-})();
+async function runDnsTest() {
+  const btn = document.getElementById('btnTestDns');
+  const res = document.getElementById('testResult');
+  btnLoading(btn, true);
+  res.innerHTML = ICONS.loading + ' Enviando teste...';
+  try {
+    const r = await apiFetch('/client/dns-test', {method:'POST'});
+    res.innerHTML = ICONS.loading + ` Teste enviado para ${esc(r.hostname)}. Aguardando resultado...`;
+    // Poll resultado
+    let attempts = 0;
+    const poll = setInterval(async () => {
+      attempts++;
+      try {
+        const cmd = await apiFetch(`/commands/${r.id}/status`);
+        if (cmd.status === 'done') {
+          clearInterval(poll);
+          btnLoading(btn, false);
+          res.innerHTML = '<span style="color:var(--green)">' + ICONS.success + ' Teste concluido com sucesso</span>';
+          loadPortal();
+        } else if (cmd.status === 'failed') {
+          clearInterval(poll);
+          btnLoading(btn, false);
+          res.innerHTML = '<span style="color:var(--red)">' + ICONS.error + ' Falha: ' + esc(cmd.result||'erro desconhecido').substring(0,100) + '</span>';
+        }
+      } catch(_) {}
+      if (attempts > 30) { clearInterval(poll); btnLoading(btn,false); res.textContent='Timeout — resultado nao recebido'; }
+    }, 2000);
+  } catch(e) {
+    btnLoading(btn, false);
+    res.innerHTML = '<span style="color:var(--red)">' + esc(e.message) + '</span>';
+  }
+}
 
 // Period filter
 document.querySelectorAll('.period-btn').forEach(btn => {
@@ -223,7 +370,19 @@ document.querySelectorAll('.period-btn').forEach(btn => {
   });
 });
 
-fetchSessionToken().then(() => loadPortal());
+// Chart.js time adapter
+(function(){
+  const pad=n=>String(n).padStart(2,'0');
+  Chart._adapters._date.override({
+    formats:()=>({}), parse:v=>new Date(v),
+    format:(d,f)=>{const t=new Date(d);if(f==='HH:mm')return pad(t.getHours())+':'+pad(t.getMinutes());if(f==='dd/MM HH:mm')return pad(t.getDate())+'/'+pad(t.getMonth()+1)+' '+pad(t.getHours())+':'+pad(t.getMinutes());return t.toLocaleString('pt-BR');},
+    startOf:(d,u)=>{const t=new Date(d);if(u==='hour')t.setMinutes(0,0,0);else if(u==='day')t.setHours(0,0,0,0);return t;},
+    add:(d,n,u)=>{const t=new Date(d);if(u==='hour')t.setHours(t.getHours()+n);else if(u==='day')t.setDate(t.getDate()+n);else if(u==='minute')t.setMinutes(t.getMinutes()+n);return t;},
+    diff:(a,b,u)=>{const ms=new Date(a)-new Date(b);return u==='hour'?ms/36e5:u==='day'?ms/864e5:u==='minute'?ms/6e4:ms;}
+  });
+})();
+
+fetchSessionToken().then(() => { loadPortal(); loadSLA(); });
 </script>
 </body>
 </html>
