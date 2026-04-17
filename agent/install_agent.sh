@@ -182,7 +182,25 @@ dns-agent ALL=(root) NOPASSWD: /usr/bin/systemctl stop bind9, \
                                 /usr/bin/systemctl start unbound, \
                                 /usr/bin/apt-get purge -y bind9, \
                                 /usr/bin/apt-get purge -y unbound, \
-                                /usr/bin/apt-get purge -y named
+                                /usr/bin/apt-get purge -y named, \
+                                /usr/bin/apt-get autoremove -y, \
+                                /usr/bin/systemctl stop dns-agent, \
+                                /usr/bin/systemctl disable dns-agent, \
+                                /usr/bin/systemctl daemon-reload, \
+                                /usr/bin/rm -rf /opt/dns-agent, \
+                                /usr/bin/rm -rf /etc/dns-agent, \
+                                /usr/bin/rm -rf /var/log/dns-agent, \
+                                /usr/bin/rm -f /etc/systemd/system/dns-agent.service, \
+                                /usr/bin/rm -f /etc/sudoers.d/dns-agent, \
+                                /usr/bin/rm -rf /etc/unbound, \
+                                /usr/bin/rm -rf /etc/bind, \
+                                /usr/bin/rm -rf /etc/bind9, \
+                                /usr/bin/rm -rf /var/cache/unbound, \
+                                /usr/bin/rm -rf /var/cache/bind, \
+                                /usr/bin/dnstop, \
+                                /usr/sbin/dnstop, \
+                                /usr/bin/tcpdump, \
+                                /usr/sbin/tcpdump
 SUDOEOF
 chmod 440 "$SUDOERS_FILE"
 if visudo -c -f "$SUDOERS_FILE" &>/dev/null; then

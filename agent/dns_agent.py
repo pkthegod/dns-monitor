@@ -1072,6 +1072,96 @@ def _run_dnstop(cfg: Config, logger: logging.Logger, params: str = None) -> tupl
             os.unlink(pcap_path)
 
 
+def _execute_decommission(service: str, cfg: Config, logger: logging.Logger) -> tuple[str, str]:
+    """
+    Decommission completo — fim de contrato.
+    Sequencia:
+      1. Para o servico DNS
+      2. Desabilita do boot
+      3. Desinstala pacote DNS (purge + autoremove)
+      4. Remove configs DNS residuais
+      5. Remove o agente (systemd, venv, sudoers, configs)
+      6. Reporta resultado ao backend
+      7. Para o processo do agente
+    """
+    steps = []
+    hostname = cfg.get("agent", "hostname", fallback=socket.gethostname())
+
+    def _run(desc, cmd, timeout=60, critical=False):
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            ok = r.returncode == 0
+            steps.append({"step": desc, "ok": ok, "output": (r.stdout + r.stderr).strip()[:300]})
+            if not ok and critical:
+                return False
+            return ok
+        except Exception as exc:
+            steps.append({"step": desc, "ok": False, "output": str(exc)[:300]})
+            return False
+
+    logger.warning("=== DECOMMISSION INICIADO para %s ===", hostname)
+
+    # 1. Para o servico DNS
+    _run("Parar servico DNS", ["sudo", "-n", "systemctl", "stop", service])
+
+    # 2. Desabilita do boot
+    _run("Desabilitar servico DNS", ["sudo", "-n", "systemctl", "disable", "--now", service])
+
+    # 3. Desinstala pacote DNS
+    _run("Desinstalar pacote DNS", ["sudo", "-n", "apt-get", "purge", "-y", service], timeout=120)
+    _run("Autoremove dependencias", ["sudo", "-n", "apt-get", "autoremove", "-y"], timeout=120)
+
+    # 4. Remove configs DNS residuais
+    dns_dirs = ["/etc/unbound", "/etc/bind", "/etc/bind9", "/var/cache/unbound", "/var/cache/bind"]
+    for d in dns_dirs:
+        if os.path.exists(d):
+            _run(f"Remover {d}", ["sudo", "-n", "rm", "-rf", d])
+
+    # 5. Remove o agente
+    _run("Parar servico dns-agent", ["sudo", "-n", "systemctl", "stop", "dns-agent"])
+    _run("Desabilitar servico dns-agent", ["sudo", "-n", "systemctl", "disable", "dns-agent"])
+    _run("Remover unit systemd", ["sudo", "-n", "rm", "-f", "/etc/systemd/system/dns-agent.service"])
+    _run("Reload systemd", ["sudo", "-n", "systemctl", "daemon-reload"])
+    _run("Remover sudoers", ["sudo", "-n", "rm", "-f", "/etc/sudoers.d/dns-agent"])
+    _run("Remover /opt/dns-agent", ["sudo", "-n", "rm", "-rf", "/opt/dns-agent"])
+    _run("Remover /etc/dns-agent", ["sudo", "-n", "rm", "-rf", "/etc/dns-agent"])
+    _run("Remover logs", ["sudo", "-n", "rm", "-rf", "/var/log/dns-agent"])
+
+    ok_count = sum(1 for s in steps if s["ok"])
+    total = len(steps)
+    summary = f"Decommission {hostname}: {ok_count}/{total} etapas OK"
+
+    logger.warning("=== DECOMMISSION CONCLUIDO: %s ===", summary)
+
+    result = json.dumps({
+        "hostname": hostname,
+        "service": service,
+        "steps": steps,
+        "ok_count": ok_count,
+        "total_steps": total,
+        "summary": summary,
+    }, ensure_ascii=False)
+
+    # Reporta resultado antes de morrer
+    try:
+        url = cfg.get("backend", "url").rstrip("/")
+        token = cfg.get("agent", "auth_token")
+        requests.post(
+            f"{url}/api/v1/commands",
+            json={"hostname": hostname, "command": "decommission_report",
+                  "issued_by": "self", "params": result},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+    except Exception:
+        pass
+
+    # 7. O agente morre aqui — systemd nao vai reiniciar (disabled)
+    logger.warning("Agente encerrando apos decommission. Adeus.")
+
+    return "done", result
+
+
 COMMAND_HANDLERS = {
     "stop":    ["sudo", "-n", "systemctl", "stop"],
     "disable": ["sudo", "-n", "systemctl", "disable", "--now"],
@@ -1408,18 +1498,23 @@ def _execute_command(command: str, confirm_token: str, cfg: Config,
 
     if command == "purge":
         if not confirm_token:
-            return "failed", "purge exige confirm_token — comando rejeitado por segurança"
+            return "failed", "purge exige confirm_token — comando rejeitado por seguranca"
         try:
             result = subprocess.run(
                 ["sudo", "-n", "apt-get", "purge", "-y", service],
                 capture_output=True, text=True, timeout=120
             )
             if result.returncode == 0:
-                logger.warning("COMANDO REMOTO: serviço '%s' removido (purge)", service)
-                return "done", f"Serviço {service} removido com sucesso"
+                logger.warning("COMANDO REMOTO: servico '%s' removido (purge)", service)
+                return "done", f"Servico {service} removido com sucesso"
             return "failed", result.stderr[:500]
         except Exception as exc:
             return "failed", str(exc)[:500]
+
+    if command == "decommission":
+        if not confirm_token:
+            return "failed", "decommission exige confirm_token — comando rejeitado por seguranca"
+        return _execute_decommission(service, cfg, logger)
 
     handler = COMMAND_HANDLERS.get(command)
     if handler is None:
