@@ -1,6 +1,6 @@
 """
 main.py — Backend central do DNS Monitor.
-Recebe métricas dos agentes, persiste no TimescaleDB,
+Recebe metricas dos agentes, persiste no TimescaleDB,
 e executa o scheduler de alertas via APScheduler.
 """
 
@@ -16,13 +16,44 @@ import pathlib
 import json
 import secrets
 import hashlib
-import hmac
 from datetime import date, datetime
 from decimal import Decimal
-from pydantic import BaseModel, Field
 
 import db
 import telegram_bot as tg
+
+# -- Modulos extraidos -------------------------------------------------------
+# Reload cascata: importlib.reload(main) nos testes precisa re-ler env vars
+import importlib as _il
+import auth as _auth_mod
+_il.reload(_auth_mod)
+import models as _models_mod
+_il.reload(_models_mod)
+import routes_client as _rc_mod
+_il.reload(_rc_mod)
+
+# Re-exporta para compatibilidade com testes (import main as m; m.AgentPayload)
+from models import (  # noqa: F401
+    DnsServiceModel, DnsCheckModel, CpuModel, RamModel, DiskModel,
+    IoModel, LoadModel, SystemModel, AgentPayload, AgentMetaUpdate,
+)
+from auth import (  # noqa: F401
+    AGENT_TOKEN, require_token,
+    ADMIN_USER, ADMIN_PASSWORD,
+    _check_rate_limit, _record_failed_login, _clear_login_attempts,
+    _check_cooldown, _record_action,
+    _sign_admin_cookie, _verify_admin_cookie,
+    _sign_client_cookie, _verify_client_cookie,
+    _hash_password, _verify_password,
+    _ADMIN_SESSION_TTL, _CLIENT_SESSION_TTL,
+)
+from routes_client import (  # noqa: F401
+    client_v1,
+    client_login_page, client_login_post, client_logout, client_portal,
+    client_data, client_dns_test, client_report,
+    list_clients_endpoint, create_client_endpoint,
+    update_client_endpoint, delete_client_endpoint,
+)
 
 try:
     import nats_client as nc
@@ -41,7 +72,7 @@ logging.basicConfig(
 logger = logging.getLogger("dns-monitor.api")
 
 # ---------------------------------------------------------------------------
-# Serialização JSON — converte tipos do asyncpg não suportados pelo json nativo
+# Serializacao JSON — converte tipos do asyncpg nao suportados pelo json nativo
 # ---------------------------------------------------------------------------
 
 def _jsonify(obj) -> str:
@@ -78,201 +109,6 @@ THRESHOLDS = {
 }
 
 # ---------------------------------------------------------------------------
-# Autenticação por token Bearer
-# ---------------------------------------------------------------------------
-
-AGENT_TOKEN = os.environ.get("AGENT_TOKEN", "")
-
-async def require_token(request: Request) -> None:
-    if not AGENT_TOKEN:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Servico indisponivel",
-        )
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer ") or auth[7:] != AGENT_TOKEN:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token inválido ou ausente",
-        )
-
-# ---------------------------------------------------------------------------
-# Rate limiting — protecao contra brute-force em logins
-# ---------------------------------------------------------------------------
-
-_login_attempts: dict[str, list[float]] = {}  # ip → [timestamps]
-_LOGIN_MAX_ATTEMPTS = 5
-_LOGIN_LOCKOUT_SECONDS = 900  # 15 minutos
-
-
-def _check_rate_limit(ip: str) -> bool:
-    """Retorna True se IP esta bloqueado. Limpa tentativas expiradas."""
-    import time as _time
-    now = _time.time()
-    attempts = _login_attempts.get(ip, [])
-    # Remove tentativas antigas
-    attempts = [t for t in attempts if now - t < _LOGIN_LOCKOUT_SECONDS]
-    _login_attempts[ip] = attempts
-    return len(attempts) >= _LOGIN_MAX_ATTEMPTS
-
-
-def _record_failed_login(ip: str) -> None:
-    """Registra tentativa falhada de login."""
-    import time as _time
-    _login_attempts.setdefault(ip, []).append(_time.time())
-
-
-def _clear_login_attempts(ip: str) -> None:
-    """Limpa tentativas apos login bem-sucedido."""
-    _login_attempts.pop(ip, None)
-
-
-# ---------------------------------------------------------------------------
-# Autenticação do painel admin (cookie HMAC)
-# ---------------------------------------------------------------------------
-
-ADMIN_USER = os.environ.get("ADMIN_USER", "")
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
-
-# Secrets separados — cada contexto tem seu proprio segredo
-_ADMIN_SECRET  = os.environ.get("ADMIN_SESSION_SECRET", "").encode() or \
-                 hashlib.sha256(b"admin:" + (AGENT_TOKEN or "fallback").encode()).digest()
-_CLIENT_SECRET = os.environ.get("CLIENT_SESSION_SECRET", "").encode() or \
-                 hashlib.sha256(b"client:" + (AGENT_TOKEN or "fallback").encode()).digest()
-
-
-_ADMIN_SESSION_TTL  = 14400   # 4 horas
-_CLIENT_SESSION_TTL = 43200   # 12 horas
-
-
-def _sign_admin_cookie(username: str) -> str:
-    """Gera cookie assinado com nonce aleatorio (previne session fixation)."""
-    nonce = secrets.token_hex(8)
-    payload = f"{username}:{nonce}"
-    sig = hmac.new(_ADMIN_SECRET, payload.encode(), hashlib.sha256).hexdigest()
-    return f"{payload}.{sig}"
-
-
-def _verify_admin_cookie(cookie: str) -> Optional[str]:
-    """Verifica cookie admin. Retorna username ou None."""
-    if not cookie or "." not in cookie:
-        return None
-    payload, sig = cookie.rsplit(".", 1)
-    expected = hmac.new(_ADMIN_SECRET, payload.encode(), hashlib.sha256).hexdigest()
-    if hmac.compare_digest(sig, expected):
-        return payload.split(":")[0] if ":" in payload else payload
-    return None
-
-
-def _hash_password(password: str) -> str:
-    """Hash de senha com bcrypt (cost=12). Retorna string segura para armazenar."""
-    import bcrypt
-    return bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12)).decode()
-
-
-def _verify_password(password: str, hashed: str) -> bool:
-    """Verifica senha contra hash bcrypt. Suporta legado SHA256 para migracao."""
-    import bcrypt
-    if hashed.startswith("$2b$") or hashed.startswith("$2a$"):
-        return bcrypt.checkpw(password.encode(), hashed.encode())
-    # Fallback legado SHA256 — migra automaticamente
-    legacy = hashlib.sha256((_CLIENT_SECRET + password.encode())).hexdigest()
-    return hmac.compare_digest(legacy, hashed)
-
-
-def _sign_client_cookie(username: str) -> str:
-    """Cookie assinado com nonce aleatorio."""
-    nonce = secrets.token_hex(8)
-    payload = f"client:{username}:{nonce}"
-    sig = hmac.new(_CLIENT_SECRET, payload.encode(), hashlib.sha256).hexdigest()
-    return f"{payload}.{sig}"
-
-
-def _verify_client_cookie(cookie: str) -> Optional[str]:
-    """Verifica cookie de cliente. Retorna username ou None."""
-    if not cookie or "." not in cookie:
-        return None
-    payload, sig = cookie.rsplit(".", 1)
-    expected = hmac.new(_CLIENT_SECRET, payload.encode(), hashlib.sha256).hexdigest()
-    if hmac.compare_digest(sig, expected) and payload.startswith("client:"):
-        parts = payload[7:].split(":")  # remove "client:", split username:nonce
-        return parts[0] if parts else None
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Modelos Pydantic (validação do payload do agente)
-# ---------------------------------------------------------------------------
-
-class DnsServiceModel(BaseModel):
-    name:    Optional[str] = None
-    active:  Optional[bool] = None
-    version: Optional[str] = None
-
-class DnsCheckModel(BaseModel):
-    domain:       str
-    resolver:     Optional[str] = None
-    success:      bool
-    latency_ms:   Optional[float] = None
-    response_ips: Optional[list[str]] = Field(default_factory=list)
-    error:        Optional[str] = None
-    attempts:     Optional[int] = None
-
-class CpuModel(BaseModel):
-    percent:  Optional[float] = None
-    count:    Optional[int]   = None
-    freq_mhz: Optional[float] = None
-
-class RamModel(BaseModel):
-    percent:       Optional[float] = None
-    used_mb:       Optional[float] = None
-    total_mb:      Optional[float] = None
-    swap_percent:  Optional[float] = None
-    swap_used_mb:  Optional[float] = None
-    swap_total_mb: Optional[float] = None
-
-class DiskModel(BaseModel):
-    mountpoint: Optional[str]   = None
-    device:     Optional[str]   = None
-    fstype:     Optional[str]   = None
-    percent:    Optional[float] = None
-    used_gb:    Optional[float] = None
-    free_gb:    Optional[float] = None
-    total_gb:   Optional[float] = None
-    alert:      Optional[str]   = None
-
-class IoModel(BaseModel):
-    read_bytes:    Optional[int] = None
-    write_bytes:   Optional[int] = None
-    read_count:    Optional[int] = None
-    write_count:   Optional[int] = None
-    read_time_ms:  Optional[int] = None
-    write_time_ms: Optional[int] = None
-
-class LoadModel(BaseModel):
-    load_1m:  Optional[float] = None
-    load_5m:  Optional[float] = None
-    load_15m: Optional[float] = None
-
-class SystemModel(BaseModel):
-    cpu:  Optional[CpuModel]        = None
-    ram:  Optional[RamModel]        = None
-    disk: Optional[list[DiskModel]] = Field(default_factory=list)
-    io:   Optional[IoModel]         = None
-    load: Optional[LoadModel]       = None
-
-class AgentPayload(BaseModel):
-    type:          str                       # "check" | "heartbeat"
-    hostname:      str
-    timestamp:     str
-    agent_version: Optional[str]  = None
-    fingerprint:   Optional[str]  = None     # SHA256 do hardware — detecta cópias
-    dns_service:   Optional[DnsServiceModel] = None
-    dns_checks:    Optional[list[DnsCheckModel]] = Field(default_factory=list)
-    system:        Optional[SystemModel]     = None
-
-
-# ---------------------------------------------------------------------------
 # Scheduler
 # ---------------------------------------------------------------------------
 
@@ -286,7 +122,6 @@ async def job_check_offline() -> None:
     offline = await db.get_agents_offline(THRESHOLDS["offline_minutes"])
     for agent in offline:
         hostname = agent["hostname"]
-        # Evita spam: só alerta se não há alerta aberto do mesmo tipo
         open_alerts = await db.get_open_alerts(hostname)
         already_open = any(a["alert_type"] == "offline" for a in open_alerts)
         if not already_open:
@@ -303,7 +138,7 @@ async def job_check_offline() -> None:
 
 
 async def job_send_report() -> None:
-    """Envia relatório consolidado ao Telegram."""
+    """Envia relatorio consolidado ao Telegram."""
     from db import get_conn
     async with get_conn() as conn:
         rows = await conn.fetch("SELECT hostname, agent_status FROM v_agent_current_status")
@@ -312,7 +147,6 @@ async def job_send_report() -> None:
     online  = sum(1 for r in rows if r["agent_status"] == "online")
     offline_list = [r["hostname"] for r in rows if r["agent_status"] in ("offline", "never_seen")]
 
-    # Falhas DNS recentes (última hora)
     async with get_conn() as conn:
         dns_fail_rows = await conn.fetch(
             """
@@ -324,9 +158,7 @@ async def job_send_report() -> None:
         )
     dns_failures = [dict(r) for r in dns_fail_rows]
 
-    # Discos em alerta — query única para todos os agentes (sem N+1)
     disk_warn = await db.get_all_disk_alerts()
-
     open_alerts = await db.get_open_alerts()
 
     await tg.send_report(
@@ -337,15 +169,15 @@ async def job_send_report() -> None:
         disk_warnings=disk_warn,
         open_alerts=len(open_alerts),
     )
-    logger.info("Relatório enviado ao Telegram")
+    logger.info("Relatorio enviado ao Telegram")
 
 
 async def job_purge_inactive() -> None:
-    """Roda a cada hora: deleta agentes inativos há mais de 3 dias."""
+    """Roda a cada hora: deleta agentes inativos ha mais de 3 dias."""
     deleted = await db.delete_inactive_agents()
     for hostname in deleted:
-        logger.info("Auto-purge: agente inativo removido após 3 dias: %s", hostname)
-        await tg.send_new_agent_detected(  # reutiliza notificação genérica
+        logger.info("Auto-purge: agente inativo removido apos 3 dias: %s", hostname)
+        await tg.send_new_agent_detected(
             hostname, "removido automaticamente (inativo > 3 dias)"
         )
 
@@ -361,7 +193,7 @@ def setup_scheduler() -> None:
             id=f"report_{t.replace(':', '')}",
         )
     scheduler.start()
-    logger.info("Scheduler iniciado: check_offline a cada 5min, relatórios em %s", REPORT_TIMES)
+    logger.info("Scheduler iniciado: check_offline a cada 5min, relatorios em %s", REPORT_TIMES)
 
 
 # ---------------------------------------------------------------------------
@@ -373,18 +205,18 @@ async def _handle_command_ack(msg):
     try:
         data = json.loads(msg.data.decode())
         cmd_id = data.get("command_id")
-        status = data.get("status", "done")
+        cmd_status = data.get("status", "done")
         result = data.get("result", "")
         if cmd_id:
-            await db.mark_command_done(cmd_id, status, result)
+            await db.mark_command_done(cmd_id, cmd_status, result)
             cmd = await db.get_command_by_id(cmd_id)
             if cmd:
                 await tg.send_command_result(
                     hostname=cmd["hostname"], command=cmd["command"],
-                    status=status, result=result,
+                    status=cmd_status, result=result,
                     issued_by=cmd["issued_by"] or "admin",
                 )
-            logger.info("NATS ACK: comando #%s → %s", cmd_id, status)
+            logger.info("NATS ACK: comando #%s -> %s", cmd_id, cmd_status)
         await msg.ack()
     except Exception as exc:
         logger.error("NATS ACK handler erro: %s", exc)
@@ -418,7 +250,7 @@ from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(
     title="DNS Monitor — Backend",
-    version="0.7.0",
+    version="0.7.2",
     lifespan=lifespan,
 )
 
@@ -430,7 +262,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         if request.method in ("POST", "PATCH", "DELETE") and request.url.path.startswith("/api/"):
             ip = request.client.host if request.client else "-"
-            logger.info("AUDIT %s %s %s → %d", request.method, request.url.path, ip, response.status_code)
+            logger.info("AUDIT %s %s %s -> %d", request.method, request.url.path, ip, response.status_code)
         return response
 
 
@@ -464,8 +296,6 @@ app.mount("/static", StaticFiles(directory=str(pathlib.Path(__file__).parent / "
 # ---------------------------------------------------------------------------
 v1 = APIRouter(prefix="/api/v1")
 
-# Caminho do arquivo do agente servido para auto-update.
-# Pode ser sobrescrito pela variável de ambiente AGENT_FILE_PATH.
 import re as _re
 AGENT_FILE_PATH = pathlib.Path(
     os.environ.get(
@@ -483,17 +313,15 @@ AGENT_FILE_PATH = pathlib.Path(
 async def receive_metrics(payload: AgentPayload) -> JSONResponse:
     """
     Recebe o payload do agente (check ou heartbeat),
-    persiste todas as métricas e dispara alertas se necessário.
+    persiste todas as metricas e dispara alertas se necessario.
     """
     hostname = payload.hostname
     ts       = payload.timestamp
 
-    # Validacao de hostname — previne injection via nomes maliciosos
     import re as _re_val
     if not _re_val.match(r'^[a-zA-Z0-9._-]{1,128}$', hostname):
         return JSONResponse({"error": "hostname invalido"}, status_code=422)
 
-    # Garante registro do agente — detecta novos automaticamente
     agent_meta = await db.upsert_agent(
         hostname,
         ts,
@@ -505,7 +333,6 @@ async def receive_metrics(payload: AgentPayload) -> JSONResponse:
         logger.info("Novo agente detectado: %s", hostname)
         await tg.send_new_agent_detected(hostname, payload.agent_version or "")
 
-    # Fingerprint — valida identidade do hardware
     if payload.fingerprint:
         fp_result = await db.upsert_fingerprint(hostname, payload.fingerprint)
         if fp_result.get("changed"):
@@ -514,10 +341,8 @@ async def receive_metrics(payload: AgentPayload) -> JSONResponse:
                 hostname, fp_result.get("previous"), payload.fingerprint
             )
 
-    # Heartbeat sempre gravado
     await db.insert_heartbeat(hostname, ts, payload.agent_version)
 
-    # Métricas do sistema (presentes em check e heartbeat)
     if payload.system:
         sys = payload.system
         if sys.cpu:
@@ -529,28 +354,23 @@ async def receive_metrics(payload: AgentPayload) -> JSONResponse:
         if sys.io:
             await db.insert_metrics_io(hostname, ts, sys.io.model_dump())
 
-    # Checks DNS e status do serviço (check e heartbeat com quick probe)
     if payload.dns_service:
         await db.insert_dns_service_status(hostname, ts, payload.dns_service.model_dump())
     if payload.dns_checks:
         await db.insert_dns_checks(hostname, ts, [c.model_dump() for c in payload.dns_checks])
 
-    # Avalia e dispara alertas assincronamente
     await _evaluate_alerts(payload)
-
-    # Agente que voltou online — resolve alerta offline aberto
     await db.resolve_alert(hostname, "offline")
 
     return JSONResponse({"status": "ok", "hostname": hostname, "type": payload.type})
 
 
 async def _evaluate_alerts(payload: AgentPayload) -> None:
-    """Avalia thresholds e dispara alertas via Telegram quando necessário."""
+    """Avalia thresholds e dispara alertas via Telegram quando necessario."""
     hostname = payload.hostname
     sys = payload.system
 
     if sys:
-        # CPU
         if sys.cpu and sys.cpu.percent is not None:
             pct = sys.cpu.percent
             if pct >= THRESHOLDS["cpu_critical"]:
@@ -561,7 +381,6 @@ async def _evaluate_alerts(payload: AgentPayload) -> None:
                 if not await db.has_open_alert(hostname, "cpu"):
                     await db.insert_alert(hostname, "cpu", "warning", f"CPU {pct:.1f}%", "cpu_percent", pct, THRESHOLDS["cpu_warning"])
 
-        # RAM
         if sys.ram and sys.ram.percent is not None:
             pct = sys.ram.percent
             if pct >= THRESHOLDS["ram_critical"]:
@@ -572,7 +391,6 @@ async def _evaluate_alerts(payload: AgentPayload) -> None:
                 if not await db.has_open_alert(hostname, "ram"):
                     await db.insert_alert(hostname, "ram", "warning", f"RAM {pct:.1f}%", "ram_percent", pct, THRESHOLDS["ram_warning"])
 
-        # Disco
         for disk in (sys.disk or []):
             if disk.alert in ("warning", "critical") and disk.percent is not None:
                 threshold = THRESHOLDS[f"disk_{disk.alert}"]
@@ -581,7 +399,6 @@ async def _evaluate_alerts(payload: AgentPayload) -> None:
                     if await tg.alert_disk(hostname, disk.mountpoint or "?", disk.percent, threshold, "critical"):
                         await db.mark_alert_notified(aid)
 
-    # DNS checks
     for check in (payload.dns_checks or []):
         if not check.success:
             aid = await db.insert_alert(hostname, "dns_fail", "critical", f"DNS falhou: {check.domain} ({check.error})", "dns_success", 0, 1)
@@ -589,26 +406,18 @@ async def _evaluate_alerts(payload: AgentPayload) -> None:
                 await db.mark_alert_notified(aid)
         elif check.latency_ms is not None:
             if check.latency_ms >= THRESHOLDS["dns_latency_critical"]:
-                aid = await db.insert_alert(hostname, "dns_latency", "critical", f"DNS latência {check.latency_ms:.0f}ms para {check.domain}", "latency_ms", check.latency_ms, THRESHOLDS["dns_latency_critical"])
+                aid = await db.insert_alert(hostname, "dns_latency", "critical", f"DNS latencia {check.latency_ms:.0f}ms para {check.domain}", "latency_ms", check.latency_ms, THRESHOLDS["dns_latency_critical"])
                 if await tg.alert_dns_latency(hostname, check.domain, check.latency_ms, THRESHOLDS["dns_latency_critical"], "critical"):
                     await db.mark_alert_notified(aid)
             elif check.latency_ms >= THRESHOLDS["dns_latency_warning"]:
                 if not await db.has_open_alert(hostname, "dns_latency"):
-                    await db.insert_alert(hostname, "dns_latency", "warning", f"DNS latência {check.latency_ms:.0f}ms para {check.domain}", "latency_ms", check.latency_ms, THRESHOLDS["dns_latency_warning"])
+                    await db.insert_alert(hostname, "dns_latency", "warning", f"DNS latencia {check.latency_ms:.0f}ms para {check.domain}", "latency_ms", check.latency_ms, THRESHOLDS["dns_latency_warning"])
 
-    # Serviço DNS inativo
     if payload.dns_service and payload.dns_service.active is False:
         svc = payload.dns_service.name or "unknown"
-        aid = await db.insert_alert(hostname, "dns_service", "critical", f"Serviço DNS '{svc}' inativo")
+        aid = await db.insert_alert(hostname, "dns_service", "critical", f"Servico DNS '{svc}' inativo")
         if await tg.alert_dns_service_down(hostname, svc):
             await db.mark_alert_notified(aid)
-
-
-class AgentMetaUpdate(BaseModel):
-    display_name: Optional[str]  = None
-    location:     Optional[str]  = None
-    notes:        Optional[str]  = None
-    active:       Optional[bool] = None
 
 
 @v1.patch("/agents/{hostname}", dependencies=[Depends(require_token)])
@@ -618,16 +427,16 @@ async def update_agent(hostname: str, body: AgentMetaUpdate) -> JSONResponse:
         hostname, body.display_name, body.location, body.notes, body.active
     )
     if not found:
-        raise HTTPException(status_code=404, detail="Agente não encontrado")
+        raise HTTPException(status_code=404, detail="Agente nao encontrado")
     return JSONResponse({"status": "ok", "hostname": hostname})
 
 
 @v1.delete("/agents/{hostname}", dependencies=[Depends(require_token)])
 async def delete_agent(hostname: str) -> JSONResponse:
-    """Remove o agente e todo o histórico de dados do banco."""
+    """Remove o agente e todo o historico de dados do banco."""
     found = await db.delete_agent(hostname)
     if not found:
-        raise HTTPException(status_code=404, detail="Agente não encontrado")
+        raise HTTPException(status_code=404, detail="Agente nao encontrado")
     logger.info("Agente removido: %s", hostname)
     return JSONResponse({"status": "ok", "hostname": hostname})
 
@@ -660,21 +469,19 @@ async def post_command_result(command_id: int, request: Request) -> JSONResponse
     """Agente reporta o resultado de um comando executado."""
     await require_token(request)
     body = await request.json()
-    status = body.get("status", "done")   # 'done' | 'failed'
+    cmd_status = body.get("status", "done")   # 'done' | 'failed'
     result = body.get("result", "")
-    if status not in ("done", "failed"):
+    if cmd_status not in ("done", "failed"):
         return JSONResponse({"error": "status deve ser 'done' ou 'failed'"}, status_code=422)
 
-    # Grava o resultado no banco
-    await db.mark_command_done(command_id, status, result)
+    await db.mark_command_done(command_id, cmd_status, result)
 
-    # Busca os dados do comando para montar a mensagem de alerta
     cmd = await db.get_command_by_id(command_id)
     if cmd:
         await tg.send_command_result(
             hostname  = cmd["hostname"],
             command   = cmd["command"],
-            status    = status,
+            status    = cmd_status,
             result    = result,
             issued_by = cmd["issued_by"] or "admin",
         )
@@ -685,11 +492,7 @@ async def post_command_result(command_id: int, request: Request) -> JSONResponse
 @v1.post("/commands")
 async def create_command(request: Request) -> JSONResponse:
     """
-    Cria um comando para um agente executar no próximo poll.
-    Corpo JSON:
-      { "hostname": "...", "command": "stop|disable|enable|purge",
-        "issued_by": "admin", "expires_hours": 24 }
-    Para purge, gera e retorna um confirm_token automaticamente.
+    Cria um comando para um agente executar no proximo poll.
     """
     await require_token(request)
     body = await request.json()
@@ -700,7 +503,7 @@ async def create_command(request: Request) -> JSONResponse:
     params = body.get("params")
 
     if not hostname or not command:
-        return JSONResponse({"error": "hostname e command são obrigatórios"}, status_code=422)
+        return JSONResponse({"error": "hostname e command sao obrigatorios"}, status_code=422)
 
     confirm_token = None
     if command == "purge":
@@ -716,9 +519,8 @@ async def create_command(request: Request) -> JSONResponse:
     response = {"id": cmd_id, "hostname": hostname, "command": command, "status": "pending"}
     if confirm_token:
         response["confirm_token"] = confirm_token
-        response["warning"] = "purge é irreversível. Anote o confirm_token — o agente precisará dele para executar."
+        response["warning"] = "purge e irreversivel. Anote o confirm_token."
 
-    # Publica no NATS para entrega instantanea (JetStream)
     await db.audit(issued_by, "command", hostname, detail=command)
     nats_sent = False
     if nc and nc.is_connected():
@@ -733,22 +535,26 @@ async def create_command(request: Request) -> JSONResponse:
 
 @v1.get("/commands/{hostname}/history")
 async def get_command_history(hostname: str, request: Request) -> _SafeJSONResponse:
-    """Histórico de comandos executados em um host."""
+    """Historico de comandos executados em um host."""
     await require_token(request)
     history = await db.get_commands_history(hostname)
     return _SafeJSONResponse(history)
 
 
+# ---------------------------------------------------------------------------
+# Admin pages
+# ---------------------------------------------------------------------------
+
 @app.get("/admin/login", response_class=HTMLResponse, include_in_schema=False)
 async def admin_login_page() -> HTMLResponse:
-    """Formulário de login do painel admin."""
+    """Formulario de login do painel admin."""
     html_path = pathlib.Path(__file__).parent / "static" / "login.html"
     return HTMLResponse(html_path.read_text(encoding="utf-8"))
 
 
 @app.post("/admin/login", include_in_schema=False)
 async def admin_login_post(request: Request):
-    """Valida credenciais e seta cookie de sessão."""
+    """Valida credenciais e seta cookie de sessao."""
     ip = request.client.host if request.client else "unknown"
     if _check_rate_limit(ip):
         return RedirectResponse("/admin/login?error=locked", status_code=303)
@@ -777,7 +583,7 @@ async def admin_login_post(request: Request):
 
 @app.get("/admin/logout", include_in_schema=False)
 async def admin_logout():
-    """Limpa cookie de sessão e redireciona para login."""
+    """Limpa cookie de sessao e redireciona para login."""
     resp = RedirectResponse("/admin/login", status_code=303)
     resp.delete_cookie("admin_session")
     return resp
@@ -795,7 +601,7 @@ async def session_token(request: Request) -> JSONResponse:
 
 @app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
 async def admin_panel(request: Request) -> HTMLResponse:
-    """Painel de administração — protegido por cookie de sessão."""
+    """Painel de administracao — protegido por cookie de sessao."""
     cookie = request.cookies.get("admin_session", "")
     if not _verify_admin_cookie(cookie):
         return RedirectResponse("/admin/login", status_code=303)
@@ -805,7 +611,7 @@ async def admin_panel(request: Request) -> HTMLResponse:
 
 @v1.get("/commands/history")
 async def get_all_commands_history(request: Request, limit: int = 50) -> _SafeJSONResponse:
-    """Histórico recente de todos os comandos (para o painel admin)."""
+    """Historico recente de todos os comandos (para o painel admin)."""
     await require_token(request)
     history = await db.get_all_commands_history(limit)
     return _SafeJSONResponse(history)
@@ -813,13 +619,9 @@ async def get_all_commands_history(request: Request, limit: int = 50) -> _SafeJS
 
 @v1.get("/agent/version")
 async def agent_version_info(request: Request) -> JSONResponse:
-    """
-    Retorna a versão atual do agente disponível para download.
-    Usado pelo agente e pelo painel admin para comparar versões.
-    """
     await require_token(request)
     if not AGENT_FILE_PATH.exists():
-        raise HTTPException(status_code=404, detail="Arquivo do agente não encontrado no servidor")
+        raise HTTPException(status_code=404, detail="Arquivo do agente nao encontrado no servidor")
     content = AGENT_FILE_PATH.read_text(encoding="utf-8")
     m = _re.search(r'^AGENT_VERSION\s*=\s*["\']([^"\']+)["\']', content, _re.MULTILINE)
     version  = m.group(1) if m else "unknown"
@@ -833,13 +635,9 @@ async def agent_version_info(request: Request) -> JSONResponse:
 
 @v1.get("/agent/latest")
 async def agent_latest_download(request: Request):
-    """
-    Serve o arquivo dns_agent.py atual para o agente baixar durante auto-update.
-    Requer Bearer token.
-    """
     await require_token(request)
     if not AGENT_FILE_PATH.exists():
-        raise HTTPException(status_code=404, detail="Arquivo do agente não encontrado no servidor")
+        raise HTTPException(status_code=404, detail="Arquivo do agente nao encontrado no servidor")
     from fastapi.responses import PlainTextResponse
     content = AGENT_FILE_PATH.read_text(encoding="utf-8")
     checksum = hashlib.sha256(content.encode()).hexdigest()
@@ -852,10 +650,6 @@ async def agent_latest_download(request: Request):
 
 @v1.post("/tools/geolocate", dependencies=[Depends(require_token)])
 async def geolocate_ips(request: Request) -> JSONResponse:
-    """
-    Geolocaliza uma lista de IPs usando ip-api.com (gratuito, sem chave).
-    Retorna array com country, city, ISP, lat/lon por IP.
-    """
     import asyncio
     import urllib.request as _urllib
     import json as _json
@@ -882,110 +676,38 @@ async def geolocate_ips(request: Request) -> JSONResponse:
             logger.warning("geolocate: ip-api.com falhou: %s", exc)
             return [{"query": ip, "status": "fail"} for ip in ips]
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     data = await loop.run_in_executor(None, _fetch)
     return JSONResponse(data)
 
 
 @v1.get("/commands/{command_id}/status")
 async def get_command_status(command_id: int, request: Request) -> _SafeJSONResponse:
-    """Retorna o status atual de um comando específico (para polling no painel)."""
+    """Retorna o status atual de um comando especifico (para polling no painel)."""
     await require_token(request)
     cmd = await db.get_command_by_id(command_id)
     if not cmd:
-        raise HTTPException(status_code=404, detail="Comando não encontrado")
+        raise HTTPException(status_code=404, detail="Comando nao encontrado")
     return _SafeJSONResponse(cmd)
 
 
 @app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
 async def dashboard_page(request: Request) -> HTMLResponse:
-    """Dashboard de métricas."""
+    """Dashboard de metricas."""
     html_path = pathlib.Path(__file__).parent / "static" / "dashboard.html"
     if not html_path.exists():
-        raise HTTPException(status_code=404, detail="Dashboard não encontrado")
+        raise HTTPException(status_code=404, detail="Dashboard nao encontrado")
     return HTMLResponse(html_path.read_text(encoding="utf-8"))
-
-
-_VALID_PERIODS = {"1h": "1 hour", "6h": "6 hours", "24h": "24 hours", "7d": "7 days"}
-_BUCKET_MAP    = {"1h": "5 minutes", "6h": "30 minutes", "24h": "1 hour", "7d": "6 hours"}
 
 
 @v1.get("/dashboard/data", dependencies=[Depends(require_token)])
 async def dashboard_data(period: str = "24h", host: str = "") -> _SafeJSONResponse:
     """Dados agregados para o dashboard. Aceita ?period=1h|6h|24h|7d&host=hostname."""
-    interval = _VALID_PERIODS.get(period, "24 hours")
-    bucket   = _BUCKET_MAP.get(period, "1 hour")
-
-    # Filtro de host opcional
-    host_filter = ""
-    host_params = []
+    hostnames = None
     if host and _re.match(r'^[a-zA-Z0-9._-]+$', host):
-        host_filter = " AND hostname = $1"
-        host_params = [host]
-
-    async with db.get_conn() as conn:
-        agents = [dict(r) for r in await conn.fetch(
-            "SELECT * FROM v_agent_current_status ORDER BY hostname"
-        )]
-
-        p_offset = len(host_params) + 1  # param index offset
-
-        dns_latency = [dict(r) for r in await conn.fetch(f"""
-            SELECT domain,
-                   ROUND(AVG(latency_ms)::numeric, 1) AS avg_ms,
-                   ROUND(MAX(latency_ms)::numeric, 1) AS max_ms,
-                   COUNT(*) AS checks,
-                   SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failures
-            FROM dns_checks
-            WHERE ts > NOW() - INTERVAL '{interval}' AND latency_ms IS NOT NULL{host_filter}
-            GROUP BY domain ORDER BY avg_ms DESC LIMIT 10
-        """, *host_params)]
-
-        cpu_history = [dict(r) for r in await conn.fetch(f"""
-            SELECT hostname,
-                   time_bucket('{bucket}', ts) AS bucket,
-                   ROUND(AVG(cpu_percent)::numeric, 1) AS cpu_avg
-            FROM metrics_cpu
-            WHERE ts > NOW() - INTERVAL '{interval}'{host_filter}
-            GROUP BY hostname, bucket ORDER BY bucket
-        """, *host_params)]
-
-        ram_history = [dict(r) for r in await conn.fetch(f"""
-            SELECT hostname,
-                   time_bucket('{bucket}', ts) AS bucket,
-                   ROUND(AVG(ram_percent)::numeric, 1) AS ram_avg
-            FROM metrics_ram
-            WHERE ts > NOW() - INTERVAL '{interval}'{host_filter}
-            GROUP BY hostname, bucket ORDER BY bucket
-        """, *host_params)]
-
-        dns_history = [dict(r) for r in await conn.fetch(f"""
-            SELECT hostname,
-                   time_bucket('{bucket}', ts) AS bucket,
-                   ROUND(AVG(latency_ms)::numeric, 1) AS latency_avg,
-                   COUNT(*) AS total,
-                   SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failures
-            FROM dns_checks
-            WHERE ts > NOW() - INTERVAL '{interval}'{host_filter}
-            GROUP BY hostname, bucket
-            ORDER BY bucket
-        """, *host_params)]
-
-        recent_alerts = [dict(r) for r in await conn.fetch(f"""
-            SELECT hostname, alert_type, severity, message, ts
-            FROM alerts_log
-            WHERE ts > NOW() - INTERVAL '{interval}'{host_filter}
-            ORDER BY ts DESC LIMIT 30
-        """, *host_params)]
-
-    return _SafeJSONResponse({
-        "agents": agents,
-        "dns_latency": dns_latency,
-        "cpu_history": cpu_history,
-        "ram_history": ram_history,
-        "dns_history": dns_history,
-        "recent_alerts": recent_alerts,
-    })
+        hostnames = [host]
+    data = await db.get_aggregated_metrics(period, hostnames)
+    return _SafeJSONResponse(data)
 
 
 @app.get("/health")
@@ -1002,8 +724,6 @@ async def health() -> JSONResponse:
 
 # ---------------------------------------------------------------------------
 # Compatibilidade com agentes antigos (v1.0.0) — rotas sem /api/v1 prefix
-# Encaminha para os mesmos handlers do router v1.
-# Remover quando todos os agentes estiverem atualizados.
 # ---------------------------------------------------------------------------
 _legacy = APIRouter(tags=["legacy"], deprecated=True, include_in_schema=False)
 
@@ -1026,324 +746,15 @@ app.include_router(_legacy)
 
 
 # ---------------------------------------------------------------------------
-# CRUD de clientes (admin) + Portal do cliente
+# Rotas do portal do cliente (montadas no app)
 # ---------------------------------------------------------------------------
-
-@v1.get("/clients", dependencies=[Depends(require_token)])
-async def list_clients_endpoint() -> _SafeJSONResponse:
-    """Lista todos os clientes (admin)."""
-    return _SafeJSONResponse(await db.list_clients())
-
-
-@v1.post("/clients", dependencies=[Depends(require_token)])
-async def create_client_endpoint(request: Request) -> JSONResponse:
-    """Cria um cliente (admin)."""
-    body = await request.json()
-    username = body.get("username", "").strip()
-    password = body.get("password", "").strip()
-    hostnames = body.get("hostnames", [])
-    notes = body.get("notes", "")
-    if not username or not password:
-        return JSONResponse({"error": "username e password obrigatorios"}, status_code=422)
-    if not hostnames:
-        return JSONResponse({"error": "hostnames obrigatorio (array)"}, status_code=422)
-    existing = await db.get_client(username)
-    if existing:
-        return JSONResponse({"error": "username ja existe"}, status_code=409)
-    pw_hash = _hash_password(password)
-    client_id = await db.create_client(username, pw_hash, hostnames, notes or None)
-    await db.audit("admin", "client_created", username, detail=str(hostnames))
-    return JSONResponse({"id": client_id, "username": username}, status_code=201)
-
-
-@v1.patch("/clients/{client_id}", dependencies=[Depends(require_token)])
-async def update_client_endpoint(client_id: int, request: Request) -> JSONResponse:
-    """Atualiza um cliente (admin)."""
-    body = await request.json()
-    fields = {}
-    if "hostnames" in body:
-        fields["hostnames"] = body["hostnames"]
-    if "active" in body:
-        fields["active"] = body["active"]
-    if "notes" in body:
-        fields["notes"] = body["notes"]
-    if "password" in body and body["password"]:
-        fields["password_hash"] = _hash_password(body["password"])
-    ok = await db.update_client(client_id, **fields)
-    if not ok:
-        raise HTTPException(status_code=404, detail="Cliente nao encontrado")
-    return JSONResponse({"status": "ok"})
-
-
-@v1.delete("/clients/{client_id}", dependencies=[Depends(require_token)])
-async def delete_client_endpoint(client_id: int) -> JSONResponse:
-    """Remove um cliente (admin)."""
-    ok = await db.delete_client(client_id)
-    if not ok:
-        raise HTTPException(status_code=404, detail="Cliente nao encontrado")
-    return JSONResponse({"status": "ok"})
-
-
-# ── Portal do cliente ─────────────────────────────────────────────────────
-
-@app.get("/client/login", response_class=HTMLResponse, include_in_schema=False)
-async def client_login_page() -> HTMLResponse:
-    html_path = pathlib.Path(__file__).parent / "static" / "client-login.html"
-    return HTMLResponse(html_path.read_text(encoding="utf-8"))
-
-
-@app.post("/client/login", include_in_schema=False)
-async def client_login_post(request: Request):
-    ip = request.client.host if request.client else "unknown"
-    if _check_rate_limit(ip):
-        return RedirectResponse("/client/login?error=locked", status_code=303)
-
-    form = await request.form()
-    username = form.get("username", "")
-    password = form.get("password", "")
-    user = await db.authenticate_client(username)
-    # Dummy verify previne timing attack (tempo constante mesmo se user nao existe)
-    _dummy_hash = "$2b$12$000000000000000000000uGPOaHLkG6VgbGG7ZtBCRqGz4eXxWfS"
-    if not _verify_password(password, user["password_hash"] if user else _dummy_hash) or not user:
-        _record_failed_login(ip)
-        logger.warning("Login cliente falhado de %s (user=%s)", ip, username)
-        await db.audit("client", "login_failed", username, ip=ip)
-        return RedirectResponse("/client/login?error=1", status_code=303)
-    _clear_login_attempts(ip)
-    await db.audit("client", "login_ok", username, ip=ip)
-    resp = RedirectResponse("/client", status_code=303)
-    resp.set_cookie("client_session", _sign_client_cookie(username),
-                    httponly=True, samesite="strict", max_age=_CLIENT_SESSION_TTL)
-    return resp
-
-
-@app.get("/client/logout", include_in_schema=False)
-async def client_logout():
-    resp = RedirectResponse("/client/login", status_code=303)
-    resp.delete_cookie("client_session")
-    return resp
-
-
-@v1.post("/client/dns-test")
-async def client_dns_test(request: Request) -> JSONResponse:
-    """Teste DNS sob demanda — cliente clica 'Testar meu DNS'. Rate: 1/min."""
-    cookie = request.cookies.get("client_session", "")
-    client_user = _verify_client_cookie(cookie)
-    if not client_user:
-        raise HTTPException(status_code=403, detail="Acesso negado")
-    user = await db.get_client(client_user)
-    if not user or not user["active"]:
-        raise HTTPException(status_code=403)
-
-    # Rate limit: 1 teste por minuto por cliente
-    ip = request.client.host if request.client else "unknown"
-    rate_key = f"dnstest:{client_user}"
-    if _check_rate_limit(rate_key):
-        return JSONResponse({"error": "Aguarde 1 minuto entre testes"}, status_code=429)
-
-    hostnames = user["hostnames"]
-    if not hostnames:
-        return JSONResponse({"error": "Nenhum host associado"}, status_code=404)
-
-    # Envia comando run_script dig_test pro primeiro host do cliente
-    hostname = hostnames[0]
-    try:
-        cmd_id = await db.insert_command(hostname, "run_script", "client:" + client_user, None, 1, "dig_test")
-    except ValueError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=422)
-
-    # Publica via NATS pra entrega rapida
-    if nc and nc.is_connected():
-        await nc.js_publish(f"dns.commands.{hostname}", {
-            "id": cmd_id, "command": "run_script", "params": "dig_test",
-        })
-
-    _record_failed_login(rate_key)  # reutiliza rate limiter (1 attempt = blocked next call)
-    await db.audit("client:" + client_user, "dns_test", hostname, ip=ip)
-    return JSONResponse({"id": cmd_id, "hostname": hostname, "status": "testing"})
-
-
-@v1.get("/client/report")
-async def client_report(request: Request, month: str = "") -> _SafeJSONResponse:
-    """Relatorio mensal — uptime, latencia, alertas, comparativo."""
-    cookie = request.cookies.get("client_session", "")
-    client_user = _verify_client_cookie(cookie)
-    if not client_user:
-        raise HTTPException(status_code=403, detail="Acesso negado")
-    user = await db.get_client(client_user)
-    if not user or not user["active"]:
-        raise HTTPException(status_code=403)
-
-    hostnames = user["hostnames"]
-    if not hostnames:
-        return _SafeJSONResponse({"error": "Nenhum host associado"})
-
-    # Determina periodo
-    from datetime import datetime as _dt, timedelta as _td
-    if month and _re.match(r'^\d{4}-\d{2}$', month):
-        year, mon = map(int, month.split("-"))
-        start = _dt(year, mon, 1)
-        if mon == 12:
-            end = _dt(year + 1, 1, 1)
-        else:
-            end = _dt(year, mon + 1, 1)
-    else:
-        now = _dt.now()
-        start = _dt(now.year, now.month, 1)
-        end = now
-
-    placeholders = ", ".join(f"${i+1}" for i in range(len(hostnames)))
-    p_start = f"${len(hostnames)+1}"
-    p_end = f"${len(hostnames)+2}"
-    params = [*hostnames, start, end]
-
-    async with db.get_conn() as conn:
-        # Heartbeats no periodo (pra calcular uptime)
-        hb_count = await conn.fetchval(f"""
-            SELECT COUNT(*) FROM agent_heartbeats
-            WHERE hostname IN ({placeholders}) AND ts BETWEEN {p_start} AND {p_end}
-        """, *params)
-
-        # Heartbeats esperados (1 a cada 5min)
-        total_minutes = (end - start).total_seconds() / 60
-        expected_hb = int(total_minutes / 5) * len(hostnames)
-        uptime_pct = round((hb_count / max(expected_hb, 1)) * 100, 2)
-
-        # Latencia media/max/p95
-        lat_stats = await conn.fetchrow(f"""
-            SELECT ROUND(AVG(latency_ms)::numeric, 1) AS avg_ms,
-                   ROUND(MAX(latency_ms)::numeric, 1) AS max_ms,
-                   ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms)::numeric, 1) AS p95_ms,
-                   COUNT(*) AS total_checks,
-                   SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failures
-            FROM dns_checks
-            WHERE hostname IN ({placeholders}) AND ts BETWEEN {p_start} AND {p_end}
-                  AND latency_ms IS NOT NULL
-        """, *params) or {}
-
-        # Alertas no periodo
-        alerts = await conn.fetchval(f"""
-            SELECT COUNT(*) FROM alerts_log
-            WHERE hostname IN ({placeholders}) AND ts BETWEEN {p_start} AND {p_end}
-        """, *params)
-
-        # Alertas criticos
-        critical = await conn.fetchval(f"""
-            SELECT COUNT(*) FROM alerts_log
-            WHERE hostname IN ({placeholders}) AND ts BETWEEN {p_start} AND {p_end}
-                  AND severity = 'critical'
-        """, *params)
-
-    downtime_min = round(total_minutes * (1 - uptime_pct / 100))
-
-    return _SafeJSONResponse({
-        "period": {"start": start.isoformat(), "end": end.isoformat()},
-        "hostnames": hostnames,
-        "uptime_pct": uptime_pct,
-        "downtime_minutes": downtime_min,
-        "latency": dict(lat_stats) if lat_stats else {},
-        "alerts_total": alerts,
-        "alerts_critical": critical,
-        "heartbeats": hb_count,
-        "expected_heartbeats": expected_hb,
-    })
-
-
-@app.get("/client", response_class=HTMLResponse, include_in_schema=False)
-async def client_portal(request: Request) -> HTMLResponse:
-    cookie = request.cookies.get("client_session", "")
-    username = _verify_client_cookie(cookie)
-    if not username:
-        return RedirectResponse("/client/login", status_code=303)
-    html_path = pathlib.Path(__file__).parent / "static" / "client.html"
-    html = html_path.read_text(encoding="utf-8")
-    # Injeta token + username no HTML
-    snippet = f'<script>window.__CLIENT__="{username}";</script>'
-    html = html.replace("</head>", snippet + "\n</head>", 1)
-    return HTMLResponse(html)
-
-
-@v1.get("/client/data")
-async def client_data(request: Request, period: str = "24h") -> _SafeJSONResponse:
-    """Dados filtrados por hostnames do cliente logado. Auth via cookie."""
-    # Extrai username do cookie de sessao — NAO do header (previne spoofing)
-    cookie = request.cookies.get("client_session", "")
-    client_user = _verify_client_cookie(cookie)
-    if not client_user:
-        # Fallback: admin autenticado pode acessar com header (para testes)
-        await require_token(request)
-        client_user = request.headers.get("X-Client-User", "")
-    if not client_user:
-        raise HTTPException(status_code=403, detail="Acesso negado")
-    user = await db.get_client(client_user)
-    if not user or not user["active"]:
-        raise HTTPException(status_code=403, detail="Cliente inativo ou inexistente")
-    hostnames = user["hostnames"]
-    if not hostnames:
-        return _SafeJSONResponse({"agents": [], "dns_latency": [], "cpu_history": [],
-                                   "ram_history": [], "dns_history": [], "recent_alerts": []})
-
-    interval = _VALID_PERIODS.get(period, "24 hours")
-    bucket   = _BUCKET_MAP.get(period, "1 hour")
-    placeholders = ", ".join(f"${i+1}" for i in range(len(hostnames)))
-
-    async with db.get_conn() as conn:
-        agents = [dict(r) for r in await conn.fetch(
-            f"SELECT * FROM v_agent_current_status WHERE hostname IN ({placeholders}) ORDER BY hostname",
-            *hostnames)]
-
-        dns_latency = [dict(r) for r in await conn.fetch(f"""
-            SELECT domain, ROUND(AVG(latency_ms)::numeric, 1) AS avg_ms,
-                   ROUND(MAX(latency_ms)::numeric, 1) AS max_ms,
-                   COUNT(*) AS checks,
-                   SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failures
-            FROM dns_checks
-            WHERE ts > NOW() - INTERVAL '{interval}' AND latency_ms IS NOT NULL
-                  AND hostname IN ({placeholders})
-            GROUP BY domain ORDER BY avg_ms DESC LIMIT 10
-        """, *hostnames)]
-
-        cpu_history = [dict(r) for r in await conn.fetch(f"""
-            SELECT hostname, time_bucket('{bucket}', ts) AS bucket,
-                   ROUND(AVG(cpu_percent)::numeric, 1) AS cpu_avg
-            FROM metrics_cpu
-            WHERE ts > NOW() - INTERVAL '{interval}' AND hostname IN ({placeholders})
-            GROUP BY hostname, bucket ORDER BY bucket
-        """, *hostnames)]
-
-        ram_history = [dict(r) for r in await conn.fetch(f"""
-            SELECT hostname, time_bucket('{bucket}', ts) AS bucket,
-                   ROUND(AVG(ram_percent)::numeric, 1) AS ram_avg
-            FROM metrics_ram
-            WHERE ts > NOW() - INTERVAL '{interval}' AND hostname IN ({placeholders})
-            GROUP BY hostname, bucket ORDER BY bucket
-        """, *hostnames)]
-
-        dns_history = [dict(r) for r in await conn.fetch(f"""
-            SELECT hostname, time_bucket('{bucket}', ts) AS bucket,
-                   ROUND(AVG(latency_ms)::numeric, 1) AS latency_avg,
-                   COUNT(*) AS total,
-                   SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failures
-            FROM dns_checks
-            WHERE ts > NOW() - INTERVAL '{interval}' AND hostname IN ({placeholders})
-            GROUP BY hostname, bucket ORDER BY bucket
-        """, *hostnames)]
-
-        recent_alerts = [dict(r) for r in await conn.fetch(f"""
-            SELECT hostname, alert_type, severity, message, ts
-            FROM alerts_log
-            WHERE ts > NOW() - INTERVAL '{interval}' AND hostname IN ({placeholders})
-            ORDER BY ts DESC LIMIT 20
-        """, *hostnames)]
-
-    return _SafeJSONResponse({
-        "agents": agents, "dns_latency": dns_latency,
-        "cpu_history": cpu_history, "ram_history": ram_history,
-        "dns_history": dns_history, "recent_alerts": recent_alerts,
-    })
-
+app.get("/client/login", response_class=HTMLResponse, include_in_schema=False)(client_login_page)
+app.post("/client/login", include_in_schema=False)(client_login_post)
+app.get("/client/logout", include_in_schema=False)(client_logout)
+app.get("/client", response_class=HTMLResponse, include_in_schema=False)(client_portal)
 
 # ---------------------------------------------------------------------------
-# Registra o router versionado (DEVE ficar depois de todos os @v1 endpoints)
+# Registra routers versionados (DEVE ficar depois de todos os endpoints)
 # ---------------------------------------------------------------------------
+v1.include_router(client_v1)
 app.include_router(v1)
