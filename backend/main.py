@@ -362,7 +362,7 @@ from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(
     title="DNS Monitor — Backend",
-    version="1.0.0",
+    version="0.5.0",
     lifespan=lifespan,
 )
 
