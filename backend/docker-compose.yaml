@@ -67,8 +67,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      nats:
-        condition: service_healthy
+      nats: {}
     healthcheck:
       test: [ "CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1" ]
       interval: 30s
@@ -91,12 +90,6 @@ services:
       - "8222:8222"
     volumes:
       - nats_data:/data
-    healthcheck:
-      test: ["CMD-SHELL", "echo > /dev/tcp/localhost/4222 || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 5s
 
   # ─────────────────────────────────────────────
   # Grafana
