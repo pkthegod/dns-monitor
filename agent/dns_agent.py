@@ -929,10 +929,10 @@ def _parse_diagnostic_output(script_id: str, raw: str) -> str:
 
 def _run_dnstop(cfg: Config, logger: logging.Logger, params: str = None) -> tuple[str, str]:
     """
-    Captura trafego DNS por N segundos e analisa com dnstop.
-    Fluxo: tcpdump captura pcap → dnstop analisa → resultado JSON.
-    Fallback: se dnstop ausente, usa tcpdump com parsing de texto.
-    params: JSON {"duration": 9, "interface": "eth0"} ou duracao simples "9"
+    Captura trafego DNS por N segundos e retorna JSON estruturado.
+    Fluxo: tcpdump captura pcap → le com -r -nn → parse → JSON.
+    Se dnstop disponivel, usa como analisador complementar.
+    Resultado: {qps, packets, top_domains, top_clients, query_types, ...}
     """
     try:
         p = json.loads(params) if params and params.strip().startswith("{") else {}
@@ -942,77 +942,121 @@ def _run_dnstop(cfg: Config, logger: logging.Logger, params: str = None) -> tupl
     duration  = int(p.get("duration", params or 9))
     interface = p.get("interface", "any")
     duration  = max(3, min(duration, 30))
-
     pcap_path = tempfile.mktemp(suffix=".pcap")
 
     try:
-        # ── Passo 1: captura pcap com tcpdump ──
         if not shutil.which("tcpdump"):
             return "failed", "tcpdump nao encontrado. Instale: apt install tcpdump"
 
-        cap = subprocess.run(
+        # ── Captura pcap ──
+        subprocess.run(
             ["sudo", "-n", "tcpdump", "-i", interface, "-n", "-w", pcap_path,
              "-G", str(duration), "-W", "1", "port", "53"],
-            capture_output=True, text=True, timeout=duration + 10,
+            capture_output=True, timeout=duration + 10,
         )
-        cap_stats = cap.stderr.strip()
 
-        # Extrai total de pacotes do stderr do tcpdump
-        packets = 0
-        for line in cap_stats.split("\n"):
-            if "packets captured" in line:
-                try:
-                    packets = int(line.split()[0])
-                except (ValueError, IndexError):
-                    pass
-
-        qps = round(packets / duration, 1) if duration > 0 else 0
-
-        # ── Passo 2: analisa com dnstop se disponivel ──
-        if shutil.which("dnstop") and os.path.getsize(pcap_path) > 0:
-            dt = subprocess.run(
-                ["dnstop", "-n", pcap_path],
-                capture_output=True, text=True, timeout=30,
-            )
-            logger.info("dnstop: %d pacotes em %ds (%.1f qps) na %s", packets, duration, qps, interface)
+        if not os.path.exists(pcap_path) or os.path.getsize(pcap_path) == 0:
             return "done", json.dumps({
-                "tool": "dnstop", "duration": duration,
-                "interface": interface, "packets": packets, "qps": qps,
-                "output": dt.stdout[:4000],
-                "tcpdump_stats": cap_stats[:500],
+                "duration": duration, "interface": interface,
+                "packets": 0, "qps": 0, "top_domains": [],
+                "top_clients": [], "query_types": {},
+                "message": "Nenhum trafego DNS capturado",
             }, ensure_ascii=False)
 
-        # ── Fallback: tcpdump texto se dnstop ausente ──
-        if os.path.getsize(pcap_path) > 0:
-            rd = subprocess.run(
-                ["sudo", "-n", "tcpdump", "-r", pcap_path, "-n", "-q"],
-                capture_output=True, text=True, timeout=30,
-            )
-            # Conta dominios mais consultados
-            domains = {}
-            for line in rd.stdout.split("\n"):
-                parts = line.split()
-                for part in parts:
-                    if "." in part and not part.replace(".", "").isdigit():
-                        # Filtra dominios (heuristica: tem ponto, nao e IP)
-                        d = part.rstrip(".").lower()
-                        if len(d) > 3 and d.count(".") >= 1:
-                            domains[d] = domains.get(d, 0) + 1
+        # ── Le pcap com tcpdump verbose ──
+        rd = subprocess.run(
+            ["sudo", "-n", "tcpdump", "-r", pcap_path, "-nn", "-v"],
+            capture_output=True, text=True, timeout=30,
+        )
 
-            top = sorted(domains.items(), key=lambda x: -x[1])[:10]
-            logger.info("tcpdump: %d pacotes em %ds (%.1f qps) na %s", packets, duration, qps, interface)
-            return "done", json.dumps({
-                "tool": "tcpdump", "duration": duration,
-                "interface": interface, "packets": packets, "qps": qps,
-                "top_domains": [{"domain": d, "count": c} for d, c in top],
-                "tcpdump_stats": cap_stats[:500],
-            }, ensure_ascii=False)
+        lines = rd.stdout.strip().split("\n")
+        total = len([l for l in lines if l.strip()])
 
-        return "done", json.dumps({
-            "tool": "tcpdump", "duration": duration,
-            "interface": interface, "packets": 0, "qps": 0,
-            "message": "Nenhum trafego DNS capturado",
-        }, ensure_ascii=False)
+        domains = {}
+        clients = {}
+        qtypes  = {}
+        queries = 0
+        responses = 0
+
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 5:
+                continue
+
+            # Detecta queries: "IP src.port > dst.53: ... A? domain"
+            # Detecta responses: "IP src.53 > dst.port: ..."
+            is_query = False
+            is_response = False
+
+            for i, part in enumerate(parts):
+                if part.endswith(".53:") or part.endswith(".53"):
+                    # Trafego de/para porta 53
+                    if i > 0 and parts[i-1] == ">":
+                        is_query = True
+                    elif i + 1 < len(parts) and parts[i+1] == ">":
+                        is_response = True
+
+            # Extrai tipo de query (A?, AAAA?, MX?, PTR?, etc.)
+            for part in parts:
+                if part.endswith("?") and len(part) <= 6:
+                    qtype = part.rstrip("?")
+                    qtypes[qtype] = qtypes.get(qtype, 0) + 1
+
+            # Extrai dominio consultado
+            for i, part in enumerate(parts):
+                if part.endswith("?") and i > 0:
+                    domain = parts[i - 1].rstrip(".").lower()
+                    if domain and "." in domain and len(domain) > 2:
+                        domains[domain] = domains.get(domain, 0) + 1
+
+            # Extrai IP do cliente (origem da query)
+            if is_query:
+                queries += 1
+                # IP source e o campo antes de "> dst.53:"
+                for i, part in enumerate(parts):
+                    if part == "IP":
+                        if i + 1 < len(parts):
+                            src = parts[i + 1]
+                            # Remove .porta do final (ex: 192.168.1.10.45321)
+                            ip_parts = src.split(".")
+                            if len(ip_parts) >= 5:
+                                client_ip = ".".join(ip_parts[:4])
+                                clients[client_ip] = clients.get(client_ip, 0) + 1
+                        break
+            elif is_response:
+                responses += 1
+
+        qps = round(queries / duration, 1) if duration > 0 else 0
+        top_domains = sorted(domains.items(), key=lambda x: -x[1])[:10]
+        top_clients = sorted(clients.items(), key=lambda x: -x[1])[:10]
+
+        result = {
+            "duration": duration,
+            "interface": interface,
+            "packets": total,
+            "queries": queries,
+            "responses": responses,
+            "qps": qps,
+            "top_domains": [{"domain": d, "count": c} for d, c in top_domains],
+            "top_clients": [{"ip": ip, "count": c} for ip, c in top_clients],
+            "query_types": qtypes,
+        }
+
+        # ── Complementa com dnstop se disponivel ──
+        if shutil.which("dnstop"):
+            try:
+                dt = subprocess.run(
+                    ["dnstop", "-n", pcap_path],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if dt.stdout.strip():
+                    result["dnstop_output"] = dt.stdout[:3000]
+            except Exception:
+                pass
+
+        logger.info("dnstop: %d queries em %ds (%.1f qps), %d dominios, %d clientes",
+                     queries, duration, qps, len(domains), len(clients))
+        return "done", json.dumps(result, ensure_ascii=False)
 
     except subprocess.TimeoutExpired:
         return "failed", f"Timeout apos {duration + 10}s"
