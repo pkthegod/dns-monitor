@@ -980,18 +980,6 @@
     await Promise.all([fetchServerVersion(), loadAgents(), loadHistory()]);
   }
 
-  // Busca token via sessao (cookie httponly) — fallback campo manual
-  fetchSessionToken().then(ok => {
-    if (!ok) {
-      const savedToken = sessionStorage.getItem('dns_admin_token');
-      if (savedToken) document.getElementById('token-input').value = savedToken;
-      document.getElementById('token-input').addEventListener('change', e => {
-        sessionStorage.setItem('dns_admin_token', e.target.value);
-        loadAll();
-      });
-    }
-  });
-
   // Reset diag modal state on close (restore run btn and script select)
   document.getElementById('diag-modal').addEventListener('click', e => {
     if (e.target === e.currentTarget) {
@@ -1006,7 +994,18 @@
     origCloseDiag();
   };
 
-  loadAll();
+  // Busca token via sessao ANTES de carregar dados
+  fetchSessionToken().then(ok => {
+    if (!ok) {
+      const savedToken = sessionStorage.getItem('dns_admin_token');
+      if (savedToken) document.getElementById('token-input').value = savedToken;
+      document.getElementById('token-input').addEventListener('change', e => {
+        sessionStorage.setItem('dns_admin_token', e.target.value);
+        loadAll();
+      });
+    }
+    loadAll();
+  });
 </script>
 </body>
 </html>
