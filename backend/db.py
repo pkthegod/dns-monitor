@@ -464,7 +464,7 @@ async def upsert_fingerprint(hostname: str, fingerprint: str) -> dict:
 # Comandos remotos
 # ---------------------------------------------------------------------------
 
-VALID_COMMANDS = {"stop", "disable", "enable", "restart", "purge", "run_script", "update_agent", "dnstop"}
+VALID_COMMANDS = {"stop", "disable", "enable", "restart", "purge", "decommission", "run_script", "update_agent", "dnstop"}
 
 
 async def get_pending_commands(hostname: str) -> list[dict]:
