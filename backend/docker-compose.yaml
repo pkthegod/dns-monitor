@@ -63,14 +63,39 @@ services:
       THRESH_DNS_LATENCY_WARNING: ${THRESH_DNS_LATENCY_WARNING:-200}
       THRESH_DNS_LATENCY_CRITICAL: ${THRESH_DNS_LATENCY_CRITICAL:-1000}
       THRESH_OFFLINE_MINUTES: ${THRESH_OFFLINE_MINUTES:-10}
+      NATS_URL: nats://172.20.0.13:4222
     depends_on:
       postgres:
+        condition: service_healthy
+      nats:
         condition: service_healthy
     healthcheck:
       test: [ "CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1" ]
       interval: 30s
       timeout: 10s
       retries: 3
+
+  # ─────────────────────────────────────────────
+  # NATS (message broker + JetStream)
+  # ─────────────────────────────────────────────
+  nats:
+    image: nats:latest
+    container_name: dns_monitor_nats
+    restart: unless-stopped
+    command: ["--jetstream", "--store_dir", "/data", "--name", "dns-monitor-nats"]
+    networks:
+      dns_monitor_net:
+        ipv4_address: 172.20.0.13
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - nats_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8222/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # ─────────────────────────────────────────────
   # Grafana
@@ -100,3 +125,4 @@ services:
 volumes:
   pgdata:
   grafana_data:
+  nats_data:

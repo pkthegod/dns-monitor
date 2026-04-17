@@ -24,6 +24,11 @@ from pydantic import BaseModel, Field
 import db
 import telegram_bot as tg
 
+try:
+    import nats_client as nc
+except ImportError:
+    nc = None  # nats-py nao instalado — NATS desabilitado
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -307,14 +312,48 @@ def setup_scheduler() -> None:
 # Lifecycle FastAPI
 # ---------------------------------------------------------------------------
 
+async def _handle_command_ack(msg):
+    """Recebe resultado de comando via NATS (dns.commands.{hostname}.ack)."""
+    try:
+        data = json.loads(msg.data.decode())
+        cmd_id = data.get("command_id")
+        status = data.get("status", "done")
+        result = data.get("result", "")
+        if cmd_id:
+            await db.mark_command_done(cmd_id, status, result)
+            cmd = await db.get_command_by_id(cmd_id)
+            if cmd:
+                await tg.send_command_result(
+                    hostname=cmd["hostname"], command=cmd["command"],
+                    status=status, result=result,
+                    issued_by=cmd["issued_by"] or "admin",
+                )
+            logger.info("NATS ACK: comando #%s → %s", cmd_id, status)
+        await msg.ack()
+    except Exception as exc:
+        logger.error("NATS ACK handler erro: %s", exc)
+
+
+async def _setup_nats_subscriptions():
+    """Registra subscriptions NATS no backend."""
+    if nc:
+        await nc.js_subscribe("dns.commands.*.ack", _handle_command_ack, durable="backend-cmd-ack")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await db.init_pool()
     await db.apply_schema()
+    if nc:
+        await nc.connect()
+        if nc.is_connected():
+            await _setup_nats_subscriptions()
     setup_scheduler()
-    logger.info("Backend DNS Monitor iniciado")
+    logger.info("Backend DNS Monitor iniciado (NATS=%s)", "OK" if nc and nc.is_connected() else "offline")
     yield
     scheduler.shutdown(wait=False)
+    if nc:
+        await nc.close()
     await db.close_pool()
     logger.info("Backend encerrado")
 
@@ -323,7 +362,7 @@ from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(
     title="DNS Monitor — Backend",
-    version="1.0.0",
+    version="0.5.0",
     lifespan=lifespan,
 )
 
@@ -582,6 +621,16 @@ async def create_command(request: Request) -> JSONResponse:
     if confirm_token:
         response["confirm_token"] = confirm_token
         response["warning"] = "purge é irreversível. Anote o confirm_token — o agente precisará dele para executar."
+
+    # Publica no NATS para entrega instantanea (JetStream)
+    nats_sent = False
+    if nc and nc.is_connected():
+        nats_sent = await nc.js_publish(f"dns.commands.{hostname}", {
+            "id": cmd_id, "command": command,
+            "confirm_token": confirm_token, "params": params,
+        })
+    response["nats"] = "sent" if nats_sent else "fallback_http"
+
     return JSONResponse(response, status_code=201)
 
 

@@ -2,6 +2,60 @@
 
 ---
 
+## [v0.5.0] — 2026-04-16 — Portal do Cliente, Token Embutido & NATS
+
+### Novidades
+
+#### Portal do Cliente (feature 010)
+
+- Tabela `client_users` (username, password_hash, hostnames[], active)
+- CRUD completo de clientes no admin: GET/POST/PATCH/DELETE /api/v1/clients
+- Login proprio em `/client/login` com cookie `client_session`
+- Portal read-only em `/client` com dashboard filtrado por hostnames
+- Graficos: CPU, RAM, DNS latencia, top dominios — so dos hosts do cliente
+- Auto-refresh a cada 60s
+
+#### Token Embutido no Admin (feature 010 fase 1)
+
+- Backend injeta `window.__TOKEN__` no HTML quando sessao admin valida
+- Admin e dashboard nao precisam mais de campo de token manual
+- Dashboard auto-carrega quando vindo do admin
+
+#### NATS Messaging (feature 012 fases 1-2)
+
+- Container NATS com JetStream no docker-compose (172.20.0.13)
+- `nats_client.py`: client async com connect, publish, js_publish, subscribe
+- POST /commands publica no NATS JetStream — entrega em < 1s
+- Agente subscreve dns.commands.{hostname} via NATS (thread separada)
+- ACK de resultado via NATS + HTTP redundante
+- Fallback: se NATS off, HTTP polling continua (opt-in via agent.toml)
+
+#### Design System e Refatoracao
+
+- `base.css` (311 linhas): tokens Tokyo Night, componentes compartilhados
+- `admin.css` (347 linhas): CSS extraido do admin.html
+- `app.js` (172 linhas): token(), apiFetch(), toast tipado, inline errors
+- Toast system: 4 tipos (success/error/warning/info) com icones SVG
+- Inline errors: showInlineError(), showInlineEmpty(), showInlineLoading()
+- Animacoes: fadeIn, slideUp, scaleIn com stagger
+- admin.html: 1689 → 1008 linhas (-40%)
+
+### Correcoes
+
+| # | Problema | Correcao |
+|---|---|---|
+| 20 | Tela de credenciais invalidas era HTML cru branco | Redirect para login com mensagem estilizada |
+| 21 | Cache do browser impedia ver token embutido | Documentacao de Ctrl+Shift+R / aba anonima |
+
+### Testes
+
+- `test_agent.py`: 138 testes
+- `test_backend.py`: 165 testes
+- Total: **303 testes** (anterior: 289)
+- `AGENT_VERSION`: `1.2.0` → `1.3.0`
+
+---
+
 ## [v0.4.0] — 2026-04-16 — API Versioning, TOML Config & Adaptive Polling
 
 ### Novidades
