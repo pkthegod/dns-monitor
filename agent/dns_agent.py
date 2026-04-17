@@ -927,6 +927,74 @@ def _parse_diagnostic_output(script_id: str, raw: str) -> str:
     }, ensure_ascii=False)
 
 
+def _run_dnstop(cfg: Config, logger: logging.Logger, params: str = None) -> tuple[str, str]:
+    """
+    Executa dnstop por N segundos e retorna estatisticas DNS.
+    params: JSON {"duration": 9, "interface": "eth0"} ou duracao simples "9"
+    Fallback: usa tcpdump + parsing se dnstop nao estiver instalado.
+    """
+    try:
+        p = json.loads(params) if params and params.strip().startswith("{") else {}
+    except (json.JSONDecodeError, ValueError):
+        p = {}
+
+    duration  = int(p.get("duration", params or 9))
+    interface = p.get("interface", "any")
+
+    # Limita duracao (seguranca)
+    duration = max(3, min(duration, 30))
+
+    # Tenta dnstop primeiro
+    if shutil.which("dnstop"):
+        try:
+            result = subprocess.run(
+                ["sudo", "-n", "dnstop", "-l", str(duration), interface],
+                capture_output=True, text=True, timeout=duration + 10,
+            )
+            if result.returncode == 0:
+                logger.info("dnstop: captura de %ds na interface %s", duration, interface)
+                return "done", json.dumps({
+                    "tool": "dnstop", "duration": duration,
+                    "interface": interface, "output": result.stdout[:4000],
+                }, ensure_ascii=False)
+            return "failed", f"dnstop erro: {result.stderr[:500]}"
+        except subprocess.TimeoutExpired:
+            return "failed", f"dnstop timeout apos {duration + 10}s"
+        except Exception as exc:
+            return "failed", f"dnstop erro: {exc}"
+
+    # Fallback: tcpdump com parsing basico
+    if shutil.which("tcpdump"):
+        try:
+            result = subprocess.run(
+                ["sudo", "-n", "tcpdump", "-i", interface, "-n",
+                 "-c", "500", "-w", "-", "port", "53"],
+                capture_output=True, timeout=duration + 5,
+            )
+            # Conta pacotes capturados
+            lines = result.stderr.decode(errors="replace").strip().split("\n")
+            stats_line = [l for l in lines if "packets captured" in l]
+            packets = 0
+            if stats_line:
+                try:
+                    packets = int(stats_line[0].split()[0])
+                except (ValueError, IndexError):
+                    pass
+            qps = round(packets / duration, 1) if duration > 0 else 0
+            logger.info("tcpdump: %d pacotes DNS em %ds (%.1f qps)", packets, duration, qps)
+            return "done", json.dumps({
+                "tool": "tcpdump", "duration": duration,
+                "interface": interface, "packets": packets,
+                "qps": qps, "raw_stats": result.stderr.decode(errors="replace")[:2000],
+            }, ensure_ascii=False)
+        except subprocess.TimeoutExpired:
+            return "failed", f"tcpdump timeout apos {duration + 5}s"
+        except Exception as exc:
+            return "failed", f"tcpdump erro: {exc}"
+
+    return "failed", "Nem dnstop nem tcpdump encontrados. Instale: apt install dnstop ou tcpdump"
+
+
 COMMAND_HANDLERS = {
     "stop":    ["sudo", "-n", "systemctl", "stop"],
     "disable": ["sudo", "-n", "systemctl", "disable", "--now"],
@@ -1203,6 +1271,9 @@ def _execute_command(command: str, confirm_token: str, cfg: Config,
         url        = cfg.get("backend", "url").rstrip("/")
         auth_token = cfg.get("agent", "auth_token")
         return _execute_update_agent(url, auth_token, logger)
+
+    if command == "dnstop":
+        return _run_dnstop(cfg, logger, params)
 
     if command == "run_script":
         params_str = (params or "").strip()
