@@ -18,7 +18,9 @@ logger = logging.getLogger("dns-monitor.nats")
 _nc: Optional[nats.NATS] = None
 _js = None  # JetStream context
 
-NATS_URL = os.environ.get("NATS_URL", "nats://localhost:4222")
+NATS_URL  = os.environ.get("NATS_URL", "nats://localhost:4222")
+NATS_USER = os.environ.get("NATS_USER", "")
+NATS_PASS = os.environ.get("NATS_PASS", "")
 
 # Streams JetStream (criados no connect)
 STREAMS = {
@@ -35,12 +37,16 @@ async def connect() -> bool:
     """Conecta ao NATS e inicializa JetStream. Retorna True se sucesso."""
     global _nc, _js
     try:
-        _nc = await nats.connect(
-            NATS_URL,
+        connect_opts = dict(
+            servers=NATS_URL,
             name="dns-monitor-backend",
             reconnect_time_wait=2,
-            max_reconnect_attempts=-1,  # reconecta indefinidamente
+            max_reconnect_attempts=-1,
         )
+        if NATS_USER and NATS_PASS:
+            connect_opts["user"] = NATS_USER
+            connect_opts["password"] = NATS_PASS
+        _nc = await nats.connect(**connect_opts)
         _js = _nc.jetstream()
 
         # Cria streams se nao existem

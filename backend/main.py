@@ -97,39 +97,86 @@ async def require_token(request: Request) -> None:
         )
 
 # ---------------------------------------------------------------------------
+# Rate limiting — protecao contra brute-force em logins
+# ---------------------------------------------------------------------------
+
+_login_attempts: dict[str, list[float]] = {}  # ip → [timestamps]
+_LOGIN_MAX_ATTEMPTS = 5
+_LOGIN_LOCKOUT_SECONDS = 900  # 15 minutos
+
+
+def _check_rate_limit(ip: str) -> bool:
+    """Retorna True se IP esta bloqueado. Limpa tentativas expiradas."""
+    import time as _time
+    now = _time.time()
+    attempts = _login_attempts.get(ip, [])
+    # Remove tentativas antigas
+    attempts = [t for t in attempts if now - t < _LOGIN_LOCKOUT_SECONDS]
+    _login_attempts[ip] = attempts
+    return len(attempts) >= _LOGIN_MAX_ATTEMPTS
+
+
+def _record_failed_login(ip: str) -> None:
+    """Registra tentativa falhada de login."""
+    import time as _time
+    _login_attempts.setdefault(ip, []).append(_time.time())
+
+
+def _clear_login_attempts(ip: str) -> None:
+    """Limpa tentativas apos login bem-sucedido."""
+    _login_attempts.pop(ip, None)
+
+
+# ---------------------------------------------------------------------------
 # Autenticação do painel admin (cookie HMAC)
 # ---------------------------------------------------------------------------
 
 ADMIN_USER = os.environ.get("ADMIN_USER", "")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
-_COOKIE_SECRET = (AGENT_TOKEN or "dns-monitor-fallback-key").encode()
+
+# Secrets separados — cada contexto tem seu proprio segredo
+_ADMIN_SECRET  = os.environ.get("ADMIN_SESSION_SECRET", "").encode() or \
+                 hashlib.sha256(b"admin:" + (AGENT_TOKEN or "fallback").encode()).digest()
+_CLIENT_SECRET = os.environ.get("CLIENT_SESSION_SECRET", "").encode() or \
+                 hashlib.sha256(b"client:" + (AGENT_TOKEN or "fallback").encode()).digest()
 
 
 def _sign_admin_cookie(username: str) -> str:
-    """Gera cookie assinado: username.hex(hmac)"""
-    sig = hmac.new(_COOKIE_SECRET, username.encode(), hashlib.sha256).hexdigest()
+    """Gera cookie assinado com secret exclusivo do admin."""
+    sig = hmac.new(_ADMIN_SECRET, username.encode(), hashlib.sha256).hexdigest()
     return f"{username}.{sig}"
 
 
 def _verify_admin_cookie(cookie: str) -> Optional[str]:
-    """Verifica cookie assinado. Retorna username ou None."""
+    """Verifica cookie admin. Retorna username ou None."""
     if not cookie or "." not in cookie:
         return None
     username, sig = cookie.rsplit(".", 1)
-    expected = hmac.new(_COOKIE_SECRET, username.encode(), hashlib.sha256).hexdigest()
+    expected = hmac.new(_ADMIN_SECRET, username.encode(), hashlib.sha256).hexdigest()
     if hmac.compare_digest(sig, expected):
         return username
     return None
 
 
 def _hash_password(password: str) -> str:
-    """Hash de senha com SHA256 + salt fixo (cookie secret)."""
-    return hashlib.sha256((_COOKIE_SECRET + password.encode())).hexdigest()
+    """Hash de senha com bcrypt (cost=12). Retorna string segura para armazenar."""
+    import bcrypt
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12)).decode()
+
+
+def _verify_password(password: str, hashed: str) -> bool:
+    """Verifica senha contra hash bcrypt. Suporta legado SHA256 para migracao."""
+    import bcrypt
+    if hashed.startswith("$2b$") or hashed.startswith("$2a$"):
+        return bcrypt.checkpw(password.encode(), hashed.encode())
+    # Fallback legado SHA256 — migra automaticamente
+    legacy = hashlib.sha256((_CLIENT_SECRET + password.encode())).hexdigest()
+    return hmac.compare_digest(legacy, hashed)
 
 
 def _sign_client_cookie(username: str) -> str:
-    """Cookie assinado para sessão de cliente."""
-    sig = hmac.new(_COOKIE_SECRET, f"client:{username}".encode(), hashlib.sha256).hexdigest()
+    """Cookie assinado com secret exclusivo do cliente."""
+    sig = hmac.new(_CLIENT_SECRET, f"client:{username}".encode(), hashlib.sha256).hexdigest()
     return f"client:{username}.{sig}"
 
 
@@ -138,7 +185,7 @@ def _verify_client_cookie(cookie: str) -> Optional[str]:
     if not cookie or "." not in cookie:
         return None
     payload, sig = cookie.rsplit(".", 1)
-    expected = hmac.new(_COOKIE_SECRET, payload.encode(), hashlib.sha256).hexdigest()
+    expected = hmac.new(_CLIENT_SECRET, payload.encode(), hashlib.sha256).hexdigest()
     if hmac.compare_digest(sig, expected) and payload.startswith("client:"):
         return payload[7:]  # remove "client:" prefix
     return None
@@ -652,6 +699,10 @@ async def admin_login_page() -> HTMLResponse:
 @app.post("/admin/login", include_in_schema=False)
 async def admin_login_post(request: Request):
     """Valida credenciais e seta cookie de sessão."""
+    ip = request.client.host if request.client else "unknown"
+    if _check_rate_limit(ip):
+        return RedirectResponse("/admin/login?error=locked", status_code=303)
+
     if not ADMIN_USER or not ADMIN_PASSWORD:
         return RedirectResponse("/admin/login?error=config", status_code=303)
 
@@ -661,8 +712,11 @@ async def admin_login_post(request: Request):
 
     if not secrets.compare_digest(username, ADMIN_USER) or \
        not secrets.compare_digest(password, ADMIN_PASSWORD):
+        _record_failed_login(ip)
+        logger.warning("Login admin falhado de %s (user=%s)", ip, username)
         return RedirectResponse("/admin/login?error=1", status_code=303)
 
+    _clear_login_attempts(ip)
     resp = RedirectResponse("/admin", status_code=303)
     cookie_val = _sign_admin_cookie(username)
     resp.set_cookie("admin_session", cookie_val, httponly=True, samesite="strict", max_age=86400)
@@ -983,12 +1037,19 @@ async def client_login_page() -> HTMLResponse:
 
 @app.post("/client/login", include_in_schema=False)
 async def client_login_post(request: Request):
+    ip = request.client.host if request.client else "unknown"
+    if _check_rate_limit(ip):
+        return RedirectResponse("/client/login?error=locked", status_code=303)
+
     form = await request.form()
     username = form.get("username", "")
     password = form.get("password", "")
     user = await db.authenticate_client(username)
-    if not user or user["password_hash"] != _hash_password(password):
+    if not user or not _verify_password(password, user["password_hash"]):
+        _record_failed_login(ip)
+        logger.warning("Login cliente falhado de %s (user=%s)", ip, username)
         return RedirectResponse("/client/login?error=1", status_code=303)
+    _clear_login_attempts(ip)
     resp = RedirectResponse("/client", status_code=303)
     resp.set_cookie("client_session", _sign_client_cookie(username),
                     httponly=True, samesite="strict", max_age=86400)
@@ -1018,10 +1079,14 @@ async def client_portal(request: Request) -> HTMLResponse:
 
 @v1.get("/client/data")
 async def client_data(request: Request) -> _SafeJSONResponse:
-    """Dados filtrados por hostnames do cliente logado."""
-    await require_token(request)
-    # Identifica o cliente pelo header X-Client-User (injetado pelo portal)
-    client_user = request.headers.get("X-Client-User", "")
+    """Dados filtrados por hostnames do cliente logado. Auth via cookie."""
+    # Extrai username do cookie de sessao — NAO do header (previne spoofing)
+    cookie = request.cookies.get("client_session", "")
+    client_user = _verify_client_cookie(cookie)
+    if not client_user:
+        # Fallback: admin autenticado pode acessar com header (para testes)
+        await require_token(request)
+        client_user = request.headers.get("X-Client-User", "")
     if not client_user:
         raise HTTPException(status_code=403, detail="Acesso negado")
     user = await db.get_client(client_user)

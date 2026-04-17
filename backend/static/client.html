@@ -178,7 +178,7 @@ function renderAlerts(data) {
 async function loadPortal() {
   try {
     chartDefaults();
-    const data = await apiFetch('/client/data', { headers: { 'X-Client-User': clientUser } });
+    const data = await apiFetch('/client/data');
     renderKPIs(data);
     renderLine('chartDns', groupBy(data.dns_history||[],'hostname'), 'latency_avg');
     renderLine('chartCpu', groupBy(data.cpu_history||[],'hostname'), 'cpu_avg');

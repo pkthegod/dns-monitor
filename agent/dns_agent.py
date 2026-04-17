@@ -1576,11 +1576,18 @@ def _start_nats(cfg: Config, logger: logging.Logger) -> bool:
 
         loop = asyncio.new_event_loop()
 
+        nats_user = cfg.get("nats", "user", fallback="").strip()
+        nats_pass = cfg.get("nats", "password", fallback="").strip()
+
         async def _run():
-            nc = await nats_lib.connect(
-                nats_url, name=f"dns-agent-{hostname}",
+            connect_opts = dict(
+                servers=nats_url, name=f"dns-agent-{hostname}",
                 reconnect_time_wait=5, max_reconnect_attempts=-1,
             )
+            if nats_user and nats_pass:
+                connect_opts["user"] = nats_user
+                connect_opts["password"] = nats_pass
+            nc = await nats_lib.connect(**connect_opts)
             js = nc.jetstream()
 
             async def _on_command(msg):

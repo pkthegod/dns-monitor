@@ -2490,18 +2490,18 @@ class TestClientPortal:
     def _run(self, coro):
         return asyncio.run(coro)
 
-    def test_hash_password_is_deterministic(self):
+    def test_hash_password_returns_bcrypt(self):
         import importlib, main as m
         importlib.reload(m)
-        h1 = m._hash_password("teste123")
-        h2 = m._hash_password("teste123")
-        assert h1 == h2
-        assert len(h1) == 64  # sha256 hex
+        h = m._hash_password("teste123")
+        assert h.startswith("$2b$12$")  # bcrypt cost 12
 
-    def test_hash_password_differs_for_different_inputs(self):
+    def test_verify_password_matches_bcrypt(self):
         import importlib, main as m
         importlib.reload(m)
-        assert m._hash_password("a") != m._hash_password("b")
+        h = m._hash_password("teste123")
+        assert m._verify_password("teste123", h) is True
+        assert m._verify_password("errado", h) is False
 
     def test_sign_verify_client_cookie_roundtrip(self):
         import importlib, main as m

@@ -64,6 +64,10 @@ services:
       THRESH_DNS_LATENCY_CRITICAL: ${THRESH_DNS_LATENCY_CRITICAL:-1000}
       THRESH_OFFLINE_MINUTES: ${THRESH_OFFLINE_MINUTES:-10}
       NATS_URL: nats://172.20.0.13:4222
+      NATS_USER: ${NATS_USER:-dnsmonitor}
+      NATS_PASS: ${NATS_PASS:-}
+      ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:-}
+      CLIENT_SESSION_SECRET: ${CLIENT_SESSION_SECRET:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -82,7 +86,8 @@ services:
     image: nats:latest
     container_name: dns_monitor_nats
     restart: unless-stopped
-    command: ["--jetstream", "--store_dir", "/data", "--name", "dns-monitor-nats"]
+    command: ["--jetstream", "--store_dir", "/data", "--name", "dns-monitor-nats",
+              "--user", "${NATS_USER:-dnsmonitor}", "--pass", "${NATS_PASS:-changeme}"]
     networks:
       dns_monitor_net:
         ipv4_address: 172.20.0.13

@@ -623,7 +623,14 @@ async def list_clients() -> list[dict]:
         return [dict(r) for r in rows]
 
 
+_CLIENT_ALLOWED_FIELDS = {"hostnames", "active", "password_hash", "notes"}
+
+
 async def update_client(client_id: int, **fields) -> bool:
+    # Whitelist — rejeita campos nao permitidos
+    invalid = set(fields.keys()) - _CLIENT_ALLOWED_FIELDS
+    if invalid:
+        raise ValueError(f"Campos nao permitidos: {invalid}")
     sets, vals, i = [], [], 1
     for k, v in fields.items():
         if v is not None:
