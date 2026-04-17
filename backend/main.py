@@ -250,7 +250,7 @@ from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(
     title="DNS Monitor — Backend",
-    version="0.7.2",
+    version="0.8.0",
     lifespan=lifespan,
 )
 
@@ -752,6 +752,25 @@ app.get("/client/login", response_class=HTMLResponse, include_in_schema=False)(c
 app.post("/client/login", include_in_schema=False)(client_login_post)
 app.get("/client/logout", include_in_schema=False)(client_logout)
 app.get("/client", response_class=HTMLResponse, include_in_schema=False)(client_portal)
+
+
+# ---------------------------------------------------------------------------
+# Paginas de ajuda (docs in-app)
+# ---------------------------------------------------------------------------
+
+@app.get("/client/help", response_class=HTMLResponse, include_in_schema=False)
+async def client_help_page() -> HTMLResponse:
+    html_path = pathlib.Path(__file__).parent / "static" / "client-help.html"
+    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+
+
+@app.get("/admin/help", response_class=HTMLResponse, include_in_schema=False)
+async def admin_help_page(request: Request) -> HTMLResponse:
+    cookie = request.cookies.get("admin_session", "")
+    if not _verify_admin_cookie(cookie):
+        return RedirectResponse("/admin/login", status_code=303)
+    html_path = pathlib.Path(__file__).parent / "static" / "admin-help.html"
+    return HTMLResponse(html_path.read_text(encoding="utf-8"))
 
 # ---------------------------------------------------------------------------
 # Registra routers versionados (DEVE ficar depois de todos os endpoints)

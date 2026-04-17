@@ -2,6 +2,48 @@
 
 ---
 
+## [v0.8.0] — 2026-04-17 — CRUD clientes, bulk actions, PDF, docs in-app
+
+### Novidades
+
+#### CRUD de clientes no painel admin
+- Secao "Clientes" com tabela completa (username, hostnames, status, notas)
+- Modal de criacao: username, senha, hostnames (separados por virgula), notas
+- Modal de edicao: alterar hostnames, notas, senha, ativar/desativar
+- Botao de remocao com confirmacao
+- Pills visuais para hostnames associados
+
+#### Bulk actions na tabela de agentes
+- Checkbox em cada agente + "Selecionar todos" no header
+- Botao "Sel. offline" — seleciona automaticamente todos os agentes offline
+- Acoes em lote: Restart, Update, Decommission
+- Confirmacao dupla para decommission
+- Barra de acoes aparece automaticamente quando ha selecao
+
+#### Relatorio PDF
+- Endpoint `/api/v1/client/report?format=pdf` gera PDF do relatorio mensal
+- Conteudo: disponibilidade, latencia (media/max/p95), alertas, downtime
+- Estilo Tokyo Night (cores do tema)
+- Download automatico com nome `dns-report-YYYY-MM.pdf`
+- Dependencia: reportlab adicionada ao requirements.txt
+
+#### Docs in-app
+- `/client/help` — Guia do portal do cliente: como ler graficos, testar DNS, FAQ
+- `/admin/help` — Guia do admin: adicionar agente, criar cliente, comandos, troubleshooting, exemplos curl
+- Links "Ajuda" adicionados no header do admin e portal do cliente
+
+### Correcoes
+
+- Campo Bearer token removido do admin e dashboard (100% via sessao)
+- SyntaxError no admin (catch orfao em renderAgentRows)
+- Cache bust em CSS/JS (?v=072) — previne browser servir versao antiga
+
+### Testes
+
+- 165 passed, 2 skipped (sem regressao)
+
+---
+
 ## [v0.7.2] — 2026-04-17 — Extracao de modulos (main.py -44%)
 
 ### Refatoracao

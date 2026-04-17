@@ -67,6 +67,7 @@ body { padding: 20px 24px 40px; font-size: 13px; }
 .pill-expired  { background: var(--bg-card); color: var(--text-dim); border: 1px solid var(--border); }
 .pill-client-active   { background: #0d2318; color: var(--green);  border: 1px solid #1a4a30; }
 .pill-client-inactive { background: #261508; color: var(--orange); border: 1px solid #5a2e10; }
+.pill-host { background: var(--bg-card); color: var(--accent); border: 1px solid var(--border); font-size: .65rem; padding: 1px 6px; }
 
 /* ── Admin buttons ── */
 .btn-sm {
