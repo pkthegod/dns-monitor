@@ -681,3 +681,100 @@ async def audit(actor: str, action: str, target: str = None,
             )
     except Exception as exc:
         logger.warning("Audit log falhou: %s", exc)
+
+
+# ===========================================================================
+# Dashboard / Client — queries de metricas agregadas
+# ===========================================================================
+
+_VALID_PERIODS = {"1h": "1 hour", "6h": "6 hours", "24h": "24 hours", "7d": "7 days"}
+_BUCKET_MAP    = {"1h": "5 minutes", "6h": "30 minutes", "24h": "1 hour", "7d": "6 hours"}
+
+
+async def get_aggregated_metrics(
+    period: str = "24h",
+    hostnames: list[str] | None = None,
+) -> dict:
+    """
+    Retorna metricas agregadas para dashboard admin ou portal do cliente.
+    Se hostnames fornecido, filtra por esses hosts (portal do cliente).
+    Se None, retorna todos (dashboard admin), com suporte a filtro por host unico.
+    """
+    interval = _VALID_PERIODS.get(period, "24 hours")
+    bucket   = _BUCKET_MAP.get(period, "1 hour")
+
+    # Monta filtro de hostnames (parameterized — sem f-string SQL)
+    if hostnames:
+        placeholders = ", ".join(f"${i+1}" for i in range(len(hostnames)))
+        host_filter = f" AND hostname IN ({placeholders})"
+        host_params = list(hostnames)
+    else:
+        host_filter = ""
+        host_params = []
+
+    async with get_conn() as conn:
+        # Agentes — lista completa ou filtrada
+        if hostnames:
+            agents = [dict(r) for r in await conn.fetch(
+                f"SELECT * FROM v_agent_current_status WHERE hostname IN ({placeholders}) ORDER BY hostname",
+                *host_params)]
+        else:
+            agents = [dict(r) for r in await conn.fetch(
+                "SELECT * FROM v_agent_current_status ORDER BY hostname")]
+
+        dns_latency = [dict(r) for r in await conn.fetch(f"""
+            SELECT domain,
+                   ROUND(AVG(latency_ms)::numeric, 1) AS avg_ms,
+                   ROUND(MAX(latency_ms)::numeric, 1) AS max_ms,
+                   COUNT(*) AS checks,
+                   SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failures
+            FROM dns_checks
+            WHERE ts > NOW() - INTERVAL '{interval}' AND latency_ms IS NOT NULL{host_filter}
+            GROUP BY domain ORDER BY avg_ms DESC LIMIT 10
+        """, *host_params)]
+
+        cpu_history = [dict(r) for r in await conn.fetch(f"""
+            SELECT hostname,
+                   time_bucket('{bucket}', ts) AS bucket,
+                   ROUND(AVG(cpu_percent)::numeric, 1) AS cpu_avg
+            FROM metrics_cpu
+            WHERE ts > NOW() - INTERVAL '{interval}'{host_filter}
+            GROUP BY hostname, bucket ORDER BY bucket
+        """, *host_params)]
+
+        ram_history = [dict(r) for r in await conn.fetch(f"""
+            SELECT hostname,
+                   time_bucket('{bucket}', ts) AS bucket,
+                   ROUND(AVG(ram_percent)::numeric, 1) AS ram_avg
+            FROM metrics_ram
+            WHERE ts > NOW() - INTERVAL '{interval}'{host_filter}
+            GROUP BY hostname, bucket ORDER BY bucket
+        """, *host_params)]
+
+        dns_history = [dict(r) for r in await conn.fetch(f"""
+            SELECT hostname,
+                   time_bucket('{bucket}', ts) AS bucket,
+                   ROUND(AVG(latency_ms)::numeric, 1) AS latency_avg,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failures
+            FROM dns_checks
+            WHERE ts > NOW() - INTERVAL '{interval}'{host_filter}
+            GROUP BY hostname, bucket ORDER BY bucket
+        """, *host_params)]
+
+        alert_limit = 20 if hostnames else 30
+        recent_alerts = [dict(r) for r in await conn.fetch(f"""
+            SELECT hostname, alert_type, severity, message, ts
+            FROM alerts_log
+            WHERE ts > NOW() - INTERVAL '{interval}'{host_filter}
+            ORDER BY ts DESC LIMIT {alert_limit}
+        """, *host_params)]
+
+    return {
+        "agents": agents,
+        "dns_latency": dns_latency,
+        "cpu_history": cpu_history,
+        "ram_history": ram_history,
+        "dns_history": dns_history,
+        "recent_alerts": recent_alerts,
+    }

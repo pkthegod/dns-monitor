@@ -2,6 +2,48 @@
 
 ---
 
+## [v0.7.2] — 2026-04-17 — Extracao de modulos (main.py -44%)
+
+### Refatoracao
+
+#### main.py dividido em modulos
+- `models.py` (80 linhas): todos os modelos Pydantic (AgentPayload, SystemModel, etc.)
+- `auth.py` (154 linhas): autenticacao Bearer, cookies HMAC, rate limiting, password hashing
+- `routes_client.py` (291 linhas): portal do cliente, CRUD clientes, dns-test, report, client data
+- `main.py`: 1348 → 760 linhas (-44%)
+- Re-exporta todos os simbolos para compatibilidade total com testes existentes
+- Reload cascata: `importlib.reload(main)` recarrega auth/models/routes automaticamente
+
+### Testes
+
+- 165 passed, 2 skipped (zero regressao)
+
+---
+
+## [v0.7.1] — 2026-04-17 — Refactor: queries unificadas, deprecations, rate limiter
+
+### Refatoracao
+
+#### Queries duplicadas eliminadas
+- `dashboard_data` e `client_data` tinham 5 queries SQL quase identicas (CPU, RAM, DNS latency, DNS history, alerts)
+- Extraidas para `db.get_aggregated_metrics(period, hostnames=None)` — funcao unica com filtro opcional por hostnames
+- `main.py`: -70 linhas de SQL duplicado
+- Mesma funcao serve dashboard admin (sem filtro) e portal do cliente (com hostnames)
+
+#### asyncio.get_event_loop() → get_running_loop()
+- `main.py` endpoint `/tools/geolocate` usava `get_event_loop()` — deprecated no Python 3.12+, removido no 3.14
+- Corrigido para `get_running_loop()` (seguro em contexto async)
+
+#### Rate limiter dedicado para acoes com cooldown
+- `client_dns_test` reutilizava `_record_failed_login` como rate limiter generico — poluia auditoria de login
+- Novo rate limiter: `_check_cooldown(key, seconds)` + `_record_action(key)` — semantica clara, separado de login
+
+### Testes
+
+- 165 passed, 2 skipped (sem regressao)
+
+---
+
 ## [v0.6.1] — 2026-04-17 — Grafana removido, zoom temporal, hardening A+
 
 ### Mudancas
