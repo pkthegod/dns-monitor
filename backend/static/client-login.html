@@ -56,13 +56,19 @@
 <script src="/static/app.js"></script>
 <script>
   const params = new URLSearchParams(location.search);
-  if (params.get('error')) {
+  const errorType = params.get('error');
+  if (errorType) {
+    const msgs = {
+      '1':      { title: 'Credenciais invalidas', msg: 'Usuario ou senha incorretos.' },
+      'locked': { title: 'Acesso bloqueado', msg: 'Muitas tentativas falhadas. Aguarde 15 minutos.' },
+    };
+    const err = msgs[errorType] || { title: 'Erro', msg: 'Erro ao fazer login.' };
     document.getElementById('error-box').innerHTML = `
       <div class="login-error">
         <span class="login-error-icon">${ICONS.error}</span>
         <div class="login-error-body">
-          <div class="login-error-title">Credenciais invalidas</div>
-          <div class="login-error-msg">Usuario ou senha incorretos.</div>
+          <div class="login-error-title">${esc(err.title)}</div>
+          <div class="login-error-msg">${esc(err.msg)}</div>
         </div>
       </div>`;
     document.getElementById('password').focus();

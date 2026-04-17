@@ -73,6 +73,7 @@
     const box = document.getElementById('error-box');
     const errors = {
       '1':      { title: 'Credenciais invalidas', msg: 'Usuario ou senha incorretos. Verifique e tente novamente.' },
+      'locked': { title: 'Acesso bloqueado', msg: 'Muitas tentativas falhadas. Aguarde 15 minutos.' },
       'config': { title: 'Admin nao configurado', msg: 'As variaveis ADMIN_USER e ADMIN_PASSWORD nao estao definidas no servidor.' },
     };
     const err = errors[errorType] || { title: 'Erro', msg: 'Ocorreu um erro ao fazer login.' };

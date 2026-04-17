@@ -72,6 +72,9 @@ dns_latency_critical = 1000
 enabled = false
 # URL do servidor NATS
 url = "nats://172.20.0.13:4222"
+# Credenciais NATS (deixe vazio se sem auth)
+user = ""
+password = ""
 
 [logging]
 # Nivel: DEBUG, INFO, WARNING, ERROR
