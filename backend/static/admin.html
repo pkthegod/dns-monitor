@@ -676,9 +676,6 @@
           </td>
         </tr>`;
       }).join('');
-    } catch (e) {
-      tbody.innerHTML = `<tr><td colspan="11"><div class="inline-msg inline-error fade-in"><span class="inline-msg-icon">${ICONS.error}</span><div><strong>Erro ao carregar agentes</strong><p>${esc(e.message)}</p></div></div></td></tr>`;
-    }
   }
 
   // ── Load history ───────────────────────────────────────────────────────────
