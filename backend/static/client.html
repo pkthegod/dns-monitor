@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DNS Monitor — Portal do Cliente</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/base.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  .page { max-width: 1400px; margin: 0 auto; padding: 28px 36px 48px; }
+  .header { padding-bottom: 16px; border-bottom: 1px solid var(--border-lo); margin-bottom: 28px; }
+  .header h1 span { font-weight: 300; }
+  .user-badge { font-size: 12px; color: var(--teal); font-family: var(--font-mono); background: var(--bg-subtle); padding: 4px 12px; border-radius: 6px; border: 1px solid var(--border); }
+
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 28px; }
+  .kpi {
+    background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg);
+    padding: 20px 16px; position: relative; overflow: hidden;
+    transition: border-color var(--transition), transform .15s;
+  }
+  .kpi:hover { border-color: var(--border-hi); transform: translateY(-1px); }
+  .kpi::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
+  .kpi.green::before { background: var(--green); }
+  .kpi.teal::before { background: var(--teal); }
+  .kpi.purple::before { background: var(--purple); }
+  .kpi.yellow::before { background: var(--yellow); }
+  .kpi .label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .08em; font-weight: 500; margin-bottom: 8px; }
+  .kpi .value { font-size: 1.75rem; font-weight: 700; font-family: var(--font-mono); line-height: 1; }
+  .kpi.green .value { color: var(--green); }
+  .kpi.teal .value { color: var(--teal); }
+  .kpi.purple .value { color: var(--purple); }
+  .kpi.yellow .value { color: var(--yellow); }
+
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 28px; }
+  .chart-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 20px 22px; }
+  .chart-card h3 { font-size: 12px; font-weight: 500; color: var(--text-mid); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+  .chart-card h3 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+  .chart-card canvas { width: 100% !important; max-height: 280px; }
+
+  .alerts-section { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 20px 22px; margin-bottom: 28px; }
+  .alerts-section h3 { font-size: 12px; font-weight: 500; color: var(--text-mid); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 14px; }
+  .ts-cell { font-family: var(--font-mono); font-size: 12px; color: var(--text-dim); white-space: nowrap; }
+
+  @media (max-width: 960px) { .charts { grid-template-columns: 1fr; } .kpis { grid-template-columns: repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="header fade-in">
+    <img src="/static/logo.svg" alt="" style="height:28px;opacity:.85">
+    <h1>DNS Monitor <span>/ Portal</span></h1>
+    <span class="user-badge" id="userBadge"></span>
+    <a href="/client/logout" class="btn btn-ghost" style="margin-left:auto">Sair</a>
+  </div>
+
+  <div class="kpis" id="kpiContainer">
+    <div class="kpi green"><div class="label">Status</div><div class="value" id="kpiStatus">--</div></div>
+    <div class="kpi teal"><div class="label">DNS Latencia Avg</div><div class="value" id="kpiLatency">--</div></div>
+    <div class="kpi purple"><div class="label">CPU</div><div class="value" id="kpiCpu">--</div></div>
+    <div class="kpi yellow"><div class="label">RAM</div><div class="value" id="kpiRam">--</div></div>
+  </div>
+
+  <div class="charts" id="chartsContainer">
+    <div class="chart-card">
+      <h3><span class="dot" style="background:var(--teal)"></span> DNS Latencia (24h)</h3>
+      <canvas id="chartDns"></canvas>
+    </div>
+    <div class="chart-card">
+      <h3><span class="dot" style="background:var(--purple)"></span> CPU (24h)</h3>
+      <canvas id="chartCpu"></canvas>
+    </div>
+    <div class="chart-card">
+      <h3><span class="dot" style="background:var(--green)"></span> RAM (24h)</h3>
+      <canvas id="chartRam"></canvas>
+    </div>
+    <div class="chart-card">
+      <h3><span class="dot" style="background:var(--blue)"></span> DNS por Dominio</h3>
+      <canvas id="chartDomains"></canvas>
+    </div>
+  </div>
+
+  <div class="alerts-section">
+    <h3>Alertas Recentes — 24h</h3>
+    <table class="table">
+      <thead><tr><th>Hora</th><th>Host</th><th>Tipo</th><th>Severidade</th><th>Mensagem</th></tr></thead>
+      <tbody id="alertsBody"><tr><td colspan="5" class="dim">Carregando...</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="footer">auto-refresh a cada 60s</div>
+</div>
+
+<script src="/static/app.js"></script>
+<script>
+const COLORS = ['#7aa2f7','#9ece6a','#e0af68','#ff9e64','#f7768e','#bb9af7','#73daca','#7dcfff'];
+let charts = {};
+let refreshTimer = null;
+const clientUser = window.__CLIENT__ || '';
+
+document.getElementById('userBadge').textContent = clientUser;
+
+function chartDefaults() {
+  Chart.defaults.color = '#6a7ba0';
+  Chart.defaults.borderColor = '#1c203822';
+  Chart.defaults.font.family = "'Inter', sans-serif";
+  Chart.defaults.font.size = 11;
+}
+
+function mk(id, cfg) { if (charts[id]) charts[id].destroy(); charts[id] = new Chart(document.getElementById(id), cfg); }
+function groupBy(arr, key) { const m = {}; arr.forEach(r => { (m[r[key]] = m[r[key]] || []).push(r); }); return m; }
+
+function renderKPIs(data) {
+  const ag = data.agents || [];
+  const online = ag.filter(a => a.agent_status === 'online').length;
+  const total = ag.length;
+  document.getElementById('kpiStatus').textContent = online + '/' + total + (online === total ? ' OK' : '');
+  document.getElementById('kpiStatus').style.color = online === total ? 'var(--green)' : 'var(--red)';
+
+  const cpus = ag.map(a => a.cpu_percent).filter(v => v != null);
+  document.getElementById('kpiCpu').textContent = cpus.length ? (cpus.reduce((a,b)=>a+b,0)/cpus.length).toFixed(1)+'%' : '--';
+
+  const rams = ag.map(a => a.ram_percent).filter(v => v != null);
+  document.getElementById('kpiRam').textContent = rams.length ? (rams.reduce((a,b)=>a+b,0)/rams.length).toFixed(1)+'%' : '--';
+
+  const lats = (data.dns_latency||[]).map(d=>d.avg_ms).filter(v=>v!=null);
+  document.getElementById('kpiLatency').textContent = lats.length ? (lats.reduce((a,b)=>a+b,0)/lats.length).toFixed(1)+'ms' : '--';
+
+  animateChildren('#kpiContainer', 'fade-in');
+}
+
+function renderLine(id, grouped, valKey) {
+  const ds = Object.keys(grouped).map((h,i) => ({
+    label: h, data: grouped[h].map(r => ({x:r.bucket, y:r[valKey]})),
+    borderColor: COLORS[i%COLORS.length], backgroundColor: COLORS[i%COLORS.length]+'18',
+    borderWidth: 2, tension: .4, pointRadius: 0, pointHoverRadius: 4, fill: true,
+  }));
+  mk(id, { type:'line', data:{datasets:ds}, options:{
+    responsive:true, maintainAspectRatio:false, interaction:{mode:'index',intersect:false},
+    plugins:{legend:{position:'top',labels:{boxWidth:10,padding:16}},
+      tooltip:{backgroundColor:'#12151eee',borderColor:'#1c2038',borderWidth:1,padding:10,cornerRadius:6,
+        titleFont:{family:"'JetBrains Mono'"},bodyFont:{family:"'JetBrains Mono'"}}},
+    scales:{
+      x:{type:'time',time:{unit:'hour',displayFormats:{hour:'HH:mm'},tooltipFormat:'dd/MM HH:mm'},
+        grid:{color:'#1c203822'},ticks:{maxTicksLimit:12,font:{family:"'JetBrains Mono'"}}},
+      y:{beginAtZero:true,grid:{color:'#1c203833'},ticks:{font:{family:"'JetBrains Mono'"}}}}
+  }});
+}
+
+function renderDomains(data) {
+  const rows = (data.dns_latency||[]).sort((a,b) => b.avg_ms - a.avg_ms);
+  mk('chartDomains', { type:'bar', data:{
+    labels: rows.map(r=>r.domain),
+    datasets:[
+      {label:'Avg (ms)',data:rows.map(r=>r.avg_ms),backgroundColor:'#7aa2f744',borderColor:'#7aa2f7',borderWidth:1.5,borderRadius:3},
+      {label:'Max (ms)',data:rows.map(r=>r.max_ms),backgroundColor:'#f7768e22',borderColor:'#f7768e88',borderWidth:1,borderRadius:3},
+    ]}, options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{position:'top',labels:{boxWidth:10,padding:16}}},
+      scales:{x:{beginAtZero:true,grid:{color:'#1c203833'}},y:{grid:{display:false}}}}
+  });
+}
+
+function renderAlerts(data) {
+  const alerts = data.recent_alerts || [];
+  const tbody = document.getElementById('alertsBody');
+  if (!alerts.length) { tbody.innerHTML = '<tr><td colspan="5" class="dim">Nenhum alerta nas ultimas 24h.</td></tr>'; return; }
+  tbody.innerHTML = alerts.map(a => `<tr>
+    <td class="ts-cell">${fmtTime(a.ts)}</td><td>${esc(a.hostname)}</td>
+    <td><span class="badge">${esc(a.alert_type)}</span></td>
+    <td class="sev-${a.severity}">${a.severity}</td>
+    <td class="mid">${esc(a.message||'')}</td></tr>`).join('');
+}
+
+async function loadPortal() {
+  try {
+    chartDefaults();
+    const data = await apiFetch('/client/data', { headers: { 'X-Client-User': clientUser } });
+    renderKPIs(data);
+    renderLine('chartDns', groupBy(data.dns_history||[],'hostname'), 'latency_avg');
+    renderLine('chartCpu', groupBy(data.cpu_history||[],'hostname'), 'cpu_avg');
+    renderLine('chartRam', groupBy(data.ram_history||[],'hostname'), 'ram_avg');
+    renderDomains(data);
+    renderAlerts(data);
+    animateChildren('#chartsContainer', 'slide-up');
+    if (refreshTimer) clearInterval(refreshTimer);
+    refreshTimer = setInterval(loadPortal, 60000);
+  } catch (e) {
+    toast.err(e.message);
+  }
+}
+
+// Chart.js time adapter
+(function(){
+  const pad = n => String(n).padStart(2,'0');
+  Chart._adapters._date.override({
+    formats:()=>({}), parse:v=>new Date(v),
+    format:(d,f)=>{const t=new Date(d);if(f==='HH:mm')return pad(t.getHours())+':'+pad(t.getMinutes());if(f==='dd/MM HH:mm')return pad(t.getDate())+'/'+pad(t.getMonth()+1)+' '+pad(t.getHours())+':'+pad(t.getMinutes());return t.toLocaleString('pt-BR');},
+    startOf:(d,u)=>{const t=new Date(d);if(u==='hour')t.setMinutes(0,0,0);else if(u==='day')t.setHours(0,0,0,0);return t;},
+    add:(d,n,u)=>{const t=new Date(d);if(u==='hour')t.setHours(t.getHours()+n);else if(u==='day')t.setDate(t.getDate()+n);else if(u==='minute')t.setMinutes(t.getMinutes()+n);return t;},
+    diff:(a,b,u)=>{const ms=new Date(a)-new Date(b);return u==='hour'?ms/36e5:u==='day'?ms/864e5:u==='minute'?ms/6e4:ms;}
+  });
+})();
+
+loadPortal();
+</script>
+</body>
+</html>

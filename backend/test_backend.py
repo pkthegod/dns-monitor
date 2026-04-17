@@ -2481,6 +2481,108 @@ class TestEmbeddedToken:
 
 
 # ===========================================================================
+# Client Portal — Feature 010 Fases 2-3
+# ===========================================================================
+
+class TestClientPortal:
+    """Testa autenticacao de clientes, CRUD, e portal."""
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def test_hash_password_is_deterministic(self):
+        import importlib, main as m
+        importlib.reload(m)
+        h1 = m._hash_password("teste123")
+        h2 = m._hash_password("teste123")
+        assert h1 == h2
+        assert len(h1) == 64  # sha256 hex
+
+    def test_hash_password_differs_for_different_inputs(self):
+        import importlib, main as m
+        importlib.reload(m)
+        assert m._hash_password("a") != m._hash_password("b")
+
+    def test_sign_verify_client_cookie_roundtrip(self):
+        import importlib, main as m
+        importlib.reload(m)
+        cookie = m._sign_client_cookie("cliente1")
+        assert m._verify_client_cookie(cookie) == "cliente1"
+
+    def test_verify_client_cookie_rejects_admin_cookie(self):
+        import importlib, main as m
+        importlib.reload(m)
+        admin_cookie = m._sign_admin_cookie("admin")
+        assert m._verify_client_cookie(admin_cookie) is None
+
+    def test_verify_client_cookie_rejects_garbage(self):
+        import importlib, main as m
+        importlib.reload(m)
+        assert m._verify_client_cookie("garbage") is None
+        assert m._verify_client_cookie("") is None
+
+    def test_client_login_page_returns_html(self):
+        import main as m
+        resp = self._run(m.client_login_page())
+        assert resp.status_code == 200
+        assert "Portal do Cliente" in resp.body.decode()
+
+    def test_client_portal_redirects_without_cookie(self):
+        import importlib, main as m
+        importlib.reload(m)
+
+        async def run():
+            request = MagicMock()
+            request.cookies = {}
+            return await m.client_portal(request)
+
+        resp = self._run(run())
+        assert resp.status_code == 303
+        assert "/client/login" in resp.headers.get("location", "")
+
+    def test_client_portal_serves_html_with_valid_cookie(self):
+        import importlib, main as m
+        importlib.reload(m)
+
+        async def run():
+            request = MagicMock()
+            cookie = m._sign_client_cookie("cliente1")
+            request.cookies = {"client_session": cookie}
+            return await m.client_portal(request)
+
+        resp = self._run(run())
+        assert resp.status_code == 200
+        body = resp.body.decode()
+        assert "window.__CLIENT__" in body
+        assert "cliente1" in body
+
+    def test_client_data_requires_client_header(self):
+        """Endpoint /client/data sem X-Client-User deve retornar 403."""
+        import importlib, main as m
+
+        with patch.dict(os.environ, {"AGENT_TOKEN": "tok"}):
+            importlib.reload(m)
+
+            async def run():
+                request = MagicMock()
+                request.headers = {"Authorization": "Bearer tok"}
+                return await m.client_data(request)
+
+            with pytest.raises(Exception) as exc_info:
+                self._run(run())
+            assert "403" in str(exc_info.value) or "Acesso negado" in str(exc_info.value)
+
+    def test_create_client_endpoint_routes_exist(self):
+        import importlib, main as m
+        importlib.reload(m)
+        routes = {r.path for r in m.app.routes if hasattr(r, 'path')}
+        assert "/api/v1/clients" in routes
+        assert "/client" in routes
+        assert "/client/login" in routes
+        assert "/client/logout" in routes
+
+
+# ===========================================================================
 # Entry point
 # ===========================================================================
 

@@ -406,3 +406,17 @@ SELECT add_continuous_aggregate_policy('dns_checks_1h',
     end_offset   => INTERVAL '1 hour',
     schedule_interval => INTERVAL '1 hour',
     if_not_exists => TRUE);
+
+
+-- ===========================================================================
+-- 9. USUARIOS CLIENTES (portal read-only por hostname)
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS client_users (
+    id            SERIAL       PRIMARY KEY,
+    username      TEXT         NOT NULL UNIQUE,
+    password_hash TEXT         NOT NULL,
+    hostnames     TEXT[]       NOT NULL DEFAULT '{}',
+    created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    active        BOOLEAN      NOT NULL DEFAULT TRUE,
+    notes         TEXT
+);
