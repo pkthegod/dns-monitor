@@ -418,7 +418,7 @@ from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(
     title="DNS Monitor — Backend",
-    version="0.6.1",
+    version="0.7.0",
     lifespan=lifespan,
 )
 
@@ -1122,6 +1122,131 @@ async def client_logout():
     resp = RedirectResponse("/client/login", status_code=303)
     resp.delete_cookie("client_session")
     return resp
+
+
+@v1.post("/client/dns-test")
+async def client_dns_test(request: Request) -> JSONResponse:
+    """Teste DNS sob demanda — cliente clica 'Testar meu DNS'. Rate: 1/min."""
+    cookie = request.cookies.get("client_session", "")
+    client_user = _verify_client_cookie(cookie)
+    if not client_user:
+        raise HTTPException(status_code=403, detail="Acesso negado")
+    user = await db.get_client(client_user)
+    if not user or not user["active"]:
+        raise HTTPException(status_code=403)
+
+    # Rate limit: 1 teste por minuto por cliente
+    ip = request.client.host if request.client else "unknown"
+    rate_key = f"dnstest:{client_user}"
+    if _check_rate_limit(rate_key):
+        return JSONResponse({"error": "Aguarde 1 minuto entre testes"}, status_code=429)
+
+    hostnames = user["hostnames"]
+    if not hostnames:
+        return JSONResponse({"error": "Nenhum host associado"}, status_code=404)
+
+    # Envia comando run_script dig_test pro primeiro host do cliente
+    hostname = hostnames[0]
+    try:
+        cmd_id = await db.insert_command(hostname, "run_script", "client:" + client_user, None, 1, "dig_test")
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
+
+    # Publica via NATS pra entrega rapida
+    if nc and nc.is_connected():
+        await nc.js_publish(f"dns.commands.{hostname}", {
+            "id": cmd_id, "command": "run_script", "params": "dig_test",
+        })
+
+    _record_failed_login(rate_key)  # reutiliza rate limiter (1 attempt = blocked next call)
+    await db.audit("client:" + client_user, "dns_test", hostname, ip=ip)
+    return JSONResponse({"id": cmd_id, "hostname": hostname, "status": "testing"})
+
+
+@v1.get("/client/report")
+async def client_report(request: Request, month: str = "") -> _SafeJSONResponse:
+    """Relatorio mensal — uptime, latencia, alertas, comparativo."""
+    cookie = request.cookies.get("client_session", "")
+    client_user = _verify_client_cookie(cookie)
+    if not client_user:
+        raise HTTPException(status_code=403, detail="Acesso negado")
+    user = await db.get_client(client_user)
+    if not user or not user["active"]:
+        raise HTTPException(status_code=403)
+
+    hostnames = user["hostnames"]
+    if not hostnames:
+        return _SafeJSONResponse({"error": "Nenhum host associado"})
+
+    # Determina periodo
+    from datetime import datetime as _dt, timedelta as _td
+    if month and _re.match(r'^\d{4}-\d{2}$', month):
+        year, mon = map(int, month.split("-"))
+        start = _dt(year, mon, 1)
+        if mon == 12:
+            end = _dt(year + 1, 1, 1)
+        else:
+            end = _dt(year, mon + 1, 1)
+    else:
+        now = _dt.now()
+        start = _dt(now.year, now.month, 1)
+        end = now
+
+    placeholders = ", ".join(f"${i+1}" for i in range(len(hostnames)))
+    p_start = f"${len(hostnames)+1}"
+    p_end = f"${len(hostnames)+2}"
+    params = [*hostnames, start, end]
+
+    async with db.get_conn() as conn:
+        # Heartbeats no periodo (pra calcular uptime)
+        hb_count = await conn.fetchval(f"""
+            SELECT COUNT(*) FROM agent_heartbeats
+            WHERE hostname IN ({placeholders}) AND ts BETWEEN {p_start} AND {p_end}
+        """, *params)
+
+        # Heartbeats esperados (1 a cada 5min)
+        total_minutes = (end - start).total_seconds() / 60
+        expected_hb = int(total_minutes / 5) * len(hostnames)
+        uptime_pct = round((hb_count / max(expected_hb, 1)) * 100, 2)
+
+        # Latencia media/max/p95
+        lat_stats = await conn.fetchrow(f"""
+            SELECT ROUND(AVG(latency_ms)::numeric, 1) AS avg_ms,
+                   ROUND(MAX(latency_ms)::numeric, 1) AS max_ms,
+                   ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms)::numeric, 1) AS p95_ms,
+                   COUNT(*) AS total_checks,
+                   SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failures
+            FROM dns_checks
+            WHERE hostname IN ({placeholders}) AND ts BETWEEN {p_start} AND {p_end}
+                  AND latency_ms IS NOT NULL
+        """, *params) or {}
+
+        # Alertas no periodo
+        alerts = await conn.fetchval(f"""
+            SELECT COUNT(*) FROM alerts_log
+            WHERE hostname IN ({placeholders}) AND ts BETWEEN {p_start} AND {p_end}
+        """, *params)
+
+        # Alertas criticos
+        critical = await conn.fetchval(f"""
+            SELECT COUNT(*) FROM alerts_log
+            WHERE hostname IN ({placeholders}) AND ts BETWEEN {p_start} AND {p_end}
+                  AND severity = 'critical'
+        """, *params)
+
+    downtime_min = round(total_minutes * (1 - uptime_pct / 100))
+
+    return _SafeJSONResponse({
+        "period": {"start": start.isoformat(), "end": end.isoformat()},
+        "hostnames": hostnames,
+        "uptime_pct": uptime_pct,
+        "downtime_minutes": downtime_min,
+        "latency": dict(lat_stats) if lat_stats else {},
+        "alerts_total": alerts,
+        "alerts_critical": critical,
+        "heartbeats": hb_count,
+        "expected_heartbeats": expected_hb,
+    })
 
 
 @app.get("/client", response_class=HTMLResponse, include_in_schema=False)
