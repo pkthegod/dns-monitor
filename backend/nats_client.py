@@ -26,7 +26,7 @@ STREAMS = {
         name="COMMANDS",
         subjects=["dns.commands.*", "dns.commands.*.ack"],
         retention=RetentionPolicy.WORK_QUEUE,
-        max_age=7 * 24 * 3600 * 10**9,  # 7 dias em nanosegundos
+        max_age=7 * 24 * 3600,  # 7 dias em segundos
     ),
 }
 
