@@ -1409,6 +1409,98 @@ def setup_schedule(cfg: Config, logger: logging.Logger) -> None:
 
 
 # ---------------------------------------------------------------------------
+# NATS — conexao e subscribe de comandos (opcional)
+# ---------------------------------------------------------------------------
+
+_nats_connected = False
+
+def _start_nats(cfg: Config, logger: logging.Logger) -> bool:
+    """Conecta ao NATS e subscreve em comandos. Retorna True se sucesso."""
+    global _nats_connected
+    if not cfg.getboolean("nats", "enabled", fallback=False):
+        logger.info("NATS desabilitado — usando HTTP polling")
+        return False
+
+    try:
+        import asyncio
+        import nats as nats_lib
+
+        nats_url  = cfg.get("nats", "url", fallback="nats://localhost:4222")
+        hostname  = cfg.get("agent", "hostname", fallback=socket.gethostname())
+        token     = cfg.get("agent", "auth_token")
+        backend_url = cfg.get("backend", "url").rstrip("/")
+        timeout_s = cfg.getint("backend", "timeout", fallback=10)
+
+        loop = asyncio.new_event_loop()
+
+        async def _run():
+            nc = await nats_lib.connect(
+                nats_url, name=f"dns-agent-{hostname}",
+                reconnect_time_wait=5, max_reconnect_attempts=-1,
+            )
+            js = nc.jetstream()
+
+            async def _on_command(msg):
+                """Callback para comandos recebidos via NATS."""
+                try:
+                    data = __import__("json").loads(msg.data.decode())
+                    cmd_id  = data.get("id")
+                    command = data.get("command", "")
+                    confirm = data.get("confirm_token")
+                    params  = data.get("params")
+
+                    logger.warning("NATS: comando recebido id=%s: %s", cmd_id, command)
+                    status, result = _execute_command(command, confirm, cfg, logger, params)
+
+                    # ACK via NATS
+                    await js.publish(
+                        f"dns.commands.{hostname}.ack",
+                        __import__("json").dumps({
+                            "command_id": cmd_id, "status": status, "result": result,
+                        }).encode(),
+                    )
+
+                    # Tambem reporta via HTTP (redundancia)
+                    try:
+                        requests.post(
+                            f"{backend_url}/api/v1/commands/{cmd_id}/result",
+                            json={"status": status, "result": result},
+                            headers={"Authorization": f"Bearer {token}"},
+                            timeout=timeout_s,
+                        )
+                    except Exception:
+                        pass  # NATS ACK ja chegou
+
+                    await msg.ack()
+                except Exception as exc:
+                    logger.error("NATS command handler erro: %s", exc)
+
+            await js.subscribe(
+                f"dns.commands.{hostname}",
+                durable=f"agent-{hostname}",
+                cb=_on_command,
+            )
+            logger.info("NATS conectado: %s (subscribe: dns.commands.%s)", nats_url, hostname)
+            return nc, loop
+
+        nc, _ = loop.run_until_complete(_run())
+
+        # Roda o event loop NATS numa thread separada
+        import threading
+        def _nats_loop():
+            loop.run_forever()
+        t = threading.Thread(target=_nats_loop, daemon=True, name="nats-listener")
+        t.start()
+        _nats_connected = True
+        return True
+
+    except Exception as exc:
+        logger.warning("NATS falhou (%s) — fallback HTTP polling", exc)
+        _nats_connected = False
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
 
@@ -1426,13 +1518,17 @@ def main() -> None:
     # Roda um ciclo completo imediatamente na inicialização
     run_full_check(cfg, logger)
 
-    # Verifica comandos pendentes imediatamente (captura comandos emitidos durante downtime)
+    # Conecta NATS (opcional)
+    nats_ok = _start_nats(cfg, logger)
+
+    # Verifica comandos pendentes via HTTP (captura comandos emitidos durante downtime)
     poll_commands(cfg, logger)
 
-    # Configura agenda
+    # Configura agenda (polling HTTP como fallback mesmo com NATS)
     setup_schedule(cfg, logger)
 
-    logger.info("Scheduler ativo. Aguardando próximos ciclos...")
+    logger.info("Scheduler ativo. NATS=%s. Aguardando próximos ciclos...",
+                "conectado" if nats_ok else "off")
     while True:
         schedule.run_pending()
         time.sleep(10)

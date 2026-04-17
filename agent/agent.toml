@@ -67,6 +67,12 @@ ram_critical = 95
 dns_latency_warning = 200
 dns_latency_critical = 1000
 
+[nats]
+# Habilita comunicacao via NATS (comandos push instantaneos)
+enabled = false
+# URL do servidor NATS
+url = "nats://172.20.0.13:4222"
+
 [logging]
 # Nivel: DEBUG, INFO, WARNING, ERROR
 level = "INFO"
