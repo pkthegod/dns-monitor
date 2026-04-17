@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DNS Monitor — Portal do Cliente</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/base.css">
+<style>
+  body { display: flex; align-items: center; justify-content: center; }
+  .login-card {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: var(--radius-lg); padding: 44px 40px;
+    width: 100%; max-width: 380px; box-shadow: 0 24px 80px rgba(0,0,0,.6);
+  }
+  .login-logo { height: 56px; width: 56px; margin-bottom: 20px; opacity: .9; }
+  .login-card h1 { font-size: 1.2rem; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+  .login-card .subtitle { font-size: .85rem; color: var(--text-dim); margin-bottom: 28px; }
+  .field { margin-bottom: 18px; }
+  .field label { display: block; font-size: .78rem; color: var(--text-dim); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .05em; }
+  .field input { width: 100%; font-family: var(--font); }
+  .btn-login { width: 100%; margin-top: 8px; padding: 11px; font-size: .9rem; }
+  .login-error {
+    display: flex; align-items: flex-start; gap: 10px; padding: 14px 16px;
+    border-radius: var(--radius); margin-bottom: 20px;
+    background: #f7768e0a; border: 1px solid #f7768e22;
+    animation: fadeIn .4s ease both;
+  }
+  .login-error-icon { flex-shrink: 0; color: var(--red); margin-top: 1px; }
+  .login-error-body { flex: 1; }
+  .login-error-title { font-weight: 600; color: var(--red); font-size: .85rem; margin-bottom: 4px; }
+  .login-error-msg { color: var(--text-mid); font-size: .82rem; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="login-card scale-in">
+  <img src="/static/logo.svg" alt="" class="login-logo">
+  <h1>DNS Monitor</h1>
+  <p class="subtitle">Portal do Cliente</p>
+  <div id="error-box"></div>
+  <form method="POST" action="/client/login">
+    <div class="field">
+      <label for="username">Usuario</label>
+      <input type="text" id="username" name="username" autocomplete="username" required autofocus>
+    </div>
+    <div class="field">
+      <label for="password">Senha</label>
+      <input type="password" id="password" name="password" autocomplete="current-password" required>
+    </div>
+    <button type="submit" class="btn btn-primary btn-login">Entrar</button>
+  </form>
+</div>
+<script src="/static/app.js"></script>
+<script>
+  const params = new URLSearchParams(location.search);
+  if (params.get('error')) {
+    document.getElementById('error-box').innerHTML = `
+      <div class="login-error">
+        <span class="login-error-icon">${ICONS.error}</span>
+        <div class="login-error-body">
+          <div class="login-error-title">Credenciais invalidas</div>
+          <div class="login-error-msg">Usuario ou senha incorretos.</div>
+        </div>
+      </div>`;
+    document.getElementById('password').focus();
+  }
+</script>
+</body>
+</html>

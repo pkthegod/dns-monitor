@@ -117,6 +117,28 @@ def _verify_admin_cookie(cookie: str) -> Optional[str]:
     return None
 
 
+def _hash_password(password: str) -> str:
+    """Hash de senha com SHA256 + salt fixo (cookie secret)."""
+    return hashlib.sha256((_COOKIE_SECRET + password.encode())).hexdigest()
+
+
+def _sign_client_cookie(username: str) -> str:
+    """Cookie assinado para sessão de cliente."""
+    sig = hmac.new(_COOKIE_SECRET, f"client:{username}".encode(), hashlib.sha256).hexdigest()
+    return f"client:{username}.{sig}"
+
+
+def _verify_client_cookie(cookie: str) -> Optional[str]:
+    """Verifica cookie de cliente. Retorna username ou None."""
+    if not cookie or "." not in cookie:
+        return None
+    payload, sig = cookie.rsplit(".", 1)
+    expected = hmac.new(_COOKIE_SECRET, payload.encode(), hashlib.sha256).hexdigest()
+    if hmac.compare_digest(sig, expected) and payload.startswith("client:"):
+        return payload[7:]  # remove "client:" prefix
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Modelos Pydantic (validação do payload do agente)
 # ---------------------------------------------------------------------------
@@ -820,11 +842,6 @@ async def health() -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
-# Registra o router versionado
-# ---------------------------------------------------------------------------
-app.include_router(v1)
-
-# ---------------------------------------------------------------------------
 # Compatibilidade com agentes antigos (v1.0.0) — rotas sem /api/v1 prefix
 # Encaminha para os mesmos handlers do router v1.
 # Remover quando todos os agentes estiverem atualizados.
@@ -847,3 +864,184 @@ _legacy.get("/agent/latest")(agent_latest_download)
 _legacy.post("/tools/geolocate", dependencies=[Depends(require_token)])(geolocate_ips)
 
 app.include_router(_legacy)
+
+
+# ---------------------------------------------------------------------------
+# CRUD de clientes (admin) + Portal do cliente
+# ---------------------------------------------------------------------------
+
+@v1.get("/clients", dependencies=[Depends(require_token)])
+async def list_clients_endpoint() -> _SafeJSONResponse:
+    """Lista todos os clientes (admin)."""
+    return _SafeJSONResponse(await db.list_clients())
+
+
+@v1.post("/clients", dependencies=[Depends(require_token)])
+async def create_client_endpoint(request: Request) -> JSONResponse:
+    """Cria um cliente (admin)."""
+    body = await request.json()
+    username = body.get("username", "").strip()
+    password = body.get("password", "").strip()
+    hostnames = body.get("hostnames", [])
+    notes = body.get("notes", "")
+    if not username or not password:
+        return JSONResponse({"error": "username e password obrigatorios"}, status_code=422)
+    if not hostnames:
+        return JSONResponse({"error": "hostnames obrigatorio (array)"}, status_code=422)
+    existing = await db.get_client(username)
+    if existing:
+        return JSONResponse({"error": "username ja existe"}, status_code=409)
+    pw_hash = _hash_password(password)
+    client_id = await db.create_client(username, pw_hash, hostnames, notes or None)
+    return JSONResponse({"id": client_id, "username": username}, status_code=201)
+
+
+@v1.patch("/clients/{client_id}", dependencies=[Depends(require_token)])
+async def update_client_endpoint(client_id: int, request: Request) -> JSONResponse:
+    """Atualiza um cliente (admin)."""
+    body = await request.json()
+    fields = {}
+    if "hostnames" in body:
+        fields["hostnames"] = body["hostnames"]
+    if "active" in body:
+        fields["active"] = body["active"]
+    if "notes" in body:
+        fields["notes"] = body["notes"]
+    if "password" in body and body["password"]:
+        fields["password_hash"] = _hash_password(body["password"])
+    ok = await db.update_client(client_id, **fields)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Cliente nao encontrado")
+    return JSONResponse({"status": "ok"})
+
+
+@v1.delete("/clients/{client_id}", dependencies=[Depends(require_token)])
+async def delete_client_endpoint(client_id: int) -> JSONResponse:
+    """Remove um cliente (admin)."""
+    ok = await db.delete_client(client_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Cliente nao encontrado")
+    return JSONResponse({"status": "ok"})
+
+
+# ── Portal do cliente ─────────────────────────────────────────────────────
+
+@app.get("/client/login", response_class=HTMLResponse, include_in_schema=False)
+async def client_login_page() -> HTMLResponse:
+    html_path = pathlib.Path(__file__).parent / "static" / "client-login.html"
+    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+
+
+@app.post("/client/login", include_in_schema=False)
+async def client_login_post(request: Request):
+    form = await request.form()
+    username = form.get("username", "")
+    password = form.get("password", "")
+    user = await db.authenticate_client(username)
+    if not user or user["password_hash"] != _hash_password(password):
+        return RedirectResponse("/client/login?error=1", status_code=303)
+    resp = RedirectResponse("/client", status_code=303)
+    resp.set_cookie("client_session", _sign_client_cookie(username),
+                    httponly=True, samesite="strict", max_age=86400)
+    return resp
+
+
+@app.get("/client/logout", include_in_schema=False)
+async def client_logout():
+    resp = RedirectResponse("/client/login", status_code=303)
+    resp.delete_cookie("client_session")
+    return resp
+
+
+@app.get("/client", response_class=HTMLResponse, include_in_schema=False)
+async def client_portal(request: Request) -> HTMLResponse:
+    cookie = request.cookies.get("client_session", "")
+    username = _verify_client_cookie(cookie)
+    if not username:
+        return RedirectResponse("/client/login", status_code=303)
+    html_path = pathlib.Path(__file__).parent / "static" / "client.html"
+    html = html_path.read_text(encoding="utf-8")
+    # Injeta token + username no HTML
+    snippet = f'<script>window.__TOKEN__="{AGENT_TOKEN}";window.__CLIENT__="{username}";</script>'
+    html = html.replace("</head>", snippet + "\n</head>", 1)
+    return HTMLResponse(html)
+
+
+@v1.get("/client/data")
+async def client_data(request: Request) -> _SafeJSONResponse:
+    """Dados filtrados por hostnames do cliente logado."""
+    await require_token(request)
+    # Identifica o cliente pelo header X-Client-User (injetado pelo portal)
+    client_user = request.headers.get("X-Client-User", "")
+    if not client_user:
+        raise HTTPException(status_code=403, detail="Acesso negado")
+    user = await db.get_client(client_user)
+    if not user or not user["active"]:
+        raise HTTPException(status_code=403, detail="Cliente inativo ou inexistente")
+    hostnames = user["hostnames"]
+    if not hostnames:
+        return _SafeJSONResponse({"agents": [], "dns_latency": [], "cpu_history": [],
+                                   "ram_history": [], "dns_history": [], "recent_alerts": []})
+
+    placeholders = ", ".join(f"${i+1}" for i in range(len(hostnames)))
+
+    async with db.get_conn() as conn:
+        agents = [dict(r) for r in await conn.fetch(
+            f"SELECT * FROM v_agent_current_status WHERE hostname IN ({placeholders}) ORDER BY hostname",
+            *hostnames)]
+
+        dns_latency = [dict(r) for r in await conn.fetch(f"""
+            SELECT domain, ROUND(AVG(latency_ms)::numeric, 1) AS avg_ms,
+                   ROUND(MAX(latency_ms)::numeric, 1) AS max_ms,
+                   COUNT(*) AS checks,
+                   SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failures
+            FROM dns_checks
+            WHERE ts > NOW() - INTERVAL '24 hours' AND latency_ms IS NOT NULL
+                  AND hostname IN ({placeholders})
+            GROUP BY domain ORDER BY avg_ms DESC LIMIT 10
+        """, *hostnames)]
+
+        cpu_history = [dict(r) for r in await conn.fetch(f"""
+            SELECT hostname, time_bucket('1 hour', ts) AS bucket,
+                   ROUND(AVG(cpu_percent)::numeric, 1) AS cpu_avg
+            FROM metrics_cpu
+            WHERE ts > NOW() - INTERVAL '24 hours' AND hostname IN ({placeholders})
+            GROUP BY hostname, bucket ORDER BY bucket
+        """, *hostnames)]
+
+        ram_history = [dict(r) for r in await conn.fetch(f"""
+            SELECT hostname, time_bucket('1 hour', ts) AS bucket,
+                   ROUND(AVG(ram_percent)::numeric, 1) AS ram_avg
+            FROM metrics_ram
+            WHERE ts > NOW() - INTERVAL '24 hours' AND hostname IN ({placeholders})
+            GROUP BY hostname, bucket ORDER BY bucket
+        """, *hostnames)]
+
+        dns_history = [dict(r) for r in await conn.fetch(f"""
+            SELECT hostname, time_bucket('1 hour', ts) AS bucket,
+                   ROUND(AVG(latency_ms)::numeric, 1) AS latency_avg,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failures
+            FROM dns_checks
+            WHERE ts > NOW() - INTERVAL '24 hours' AND hostname IN ({placeholders})
+            GROUP BY hostname, bucket ORDER BY bucket
+        """, *hostnames)]
+
+        recent_alerts = [dict(r) for r in await conn.fetch(f"""
+            SELECT hostname, alert_type, severity, message, ts
+            FROM alerts_log
+            WHERE ts > NOW() - INTERVAL '24 hours' AND hostname IN ({placeholders})
+            ORDER BY ts DESC LIMIT 20
+        """, *hostnames)]
+
+    return _SafeJSONResponse({
+        "agents": agents, "dns_latency": dns_latency,
+        "cpu_history": cpu_history, "ram_history": ram_history,
+        "dns_history": dns_history, "recent_alerts": recent_alerts,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Registra o router versionado (DEVE ficar depois de todos os @v1 endpoints)
+# ---------------------------------------------------------------------------
+app.include_router(v1)
