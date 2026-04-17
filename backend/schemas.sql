@@ -434,5 +434,12 @@ CREATE TABLE IF NOT EXISTS client_users (
     hostnames     TEXT[]       NOT NULL DEFAULT '{}',
     created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     active        BOOLEAN      NOT NULL DEFAULT TRUE,
-    notes         TEXT
+    notes         TEXT,
+    email         TEXT
 );
+
+-- Migracoes seguras (ALTER TABLE idempotentes)
+DO $$ BEGIN
+    ALTER TABLE client_users ADD COLUMN IF NOT EXISTS email TEXT;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;

@@ -182,9 +182,99 @@ async def job_purge_inactive() -> None:
         )
 
 
+async def job_monthly_email() -> None:
+    """Roda no dia 1 de cada mes: envia relatorio PDF por email para clientes com email."""
+    import email_report
+    if not email_report.is_configured():
+        logger.info("SMTP nao configurado — emails mensais desabilitados")
+        return
+
+    from datetime import datetime as _dt, timedelta as _td
+    from routes_client import _build_report_pdf
+
+    # Mes anterior
+    today = _dt.now()
+    first_of_month = _dt(today.year, today.month, 1)
+    last_month_end = first_of_month - _td(days=1)
+    last_month_start = _dt(last_month_end.year, last_month_end.month, 1)
+    month_label = last_month_start.strftime("%Y-%m")
+
+    clients = await db.list_clients()
+    sent = 0
+    for client in clients:
+        if not client.get("active") or not client.get("email"):
+            continue
+        hostnames = client.get("hostnames", [])
+        if not hostnames:
+            continue
+
+        # Gera dados do relatorio
+        placeholders = ", ".join(f"${i+1}" for i in range(len(hostnames)))
+        p_start = f"${len(hostnames)+1}"
+        p_end = f"${len(hostnames)+2}"
+        params = [*hostnames, last_month_start, first_of_month]
+
+        async with db.get_conn() as conn:
+            hb_count = await conn.fetchval(f"""
+                SELECT COUNT(*) FROM agent_heartbeats
+                WHERE hostname IN ({placeholders}) AND ts BETWEEN {p_start} AND {p_end}
+            """, *params)
+            total_minutes = (first_of_month - last_month_start).total_seconds() / 60
+            expected_hb = int(total_minutes / 5) * len(hostnames)
+            uptime_pct = round((hb_count / max(expected_hb, 1)) * 100, 2)
+
+            lat_stats = await conn.fetchrow(f"""
+                SELECT ROUND(AVG(latency_ms)::numeric, 1) AS avg_ms,
+                       ROUND(MAX(latency_ms)::numeric, 1) AS max_ms,
+                       ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms)::numeric, 1) AS p95_ms,
+                       COUNT(*) AS total_checks,
+                       SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failures
+                FROM dns_checks
+                WHERE hostname IN ({placeholders}) AND ts BETWEEN {p_start} AND {p_end}
+                      AND latency_ms IS NOT NULL
+            """, *params) or {}
+
+            alerts = await conn.fetchval(f"""
+                SELECT COUNT(*) FROM alerts_log
+                WHERE hostname IN ({placeholders}) AND ts BETWEEN {p_start} AND {p_end}
+            """, *params)
+            critical = await conn.fetchval(f"""
+                SELECT COUNT(*) FROM alerts_log
+                WHERE hostname IN ({placeholders}) AND ts BETWEEN {p_start} AND {p_end}
+                      AND severity = 'critical'
+            """, *params)
+
+        downtime_min = round(total_minutes * (1 - uptime_pct / 100))
+        report_data = {
+            "period": {"start": last_month_start.isoformat(), "end": first_of_month.isoformat()},
+            "hostnames": hostnames,
+            "uptime_pct": uptime_pct,
+            "downtime_minutes": downtime_min,
+            "latency": dict(lat_stats) if lat_stats else {},
+            "alerts_total": alerts,
+            "alerts_critical": critical,
+            "heartbeats": hb_count,
+            "expected_heartbeats": expected_hb,
+        }
+
+        pdf_bytes = _build_report_pdf(report_data, client["username"])
+        ok = email_report.send_report_email(
+            to_email=client["email"],
+            client_name=client["username"],
+            month_label=month_label,
+            pdf_bytes=pdf_bytes,
+            uptime_pct=uptime_pct,
+        )
+        if ok:
+            sent += 1
+
+    logger.info("Emails mensais: %d enviados de %d clientes com email", sent, len(clients))
+
+
 def setup_scheduler() -> None:
     scheduler.add_job(job_check_offline,   "interval", minutes=5,  id="check_offline")
     scheduler.add_job(job_purge_inactive,  "interval", hours=1,    id="purge_inactive")
+    scheduler.add_job(job_monthly_email,   "cron", day=1, hour=8, minute=0, id="monthly_email")
     for t in REPORT_TIMES:
         h, m = t.split(":")
         scheduler.add_job(
@@ -193,7 +283,7 @@ def setup_scheduler() -> None:
             id=f"report_{t.replace(':', '')}",
         )
     scheduler.start()
-    logger.info("Scheduler iniciado: check_offline a cada 5min, relatorios em %s", REPORT_TIMES)
+    logger.info("Scheduler iniciado: check_offline 5min, relatorios %s, email mensal dia 1 08:00", REPORT_TIMES)
 
 
 # ---------------------------------------------------------------------------
@@ -250,8 +340,46 @@ from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(
     title="DNS Monitor — Backend",
-    version="0.8.0",
+    version="1.0.0",
+    description="""
+API do DNS Monitor — sistema distribuido de monitoramento DNS.
+
+## Autenticacao
+
+Todos os endpoints `/api/v1/*` exigem autenticacao via **Bearer token**:
+
+```
+Authorization: Bearer <AGENT_TOKEN>
+```
+
+Endpoints do portal do cliente usam autenticacao via **cookie de sessao** (login em `/client/login`).
+
+## Exemplos rapidos
+
+```bash
+# Health check
+curl http://localhost:8000/health
+
+# Listar agentes
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/api/v1/agents
+
+# Enviar comando
+curl -X POST -H "Authorization: Bearer $TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d '{"hostname":"dns01","command":"restart"}' \\
+  http://localhost:8000/api/v1/commands
+```
+""",
     lifespan=lifespan,
+    openapi_tags=[
+        {"name": "agents", "description": "Gerenciamento de agentes DNS"},
+        {"name": "commands", "description": "Comandos remotos para agentes"},
+        {"name": "alerts", "description": "Alertas e notificacoes"},
+        {"name": "metrics", "description": "Ingestao de metricas dos agentes"},
+        {"name": "dashboard", "description": "Dados agregados para dashboards"},
+        {"name": "clients", "description": "CRUD de clientes do portal"},
+        {"name": "tools", "description": "Ferramentas auxiliares (geolocalizacao, etc.)"},
+    ],
 )
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -309,7 +437,7 @@ AGENT_FILE_PATH = pathlib.Path(
 # Endpoints
 # ---------------------------------------------------------------------------
 
-@v1.post("/metrics", dependencies=[Depends(require_token)])
+@v1.post("/metrics", dependencies=[Depends(require_token)], tags=["metrics"])
 async def receive_metrics(payload: AgentPayload) -> JSONResponse:
     """
     Recebe o payload do agente (check ou heartbeat),
@@ -420,7 +548,7 @@ async def _evaluate_alerts(payload: AgentPayload) -> None:
             await db.mark_alert_notified(aid)
 
 
-@v1.patch("/agents/{hostname}", dependencies=[Depends(require_token)])
+@v1.patch("/agents/{hostname}", dependencies=[Depends(require_token)], tags=["agents"])
 async def update_agent(hostname: str, body: AgentMetaUpdate) -> JSONResponse:
     """Atualiza display_name, location e notes de um agente."""
     found = await db.update_agent_meta(
@@ -431,7 +559,7 @@ async def update_agent(hostname: str, body: AgentMetaUpdate) -> JSONResponse:
     return JSONResponse({"status": "ok", "hostname": hostname})
 
 
-@v1.delete("/agents/{hostname}", dependencies=[Depends(require_token)])
+@v1.delete("/agents/{hostname}", dependencies=[Depends(require_token)], tags=["agents"])
 async def delete_agent(hostname: str) -> JSONResponse:
     """Remove o agente e todo o historico de dados do banco."""
     found = await db.delete_agent(hostname)
@@ -441,7 +569,7 @@ async def delete_agent(hostname: str) -> JSONResponse:
     return JSONResponse({"status": "ok", "hostname": hostname})
 
 
-@v1.get("/agents", dependencies=[Depends(require_token)])
+@v1.get("/agents", dependencies=[Depends(require_token)], tags=["agents"])
 async def list_agents(request: Request) -> _SafeJSONResponse:
     """Lista status atual de todos os agentes registrados."""
     async with db.get_conn() as conn:
@@ -449,14 +577,14 @@ async def list_agents(request: Request) -> _SafeJSONResponse:
     return _SafeJSONResponse([dict(r) for r in rows])
 
 
-@v1.get("/alerts", dependencies=[Depends(require_token)])
+@v1.get("/alerts", dependencies=[Depends(require_token)], tags=["alerts"])
 async def list_alerts(hostname: Optional[str] = None) -> _SafeJSONResponse:
     """Lista alertas abertos."""
     alerts = await db.get_open_alerts(hostname)
     return _SafeJSONResponse(alerts)
 
 
-@v1.get("/commands/{hostname}")
+@v1.get("/commands/{hostname}", tags=["commands"])
 async def get_commands(hostname: str, request: Request) -> _SafeJSONResponse:
     """Retorna comandos pendentes para o agente. Chamado pelo agente no poll."""
     await require_token(request)
@@ -464,7 +592,7 @@ async def get_commands(hostname: str, request: Request) -> _SafeJSONResponse:
     return _SafeJSONResponse(commands)
 
 
-@v1.post("/commands/{command_id}/result")
+@v1.post("/commands/{command_id}/result", tags=["commands"])
 async def post_command_result(command_id: int, request: Request) -> JSONResponse:
     """Agente reporta o resultado de um comando executado."""
     await require_token(request)
@@ -489,7 +617,7 @@ async def post_command_result(command_id: int, request: Request) -> JSONResponse
     return JSONResponse({"status": "ok"})
 
 
-@v1.post("/commands")
+@v1.post("/commands", tags=["commands"])
 async def create_command(request: Request) -> JSONResponse:
     """
     Cria um comando para um agente executar no proximo poll.
@@ -533,7 +661,7 @@ async def create_command(request: Request) -> JSONResponse:
     return JSONResponse(response, status_code=201)
 
 
-@v1.get("/commands/{hostname}/history")
+@v1.get("/commands/{hostname}/history", tags=["commands"])
 async def get_command_history(hostname: str, request: Request) -> _SafeJSONResponse:
     """Historico de comandos executados em um host."""
     await require_token(request)
@@ -609,7 +737,7 @@ async def admin_panel(request: Request) -> HTMLResponse:
     return HTMLResponse(html_path.read_text(encoding="utf-8"))
 
 
-@v1.get("/commands/history")
+@v1.get("/commands/history", tags=["commands"])
 async def get_all_commands_history(request: Request, limit: int = 50) -> _SafeJSONResponse:
     """Historico recente de todos os comandos (para o painel admin)."""
     await require_token(request)
@@ -617,7 +745,7 @@ async def get_all_commands_history(request: Request, limit: int = 50) -> _SafeJS
     return _SafeJSONResponse(history)
 
 
-@v1.get("/agent/version")
+@v1.get("/agent/version", tags=["agents"])
 async def agent_version_info(request: Request) -> JSONResponse:
     await require_token(request)
     if not AGENT_FILE_PATH.exists():
@@ -633,7 +761,7 @@ async def agent_version_info(request: Request) -> JSONResponse:
     })
 
 
-@v1.get("/agent/latest")
+@v1.get("/agent/latest", tags=["agents"])
 async def agent_latest_download(request: Request):
     await require_token(request)
     if not AGENT_FILE_PATH.exists():
@@ -648,7 +776,7 @@ async def agent_latest_download(request: Request):
     )
 
 
-@v1.post("/tools/geolocate", dependencies=[Depends(require_token)])
+@v1.post("/tools/geolocate", dependencies=[Depends(require_token)], tags=["tools"])
 async def geolocate_ips(request: Request) -> JSONResponse:
     import asyncio
     import urllib.request as _urllib
@@ -681,7 +809,7 @@ async def geolocate_ips(request: Request) -> JSONResponse:
     return JSONResponse(data)
 
 
-@v1.get("/commands/{command_id}/status")
+@v1.get("/commands/{command_id}/status", tags=["commands"])
 async def get_command_status(command_id: int, request: Request) -> _SafeJSONResponse:
     """Retorna o status atual de um comando especifico (para polling no painel)."""
     await require_token(request)
@@ -700,7 +828,7 @@ async def dashboard_page(request: Request) -> HTMLResponse:
     return HTMLResponse(html_path.read_text(encoding="utf-8"))
 
 
-@v1.get("/dashboard/data", dependencies=[Depends(require_token)])
+@v1.get("/dashboard/data", dependencies=[Depends(require_token)], tags=["dashboard"])
 async def dashboard_data(period: str = "24h", host: str = "") -> _SafeJSONResponse:
     """Dados agregados para o dashboard. Aceita ?period=1h|6h|24h|7d&host=hostname."""
     hostnames = None

@@ -2,6 +2,33 @@
 
 ---
 
+## [v1.0.0] — 2026-04-17 — Release 1.0
+
+### Novidades
+
+#### Timeline de disponibilidade (portal do cliente)
+- Barra visual hora a hora: verde (OK), amarelo (parcial), vermelho (falha), cinza (sem dados)
+- Tooltips com detalhes por slot (horario, total de checks, falhas)
+- Usa dados existentes de dns_history — sem query adicional
+
+#### Email automatico mensal
+- Job scheduler: dia 1 de cada mes as 08:00, envia relatorio PDF por email
+- Modulo `email_report.py`: SMTP com TLS, template HTML Tokyo Night
+- Campo `email` adicionado na tabela `client_users` e no CRUD admin
+- Env vars: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM, SMTP_TLS
+- Graceful: se SMTP nao configurado, job executa sem erro
+
+#### API docs customizados
+- OpenAPI schema com descricao completa, exemplos curl, explicacao de auth
+- Tags organizadas: agents, commands, alerts, metrics, dashboard, clients, tools
+- Acessivel em `/docs` (Swagger UI) e `/redoc`
+
+### Testes
+
+- 165 passed, 2 skipped (sem regressao)
+
+---
+
 ## [v0.8.0] — 2026-04-17 — CRUD clientes, bulk actions, PDF, docs in-app
 
 ### Novidades

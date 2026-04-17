@@ -59,8 +59,9 @@ async def create_client_endpoint(request: Request) -> JSONResponse:
     existing = await db.get_client(username)
     if existing:
         return JSONResponse({"error": "username ja existe"}, status_code=409)
+    email = body.get("email", "").strip() or None
     pw_hash = _hash_password(password)
-    client_id = await db.create_client(username, pw_hash, hostnames, notes or None)
+    client_id = await db.create_client(username, pw_hash, hostnames, notes or None, email)
     await db.audit("admin", "client_created", username, detail=str(hostnames))
     return JSONResponse({"id": client_id, "username": username}, status_code=201)
 
@@ -79,6 +80,8 @@ async def update_client_endpoint(client_id: int, request: Request) -> JSONRespon
         fields["notes"] = body["notes"]
     if "password" in body and body["password"]:
         fields["password_hash"] = _hash_password(body["password"])
+    if "email" in body:
+        fields["email"] = body["email"].strip() or None
     ok = await db.update_client(client_id, **fields)
     if not ok:
         raise HTTPException(status_code=404, detail="Cliente nao encontrado")

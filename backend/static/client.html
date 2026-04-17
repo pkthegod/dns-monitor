@@ -89,6 +89,24 @@
   .alerts-section h3 { font-size: 12px; font-weight: 500; color: var(--text-mid); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 14px; }
   .ts-cell { font-family: var(--font-mono); font-size: 12px; color: var(--text-dim); white-space: nowrap; }
 
+  /* Timeline de disponibilidade */
+  .timeline-card {
+    background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg);
+    padding: 20px 24px; margin-bottom: 20px;
+  }
+  .timeline-card h3 { font-size: 12px; font-weight: 500; color: var(--text-mid); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 14px; }
+  .timeline-bar { display: flex; gap: 2px; height: 28px; border-radius: 4px; overflow: hidden; }
+  .timeline-bar .slot { flex: 1; min-width: 0; border-radius: 2px; cursor: default; transition: opacity .15s; position: relative; }
+  .timeline-bar .slot:hover { opacity: .8; }
+  .timeline-bar .slot.ok { background: var(--green); }
+  .timeline-bar .slot.partial { background: var(--yellow); }
+  .timeline-bar .slot.down { background: var(--red); }
+  .timeline-bar .slot.empty { background: var(--bg-subtle); }
+  .timeline-labels { display: flex; justify-content: space-between; margin-top: 4px; }
+  .timeline-labels span { font-size: 9px; color: var(--text-dim); font-family: var(--font-mono); }
+  .timeline-legend { display: flex; gap: 14px; margin-top: 10px; font-size: 11px; color: var(--text-dim); }
+  .timeline-legend .dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+
   @media (max-width: 960px) { .charts, .gauges { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -142,6 +160,19 @@
     <div class="sla-row">
       <span class="sla-label">Downtime</span>
       <span class="sla-value" id="slaDowntime" style="color:var(--text-mid)">--</span>
+    </div>
+  </div>
+
+  <!-- Timeline de disponibilidade -->
+  <div class="timeline-card fade-in" id="timelineCard">
+    <h3>Disponibilidade — Ultimas 24h</h3>
+    <div class="timeline-bar" id="timelineBar"></div>
+    <div class="timeline-labels"><span id="timelineStart">--</span><span>agora</span></div>
+    <div class="timeline-legend">
+      <span><span class="dot" style="background:var(--green)"></span> OK</span>
+      <span><span class="dot" style="background:var(--yellow)"></span> Parcial</span>
+      <span><span class="dot" style="background:var(--red)"></span> Falha</span>
+      <span><span class="dot" style="background:var(--bg-subtle)"></span> Sem dados</span>
     </div>
   </div>
 
@@ -314,11 +345,47 @@ function renderAlerts(data) {
   }).join('');
 }
 
+function renderTimeline(data) {
+  const bar = document.getElementById('timelineBar');
+  const history = data.dns_history || [];
+  if (!history.length) {
+    bar.innerHTML = '<div class="slot empty" style="flex:1" title="Sem dados"></div>';
+    document.getElementById('timelineStart').textContent = '--';
+    return;
+  }
+
+  // Agrupa por bucket (hora) — soma todos os hosts
+  const buckets = {};
+  history.forEach(r => {
+    const key = r.bucket;
+    if (!buckets[key]) buckets[key] = { total: 0, failures: 0 };
+    buckets[key].total += (r.total || 0);
+    buckets[key].failures += (r.failures || 0);
+  });
+
+  const sorted = Object.keys(buckets).sort();
+  const first = new Date(sorted[0]);
+  document.getElementById('timelineStart').textContent = first.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+
+  bar.innerHTML = sorted.map(key => {
+    const b = buckets[key];
+    const t = new Date(key).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    if (b.total === 0) return `<div class="slot empty" title="${t} — sem dados"></div>`;
+    const failRate = b.failures / b.total;
+    let cls, label;
+    if (failRate === 0) { cls = 'ok'; label = 'OK'; }
+    else if (failRate < 0.5) { cls = 'partial'; label = `${b.failures} falha(s)`; }
+    else { cls = 'down'; label = `${b.failures}/${b.total} falhas`; }
+    return `<div class="slot ${cls}" title="${t} — ${label} (${b.total} checks)"></div>`;
+  }).join('');
+}
+
 async function loadPortal() {
   try {
     chartDefaults();
     const data = await apiFetch(`/client/data?period=${currentPeriod}`);
     renderHero(data);
+    renderTimeline(data);
     renderGauges(data);
     renderCharts(data);
     renderAlerts(data);
