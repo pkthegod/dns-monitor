@@ -438,8 +438,5 @@ CREATE TABLE IF NOT EXISTS client_users (
     email         TEXT
 );
 
--- Migracoes seguras (ALTER TABLE idempotentes)
-DO $$ BEGIN
-    ALTER TABLE client_users ADD COLUMN IF NOT EXISTS email TEXT;
-EXCEPTION WHEN OTHERS THEN NULL;
-END $$;
+-- Migracao: campo email (ADD COLUMN IF NOT EXISTS e idempotente)
+ALTER TABLE client_users ADD COLUMN IF NOT EXISTS email TEXT;
