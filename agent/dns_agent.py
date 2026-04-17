@@ -929,9 +929,10 @@ def _parse_diagnostic_output(script_id: str, raw: str) -> str:
 
 def _run_dnstop(cfg: Config, logger: logging.Logger, params: str = None) -> tuple[str, str]:
     """
-    Executa dnstop por N segundos e retorna estatisticas DNS.
+    Captura trafego DNS por N segundos e analisa com dnstop.
+    Fluxo: tcpdump captura pcap → dnstop analisa → resultado JSON.
+    Fallback: se dnstop ausente, usa tcpdump com parsing de texto.
     params: JSON {"duration": 9, "interface": "eth0"} ou duracao simples "9"
-    Fallback: usa tcpdump + parsing se dnstop nao estiver instalado.
     """
     try:
         p = json.loads(params) if params and params.strip().startswith("{") else {}
@@ -940,59 +941,86 @@ def _run_dnstop(cfg: Config, logger: logging.Logger, params: str = None) -> tupl
 
     duration  = int(p.get("duration", params or 9))
     interface = p.get("interface", "any")
+    duration  = max(3, min(duration, 30))
 
-    # Limita duracao (seguranca)
-    duration = max(3, min(duration, 30))
+    pcap_path = tempfile.mktemp(suffix=".pcap")
 
-    # Tenta dnstop primeiro
-    if shutil.which("dnstop"):
-        try:
-            result = subprocess.run(
-                ["sudo", "-n", "dnstop", "-l", str(duration), interface],
-                capture_output=True, text=True, timeout=duration + 10,
-            )
-            if result.returncode == 0:
-                logger.info("dnstop: captura de %ds na interface %s", duration, interface)
-                return "done", json.dumps({
-                    "tool": "dnstop", "duration": duration,
-                    "interface": interface, "output": result.stdout[:4000],
-                }, ensure_ascii=False)
-            return "failed", f"dnstop erro: {result.stderr[:500]}"
-        except subprocess.TimeoutExpired:
-            return "failed", f"dnstop timeout apos {duration + 10}s"
-        except Exception as exc:
-            return "failed", f"dnstop erro: {exc}"
+    try:
+        # ── Passo 1: captura pcap com tcpdump ──
+        if not shutil.which("tcpdump"):
+            return "failed", "tcpdump nao encontrado. Instale: apt install tcpdump"
 
-    # Fallback: tcpdump com parsing basico
-    if shutil.which("tcpdump"):
-        try:
-            result = subprocess.run(
-                ["sudo", "-n", "tcpdump", "-i", interface, "-n",
-                 "-c", "500", "-w", "-", "port", "53"],
-                capture_output=True, timeout=duration + 5,
-            )
-            # Conta pacotes capturados
-            lines = result.stderr.decode(errors="replace").strip().split("\n")
-            stats_line = [l for l in lines if "packets captured" in l]
-            packets = 0
-            if stats_line:
+        cap = subprocess.run(
+            ["sudo", "-n", "tcpdump", "-i", interface, "-n", "-w", pcap_path,
+             "-G", str(duration), "-W", "1", "port", "53"],
+            capture_output=True, text=True, timeout=duration + 10,
+        )
+        cap_stats = cap.stderr.strip()
+
+        # Extrai total de pacotes do stderr do tcpdump
+        packets = 0
+        for line in cap_stats.split("\n"):
+            if "packets captured" in line:
                 try:
-                    packets = int(stats_line[0].split()[0])
+                    packets = int(line.split()[0])
                 except (ValueError, IndexError):
                     pass
-            qps = round(packets / duration, 1) if duration > 0 else 0
-            logger.info("tcpdump: %d pacotes DNS em %ds (%.1f qps)", packets, duration, qps)
+
+        qps = round(packets / duration, 1) if duration > 0 else 0
+
+        # ── Passo 2: analisa com dnstop se disponivel ──
+        if shutil.which("dnstop") and os.path.getsize(pcap_path) > 0:
+            dt = subprocess.run(
+                ["dnstop", "-n", pcap_path],
+                capture_output=True, text=True, timeout=30,
+            )
+            logger.info("dnstop: %d pacotes em %ds (%.1f qps) na %s", packets, duration, qps, interface)
+            return "done", json.dumps({
+                "tool": "dnstop", "duration": duration,
+                "interface": interface, "packets": packets, "qps": qps,
+                "output": dt.stdout[:4000],
+                "tcpdump_stats": cap_stats[:500],
+            }, ensure_ascii=False)
+
+        # ── Fallback: tcpdump texto se dnstop ausente ──
+        if os.path.getsize(pcap_path) > 0:
+            rd = subprocess.run(
+                ["sudo", "-n", "tcpdump", "-r", pcap_path, "-n", "-q"],
+                capture_output=True, text=True, timeout=30,
+            )
+            # Conta dominios mais consultados
+            domains = {}
+            for line in rd.stdout.split("\n"):
+                parts = line.split()
+                for part in parts:
+                    if "." in part and not part.replace(".", "").isdigit():
+                        # Filtra dominios (heuristica: tem ponto, nao e IP)
+                        d = part.rstrip(".").lower()
+                        if len(d) > 3 and d.count(".") >= 1:
+                            domains[d] = domains.get(d, 0) + 1
+
+            top = sorted(domains.items(), key=lambda x: -x[1])[:10]
+            logger.info("tcpdump: %d pacotes em %ds (%.1f qps) na %s", packets, duration, qps, interface)
             return "done", json.dumps({
                 "tool": "tcpdump", "duration": duration,
-                "interface": interface, "packets": packets,
-                "qps": qps, "raw_stats": result.stderr.decode(errors="replace")[:2000],
+                "interface": interface, "packets": packets, "qps": qps,
+                "top_domains": [{"domain": d, "count": c} for d, c in top],
+                "tcpdump_stats": cap_stats[:500],
             }, ensure_ascii=False)
-        except subprocess.TimeoutExpired:
-            return "failed", f"tcpdump timeout apos {duration + 5}s"
-        except Exception as exc:
-            return "failed", f"tcpdump erro: {exc}"
 
-    return "failed", "Nem dnstop nem tcpdump encontrados. Instale: apt install dnstop ou tcpdump"
+        return "done", json.dumps({
+            "tool": "tcpdump", "duration": duration,
+            "interface": interface, "packets": 0, "qps": 0,
+            "message": "Nenhum trafego DNS capturado",
+        }, ensure_ascii=False)
+
+    except subprocess.TimeoutExpired:
+        return "failed", f"Timeout apos {duration + 10}s"
+    except Exception as exc:
+        return "failed", f"Erro: {exc}"
+    finally:
+        if os.path.exists(pcap_path):
+            os.unlink(pcap_path)
 
 
 COMMAND_HANDLERS = {
