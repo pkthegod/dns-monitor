@@ -92,10 +92,11 @@ services:
     volumes:
       - nats_data:/data
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8222/healthz || exit 1"]
+      test: ["CMD-SHELL", "echo > /dev/tcp/localhost/4222 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 5s
 
   # ─────────────────────────────────────────────
   # Grafana
