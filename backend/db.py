@@ -663,3 +663,21 @@ async def authenticate_client(username: str) -> Optional[dict]:
             username,
         )
         return dict(row) if row else None
+
+
+# ===========================================================================
+# Audit log
+# ===========================================================================
+
+async def audit(actor: str, action: str, target: str = None,
+                detail: str = None, ip: str = None) -> None:
+    """Registra acao no audit log."""
+    try:
+        async with get_conn() as conn:
+            await conn.execute(
+                """INSERT INTO audit_log (actor, action, target, detail, ip)
+                   VALUES ($1, $2, $3, $4, $5)""",
+                actor, action, target, detail, ip,
+            )
+    except Exception as exc:
+        logger.warning("Audit log falhou: %s", exc)
