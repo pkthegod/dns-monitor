@@ -599,12 +599,12 @@ async def get_commands_history(hostname: str, limit: int = 50) -> list[dict]:
 # ===========================================================================
 
 async def create_client(username: str, password_hash: str, hostnames: list[str],
-                        notes: str = None) -> int:
+                        notes: str = None, email: str = None) -> int:
     async with get_conn() as conn:
         row = await conn.fetchrow(
-            """INSERT INTO client_users (username, password_hash, hostnames, notes)
-               VALUES ($1, $2, $3, $4) RETURNING id""",
-            username, password_hash, hostnames, notes,
+            """INSERT INTO client_users (username, password_hash, hostnames, notes, email)
+               VALUES ($1, $2, $3, $4, $5) RETURNING id""",
+            username, password_hash, hostnames, notes, email,
         )
         return row["id"]
 
@@ -619,11 +619,11 @@ async def get_client(username: str) -> Optional[dict]:
 async def list_clients() -> list[dict]:
     async with get_conn() as conn:
         rows = await conn.fetch(
-            "SELECT id, username, hostnames, active, created_at, notes FROM client_users ORDER BY username")
+            "SELECT id, username, hostnames, active, created_at, notes, email FROM client_users ORDER BY username")
         return [dict(r) for r in rows]
 
 
-_CLIENT_ALLOWED_FIELDS = {"hostnames", "active", "password_hash", "notes"}
+_CLIENT_ALLOWED_FIELDS = {"hostnames", "active", "password_hash", "notes", "email"}
 
 
 async def update_client(client_id: int, **fields) -> bool:
