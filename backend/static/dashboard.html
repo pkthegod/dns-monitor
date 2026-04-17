@@ -100,9 +100,7 @@
     <div><a href="/admin" class="btn btn-ghost">Admin Panel</a></div>
   </div>
 
-  <div class="token-bar fade-in stagger-1">
-    <input type="password" id="tokenInput" placeholder="Bearer token" />
-    <button class="btn btn-primary" onclick="loadDashboard()">Carregar</button>
+  <div class="token-bar fade-in stagger-1" style="display:none">
     <span class="status" id="loadStatus"></span>
   </div>
 
@@ -349,7 +347,10 @@ document.getElementById('hostFilter').addEventListener('change', e => {
 })();
 
 // Auto-load se sessao admin valida
-fetchSessionToken().then(ok => { if (ok) loadDashboard(); });
+fetchSessionToken().then(ok => {
+  if (ok) { loadDashboard(); }
+  else { toast.err('Sessao expirada. Redirecionando...'); setTimeout(() => { window.location.href = '/admin/login'; }, 1500); }
+});
 </script>
 </body>
 </html>

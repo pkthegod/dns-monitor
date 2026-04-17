@@ -8,9 +8,7 @@ const API_BASE = '/api/v1';
 let _cachedToken = '';
 
 function token() {
-  if (_cachedToken) return _cachedToken;
-  const el = document.getElementById('tokenInput') || document.getElementById('token-input');
-  return el ? el.value.trim() : '';
+  return _cachedToken;
 }
 
 async function fetchSessionToken() {
