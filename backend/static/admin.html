@@ -16,6 +16,7 @@
   <img src="/static/logo.svg" alt="" class="logo">
   <h1>DNS Monitor <span>// Admin</span></h1>
   <a href="/dashboard" class="btn-nav btn-nav-highlight">Dashboard</a>
+  <a href="/admin/help" class="btn-nav">Ajuda</a>
   <a href="/admin/logout" class="btn-nav">Sair</a>
   <span class="refresh-info">REFRESH EM <span id="countdown">5:00</span></span>
 </div>
@@ -25,7 +26,7 @@
   <div class="section-title">
     <h2>Agentes</h2>
     <span class="section-badge" id="badge-agents">—</span>
-    <div style="display:flex;gap:8px;margin-left:auto;align-items:center">
+    <div style="display:flex;gap:8px;margin-left:auto;align-items:center;flex-wrap:wrap">
       <input type="text" id="agentSearch" placeholder="Buscar hostname..." style="width:200px;font-size:.75rem;padding:4px 8px">
       <select id="statusFilter" style="background:var(--bg-input);border:1px solid var(--border);color:var(--text);border-radius:5px;padding:4px 8px;font-family:var(--font-mono);font-size:.75rem">
         <option value="">Todos</option>
@@ -33,12 +34,20 @@
         <option value="offline">Offline</option>
         <option value="stale">Instavel</option>
       </select>
+      <span id="bulk-bar" style="display:none;gap:6px;align-items:center;font-size:.7rem">
+        <span id="bulk-count" class="dim">0 selecionados</span>
+        <button class="btn btn-ghost" style="font-size:.68rem;padding:2px 8px" onclick="bulkSelectOffline()">Sel. offline</button>
+        <button class="btn btn-ghost" style="font-size:.68rem;padding:2px 8px" onclick="bulkAction('restart')">Restart</button>
+        <button class="btn btn-ghost" style="font-size:.68rem;padding:2px 8px" onclick="bulkAction('update_agent')">Update</button>
+        <button class="btn btn-ghost" style="font-size:.68rem;padding:2px 8px;color:var(--red)" onclick="bulkAction('decommission')">Decommission</button>
+      </span>
     </div>
   </div>
   <div class="table-wrap">
     <table>
       <thead>
         <tr>
+          <th style="width:28px"><input type="checkbox" id="bulk-select-all" onchange="bulkToggleAll(this.checked)" title="Selecionar todos"></th>
           <th style="cursor:pointer" onclick="sortAgents('hostname')">Hostname ⇅</th>
           <th>Localizacao</th>
           <th>Cliente</th>
@@ -52,7 +61,7 @@
           <th>Acoes</th>
         </tr>
       </thead>
-      <tbody id="tbody-agents"><tr><td colspan="11" class="dim" style="padding:14px">Carregando…</td></tr></tbody>
+      <tbody id="tbody-agents"><tr><td colspan="12" class="dim" style="padding:14px">Carregando…</td></tr></tbody>
     </table>
   </div>
 </div>
@@ -78,6 +87,69 @@
       </thead>
       <tbody id="tbody-history"><tr><td colspan="7" class="dim" style="padding:14px">Carregando…</td></tr></tbody>
     </table>
+  </div>
+</div>
+
+<!-- Tabela de clientes -->
+<div class="section">
+  <div class="section-title">
+    <h2>Clientes</h2>
+    <span class="section-badge" id="badge-clients">—</span>
+    <div style="margin-left:auto">
+      <button class="btn btn-primary" onclick="openClientModal()" style="font-size:.75rem;padding:4px 14px">+ Novo Cliente</button>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Username</th>
+          <th>Hostnames</th>
+          <th>Notas</th>
+          <th>Status</th>
+          <th>Criado em</th>
+          <th>Acoes</th>
+        </tr>
+      </thead>
+      <tbody id="tbody-clients"><tr><td colspan="6" class="dim" style="padding:14px">Carregando…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Modal de cliente (criar/editar) -->
+<div class="modal-backdrop" id="client-modal">
+  <div class="modal">
+    <h3 id="client-modal-title">Novo Cliente</h3>
+    <div class="field">
+      <label>Username</label>
+      <input type="text" id="client-username" placeholder="login do cliente" autocomplete="off">
+    </div>
+    <div class="field">
+      <label>Senha</label>
+      <input type="password" id="client-password" placeholder="senha de acesso" autocomplete="new-password">
+    </div>
+    <div class="field">
+      <label>Hostnames (separados por virgula)</label>
+      <input type="text" id="client-hostnames" placeholder="dns01, dns02, dns03">
+    </div>
+    <div class="field">
+      <label>Notas</label>
+      <input type="text" id="client-notes" placeholder="Observacoes (opcional)">
+    </div>
+    <div class="field" id="client-active-wrap" style="display:none">
+      <label>Status</label>
+      <div class="toggle-wrap">
+        <label class="toggle">
+          <input type="checkbox" id="client-active" checked>
+          <span class="slider"></span>
+        </label>
+        <span class="toggle-label" id="client-active-label">Ativo</span>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-cancel" onclick="closeClientModal()">CANCELAR</button>
+      <button class="btn btn-primary" id="client-save-btn" onclick="saveClient()">CRIAR</button>
+    </div>
   </div>
 </div>
 
@@ -600,13 +672,13 @@
         `${agents.filter(a => a.agent_status === 'online').length} online / ${agents.length} total`;
 
       if (!agents.length) {
-        tbody.innerHTML = '<tr><td colspan="11" class="dim" style="padding:14px">Nenhum agente registrado.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="12" class="dim" style="padding:14px">Nenhum agente registrado.</td></tr>';
         return;
       }
 
       renderAgentRows(agents);
     } catch (e) {
-      tbody.innerHTML = `<tr><td colspan="11"><div class="inline-msg inline-error fade-in"><span class="inline-msg-icon">${ICONS.error}</span><div><strong>Erro ao carregar agentes</strong><p>${esc(e.message)}</p></div></div></td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="12"><div class="inline-msg inline-error fade-in"><span class="inline-msg-icon">${ICONS.error}</span><div><strong>Erro ao carregar agentes</strong><p>${esc(e.message)}</p></div></div></td></tr>`;
     }
   }
 
@@ -639,7 +711,7 @@
       `${filtered.filter(a=>a.agent_status==='online').length} online / ${filtered.length}${filtered.length !== agents.length ? ' de ' + agents.length : ''} total`;
 
     if (!filtered.length) {
-      tbody.innerHTML = '<tr><td colspan="11" class="dim" style="padding:14px">Nenhum agente encontrado.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="12" class="dim" style="padding:14px">Nenhum agente encontrado.</td></tr>';
       return;
     }
 
@@ -655,6 +727,7 @@
 
         return `
         <tr style="border-left:3px solid ${statusBorder}${isActive ? '' : ';opacity:.55'}">
+          <td><input type="checkbox" class="bulk-cb" data-hostname="${esc(a.hostname)}" onchange="bulkUpdateCount()"></td>
           <td>
             <strong>${esc(a.hostname)}</strong>
             ${a.display_name && a.display_name !== a.hostname ? `<br><span class="dim">${esc(a.display_name)}</span>` : ''}
@@ -1017,9 +1090,185 @@
     return map;
   }
 
+  // ── Bulk actions ───────────────────────────────────────────────────────────
+  function getSelectedHostnames() {
+    return [...document.querySelectorAll('.bulk-cb:checked')].map(cb => cb.dataset.hostname);
+  }
+
+  function bulkUpdateCount() {
+    const selected = getSelectedHostnames();
+    const bar = document.getElementById('bulk-bar');
+    const count = document.getElementById('bulk-count');
+    if (selected.length > 0) {
+      bar.style.display = 'flex';
+      count.textContent = selected.length + ' selecionado' + (selected.length > 1 ? 's' : '');
+    } else {
+      bar.style.display = 'none';
+    }
+  }
+
+  function bulkToggleAll(checked) {
+    document.querySelectorAll('.bulk-cb').forEach(cb => { cb.checked = checked; });
+    bulkUpdateCount();
+  }
+
+  function bulkSelectOffline() {
+    document.querySelectorAll('.bulk-cb').forEach(cb => { cb.checked = false; });
+    const offlineHosts = agentsCache.filter(a => a.agent_status === 'offline').map(a => a.hostname);
+    document.querySelectorAll('.bulk-cb').forEach(cb => {
+      if (offlineHosts.includes(cb.dataset.hostname)) cb.checked = true;
+    });
+    bulkUpdateCount();
+    if (!getSelectedHostnames().length) toast.info('Nenhum agente offline encontrado.');
+  }
+
+  async function bulkAction(command) {
+    const hostnames = getSelectedHostnames();
+    if (!hostnames.length) { toast.warn('Selecione ao menos um agente.'); return; }
+    const label = command === 'update_agent' ? 'atualizar' : command;
+    if (!confirm(`Executar "${label}" em ${hostnames.length} agente(s)?\n\n${hostnames.join(', ')}`)) return;
+    if (command === 'decommission' && !confirm('CONFIRMAR decommission? Essa acao desinstala o agente das maquinas.')) return;
+
+    let ok = 0, fail = 0;
+    for (const hostname of hostnames) {
+      try {
+        await apiFetch('/commands', {
+          method: 'POST',
+          body: JSON.stringify({ hostname, command, issued_by: 'admin-bulk' }),
+        });
+        ok++;
+      } catch (_) { fail++; }
+    }
+    if (ok) toast.ok(`${ok} comando(s) "${label}" enfileirado(s).`);
+    if (fail) toast.err(`${fail} falha(s) ao enviar.`);
+    document.getElementById('bulk-select-all').checked = false;
+    bulkToggleAll(false);
+    await loadHistory();
+  }
+
+  // ── CRUD Clientes ──────────────────────────────────────────────────────────
+  let clientsCache = [];
+  let editingClientId = null;
+
+  async function loadClients() {
+    const tbody = document.getElementById('tbody-clients');
+    try {
+      const clients = await apiFetch('/clients');
+      clientsCache = clients;
+      document.getElementById('badge-clients').textContent = `${clients.filter(c=>c.active).length} ativos / ${clients.length} total`;
+      if (!clients.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="dim" style="padding:14px">Nenhum cliente cadastrado.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = clients.map(c => {
+        const hosts = (c.hostnames || []).map(h => `<span class="pill pill-host">${esc(h)}</span>`).join(' ');
+        const statusPill = c.active
+          ? '<span class="pill pill-client-active">Ativo</span>'
+          : '<span class="pill pill-client-inactive">Inativo</span>';
+        return `<tr>
+          <td><strong>${esc(c.username)}</strong></td>
+          <td>${hosts || '<span class="dim">—</span>'}</td>
+          <td><span class="dim">${esc(c.notes || '—')}</span></td>
+          <td>${statusPill}</td>
+          <td><span class="dim">${fmtDate(c.created_at)}</span></td>
+          <td>
+            <button class="btn btn-ghost" style="font-size:.7rem;padding:2px 8px" onclick="openClientModal(${c.id})">Editar</button>
+            <button class="btn btn-ghost" style="font-size:.7rem;padding:2px 8px;color:var(--red)" onclick="deleteClient(${c.id},'${esc(c.username)}')">Remover</button>
+          </td>
+        </tr>`;
+      }).join('');
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="6"><div class="inline-msg inline-error fade-in"><span class="inline-msg-icon">${ICONS.error}</span><div><strong>Erro ao carregar clientes</strong><p>${esc(e.message)}</p></div></div></td></tr>`;
+    }
+  }
+
+  function openClientModal(clientId) {
+    editingClientId = clientId || null;
+    const isEdit = !!clientId;
+    document.getElementById('client-modal-title').textContent = isEdit ? 'Editar Cliente' : 'Novo Cliente';
+    document.getElementById('client-save-btn').textContent = isEdit ? 'SALVAR' : 'CRIAR';
+    document.getElementById('client-active-wrap').style.display = isEdit ? '' : 'none';
+    document.getElementById('client-username').disabled = isEdit;
+
+    if (isEdit) {
+      const c = clientsCache.find(x => x.id === clientId) || {};
+      document.getElementById('client-username').value = c.username || '';
+      document.getElementById('client-password').value = '';
+      document.getElementById('client-password').placeholder = 'deixe vazio para manter';
+      document.getElementById('client-hostnames').value = (c.hostnames || []).join(', ');
+      document.getElementById('client-notes').value = c.notes || '';
+      document.getElementById('client-active').checked = c.active !== false;
+      document.getElementById('client-active-label').textContent = c.active !== false ? 'Ativo' : 'Inativo';
+    } else {
+      document.getElementById('client-username').value = '';
+      document.getElementById('client-password').value = '';
+      document.getElementById('client-password').placeholder = 'senha de acesso';
+      document.getElementById('client-hostnames').value = '';
+      document.getElementById('client-notes').value = '';
+      document.getElementById('client-active').checked = true;
+    }
+    document.getElementById('client-modal').classList.add('open');
+    document.getElementById(isEdit ? 'client-hostnames' : 'client-username').focus();
+  }
+
+  function closeClientModal() {
+    document.getElementById('client-modal').classList.remove('open');
+    editingClientId = null;
+  }
+
+  document.getElementById('client-active').addEventListener('change', function() {
+    document.getElementById('client-active-label').textContent = this.checked ? 'Ativo' : 'Inativo';
+  });
+
+  async function saveClient() {
+    const username = document.getElementById('client-username').value.trim();
+    const password = document.getElementById('client-password').value;
+    const hostnamesRaw = document.getElementById('client-hostnames').value;
+    const hostnames = hostnamesRaw.split(',').map(h => h.trim()).filter(Boolean);
+    const notes = document.getElementById('client-notes').value.trim();
+
+    if (!editingClientId) {
+      // Criar
+      if (!username || !password) { toast.err('Username e senha obrigatorios.'); return; }
+      if (!hostnames.length) { toast.err('Informe ao menos um hostname.'); return; }
+      try {
+        await apiFetch('/clients', {
+          method: 'POST',
+          body: JSON.stringify({ username, password, hostnames, notes }),
+        });
+        toast.ok(`Cliente "${username}" criado.`);
+        closeClientModal();
+        await loadClients();
+      } catch (e) { toast.err(e.message); }
+    } else {
+      // Editar
+      if (!hostnames.length) { toast.err('Informe ao menos um hostname.'); return; }
+      const body = { hostnames, notes, active: document.getElementById('client-active').checked };
+      if (password) body.password = password;
+      try {
+        await apiFetch(`/clients/${editingClientId}`, {
+          method: 'PATCH',
+          body: JSON.stringify(body),
+        });
+        toast.ok('Cliente atualizado.');
+        closeClientModal();
+        await loadClients();
+      } catch (e) { toast.err(e.message); }
+    }
+  }
+
+  async function deleteClient(clientId, username) {
+    if (!confirm(`Remover o cliente "${username}"?\n\nEle perdera acesso ao portal.`)) return;
+    try {
+      await apiFetch(`/clients/${clientId}`, { method: 'DELETE' });
+      toast.ok(`Cliente "${username}" removido.`);
+      await loadClients();
+    } catch (e) { toast.err(e.message); }
+  }
+
   // ── Init ───────────────────────────────────────────────────────────────────
   async function loadAll() {
-    await Promise.all([fetchServerVersion(), loadAgents(), loadHistory()]);
+    await Promise.all([fetchServerVersion(), loadAgents(), loadHistory(), loadClients()]);
   }
 
   // Reset diag modal state on close (restore run btn and script select)

@@ -188,8 +188,8 @@ async def client_dns_test(request: Request) -> JSONResponse:
 
 
 @client_v1.get("/client/report")
-async def client_report(request: Request, month: str = ""):
-    """Relatorio mensal — uptime, latencia, alertas, comparativo."""
+async def client_report(request: Request, month: str = "", format: str = "json"):
+    """Relatorio mensal — uptime, latencia, alertas. ?format=pdf para PDF."""
     from main import _SafeJSONResponse
     cookie = request.cookies.get("client_session", "")
     client_user = _verify_client_cookie(cookie)
@@ -254,18 +254,131 @@ async def client_report(request: Request, month: str = ""):
         """, *params)
 
     downtime_min = round(total_minutes * (1 - uptime_pct / 100))
+    latency = dict(lat_stats) if lat_stats else {}
 
-    return _SafeJSONResponse({
+    report_data = {
         "period": {"start": start.isoformat(), "end": end.isoformat()},
         "hostnames": hostnames,
         "uptime_pct": uptime_pct,
         "downtime_minutes": downtime_min,
-        "latency": dict(lat_stats) if lat_stats else {},
+        "latency": latency,
         "alerts_total": alerts,
         "alerts_critical": critical,
         "heartbeats": hb_count,
         "expected_heartbeats": expected_hb,
-    })
+    }
+
+    if format == "pdf":
+        pdf_bytes = _build_report_pdf(report_data, client_user)
+        from starlette.responses import Response
+        period_label = month or start.strftime("%Y-%m")
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="dns-report-{period_label}.pdf"'},
+        )
+
+    return _SafeJSONResponse(report_data)
+
+
+def _build_report_pdf(data: dict, client_user: str) -> bytes:
+    """Gera PDF do relatorio mensal usando reportlab."""
+    import io
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.lib.colors import HexColor
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Spacer, Paragraph
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=25*mm, bottomMargin=20*mm,
+                            leftMargin=25*mm, rightMargin=25*mm)
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle("Title2", parent=styles["Title"], fontSize=18,
+                                  textColor=HexColor("#7aa2f7"), spaceAfter=6)
+    subtitle_style = ParagraphStyle("Sub", parent=styles["Normal"], fontSize=10,
+                                     textColor=HexColor("#565f89"), spaceAfter=14)
+    heading_style = ParagraphStyle("H2", parent=styles["Heading2"], fontSize=13,
+                                    textColor=HexColor("#c0caf5"), spaceBefore=14, spaceAfter=6)
+    normal = ParagraphStyle("Body", parent=styles["Normal"], fontSize=10,
+                             textColor=HexColor("#a9b1d6"))
+
+    elements = []
+
+    # Header
+    period = data["period"]
+    elements.append(Paragraph("DNS Monitor — Relatorio Mensal", title_style))
+    elements.append(Paragraph(f"Cliente: {client_user} | Periodo: {period['start'][:10]} a {period['end'][:10]}", subtitle_style))
+    elements.append(Paragraph(f"Hosts: {', '.join(data['hostnames'])}", normal))
+    elements.append(Spacer(1, 8*mm))
+
+    # Disponibilidade
+    elements.append(Paragraph("Disponibilidade", heading_style))
+    uptime_data = [
+        ["Uptime", f"{data['uptime_pct']}%"],
+        ["Downtime", f"{data['downtime_minutes']} minutos"],
+        ["Heartbeats recebidos", f"{data['heartbeats']} / {data['expected_heartbeats']}"],
+    ]
+    t = Table(uptime_data, colWidths=[55*mm, 80*mm])
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, -1), HexColor("#1a1b26")),
+        ("TEXTCOLOR", (0, 0), (-1, -1), HexColor("#a9b1d6")),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("GRID", (0, 0), (-1, -1), 0.5, HexColor("#3b4261")),
+    ]))
+    elements.append(t)
+    elements.append(Spacer(1, 6*mm))
+
+    # Latencia
+    lat = data.get("latency", {})
+    if lat:
+        elements.append(Paragraph("Latencia DNS", heading_style))
+        lat_data = [
+            ["Media", f"{lat.get('avg_ms', '—')} ms"],
+            ["Maximo", f"{lat.get('max_ms', '—')} ms"],
+            ["P95", f"{lat.get('p95_ms', '—')} ms"],
+            ["Total de checks", str(lat.get("total_checks", 0))],
+            ["Falhas", str(lat.get("failures", 0))],
+        ]
+        t2 = Table(lat_data, colWidths=[55*mm, 80*mm])
+        t2.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (0, -1), HexColor("#1a1b26")),
+            ("TEXTCOLOR", (0, 0), (-1, -1), HexColor("#a9b1d6")),
+            ("FONTSIZE", (0, 0), (-1, -1), 10),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("GRID", (0, 0), (-1, -1), 0.5, HexColor("#3b4261")),
+        ]))
+        elements.append(t2)
+        elements.append(Spacer(1, 6*mm))
+
+    # Alertas
+    elements.append(Paragraph("Alertas", heading_style))
+    alert_data = [
+        ["Total de alertas", str(data.get("alerts_total", 0))],
+        ["Alertas criticos", str(data.get("alerts_critical", 0))],
+    ]
+    t3 = Table(alert_data, colWidths=[55*mm, 80*mm])
+    t3.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, -1), HexColor("#1a1b26")),
+        ("TEXTCOLOR", (0, 0), (-1, -1), HexColor("#a9b1d6")),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("GRID", (0, 0), (-1, -1), 0.5, HexColor("#3b4261")),
+    ]))
+    elements.append(t3)
+
+    # Footer
+    elements.append(Spacer(1, 12*mm))
+    from datetime import datetime as _dt
+    elements.append(Paragraph(f"Gerado em {_dt.now().strftime('%d/%m/%Y %H:%M')} — DNS Monitor", subtitle_style))
+
+    doc.build(elements)
+    return buf.getvalue()
 
 
 @client_v1.get("/client/data")

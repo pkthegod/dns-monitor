@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DNS Monitor — Ajuda do Portal</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/base.css?v=072">
+<style>
+  .page { max-width: 800px; margin: 0 auto; padding: 28px 36px 48px; }
+  .header { padding-bottom: 16px; border-bottom: 1px solid var(--border-lo); margin-bottom: 24px; display: flex; align-items: center; gap: 12px; }
+  .header h1 { font-size: 1.1rem; font-weight: 700; color: var(--accent); }
+  .header h1 span { color: var(--text-mid); font-weight: 400; }
+  h2 { font-size: .85rem; font-weight: 700; color: var(--accent); margin: 28px 0 10px; text-transform: uppercase; letter-spacing: .08em; }
+  h3 { font-size: .8rem; font-weight: 600; color: var(--text); margin: 18px 0 6px; }
+  p, li { font-size: .82rem; color: var(--text-mid); line-height: 1.7; }
+  ul { padding-left: 18px; }
+  .faq { background: var(--bg-card); border: 1px solid var(--border-lo); border-radius: 8px; padding: 14px 18px; margin: 10px 0; }
+  .faq summary { font-weight: 600; color: var(--text); cursor: pointer; font-size: .82rem; }
+  .faq p { margin: 8px 0 0; }
+  code { background: var(--bg-input); padding: 1px 5px; border-radius: 4px; font-family: var(--font-mono); font-size: .78rem; }
+  .back-link { font-size: .78rem; color: var(--accent); text-decoration: none; margin-left: auto; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="header">
+    <img src="/static/logo.svg" alt="" style="height:28px;width:28px">
+    <h1>DNS Monitor <span>/ Ajuda do Portal</span></h1>
+    <a href="/client" class="back-link">Voltar ao portal</a>
+  </div>
+
+  <h2>Como ler o painel</h2>
+  <h3>Card de status principal</h3>
+  <p>O card grande no topo mostra a saude geral do seu DNS:</p>
+  <ul>
+    <li><strong>Verde (DNS Saudavel)</strong> — Todos os servidores respondendo normalmente, sem alertas abertos.</li>
+    <li><strong>Amarelo (DNS com Alertas)</strong> — Ha alertas de warning (latencia alta, CPU/RAM elevados). O servico funciona, mas precisa de atencao.</li>
+    <li><strong>Vermelho (DNS Indisponivel)</strong> — Ha alertas criticos: falha de resolucao DNS, servico parado ou servidor offline.</li>
+  </ul>
+
+  <h3>Metricas</h3>
+  <ul>
+    <li><strong>Uptime</strong> — Porcentagem de tempo que seus servidores estiveram online nos ultimos 30 dias. Meta ideal: acima de 99.9%.</li>
+    <li><strong>Latencia</strong> — Tempo medio que seu servidor DNS leva para responder uma consulta. Abaixo de 50ms e excelente; acima de 200ms pode indicar problema.</li>
+    <li><strong>Alertas</strong> — Quantidade de alertas abertos no momento.</li>
+  </ul>
+
+  <h3>Graficos</h3>
+  <ul>
+    <li><strong>Latencia DNS</strong> — Evolucao da latencia ao longo do tempo. Picos indicam momentos de lentidao.</li>
+    <li><strong>Disponibilidade</strong> — Total de checks realizados vs. falhas. Barras vermelhas indicam falhas de resolucao.</li>
+    <li><strong>Carga do servidor</strong> — Indicador simplificado: Baixa (verde), Media (amarelo), Alta (vermelho).</li>
+  </ul>
+
+  <h2>Testar meu DNS</h2>
+  <p>Clique no botao <strong>"Testar meu DNS"</strong> para executar um teste de resolucao sob demanda. O sistema resolve 3 dominios de teste e mostra o resultado em tempo real.</p>
+  <ul>
+    <li>Limite: 1 teste por minuto.</li>
+    <li>O teste leva entre 5 e 30 segundos para completar.</li>
+    <li>Se o teste falhar, verifique se o servidor DNS esta online.</li>
+  </ul>
+
+  <h2>Relatorio SLA</h2>
+  <p>O card de SLA mostra a disponibilidade do mes atual comparada com a meta (99.9%). Inclui:</p>
+  <ul>
+    <li><strong>Meta</strong> — Nivel de servico contratado.</li>
+    <li><strong>Real</strong> — Porcentagem real medida pelo monitoramento.</li>
+    <li><strong>Downtime</strong> — Tempo total em que o servico ficou indisponivel.</li>
+  </ul>
+
+  <h2>Relatorio mensal</h2>
+  <p>Voce pode baixar o relatorio mensal em PDF clicando no botao de download no card de SLA (quando disponivel). O relatorio inclui uptime, latencia, alertas e comparativos.</p>
+
+  <h2>FAQ</h2>
+  <details class="faq">
+    <summary>Meu DNS esta lento?</summary>
+    <p>Verifique a latencia no grafico. Se esta consistentemente acima de 200ms, pode indicar sobrecarga no servidor ou problemas de rede. Contate o suporte se persistir.</p>
+  </details>
+  <details class="faq">
+    <summary>O que e latencia DNS?</summary>
+    <p>E o tempo que o servidor DNS leva para responder uma consulta de resolucao de nomes. Por exemplo, quando voce digita <code>google.com</code>, o DNS converte isso em um endereco IP. A latencia mede quanto tempo essa conversao demora.</p>
+  </details>
+  <details class="faq">
+    <summary>Quando devo contatar o suporte?</summary>
+    <p>Contate o suporte quando: o status ficar vermelho por mais de 5 minutos; a latencia ultrapassar 500ms consistentemente; ou o teste DNS manual falhar repetidamente.</p>
+  </details>
+  <details class="faq">
+    <summary>O que significa "DNS timeout"?</summary>
+    <p>Significa que o servidor DNS nao respondeu dentro do tempo limite (5 segundos). Pode ser causado por: servidor sobrecarregado, problema de rede, ou servico DNS parado.</p>
+  </details>
+  <details class="faq">
+    <summary>Com que frequencia os dados sao atualizados?</summary>
+    <p>O agente envia heartbeats a cada 5 minutos e checks completos 4 vezes ao dia. O portal atualiza automaticamente a cada 60 segundos.</p>
+  </details>
+</div>
+</body>
+</html>

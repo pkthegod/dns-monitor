@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DNS Monitor — Guia do Admin</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/base.css?v=072">
+<style>
+  .page { max-width: 800px; margin: 0 auto; padding: 28px 36px 48px; }
+  .header { padding-bottom: 16px; border-bottom: 1px solid var(--border-lo); margin-bottom: 24px; display: flex; align-items: center; gap: 12px; }
+  .header h1 { font-size: 1.1rem; font-weight: 700; color: var(--accent); }
+  .header h1 span { color: var(--text-mid); font-weight: 400; }
+  h2 { font-size: .85rem; font-weight: 700; color: var(--accent); margin: 28px 0 10px; text-transform: uppercase; letter-spacing: .08em; }
+  h3 { font-size: .8rem; font-weight: 600; color: var(--text); margin: 18px 0 6px; }
+  p, li { font-size: .82rem; color: var(--text-mid); line-height: 1.7; }
+  ul, ol { padding-left: 18px; }
+  code { background: var(--bg-input); padding: 1px 5px; border-radius: 4px; font-family: var(--font-mono); font-size: .78rem; }
+  pre { background: var(--bg-input); padding: 12px 16px; border-radius: 6px; overflow-x: auto; font-family: var(--font-mono); font-size: .75rem; color: var(--text-mid); line-height: 1.6; border: 1px solid var(--border-lo); }
+  table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: .78rem; }
+  th, td { padding: 6px 12px; text-align: left; border: 1px solid var(--border-lo); }
+  th { background: var(--bg-card); color: var(--text-dim); font-weight: 700; text-transform: uppercase; font-size: .7rem; letter-spacing: .06em; }
+  td { color: var(--text-mid); }
+  .back-link { font-size: .78rem; color: var(--accent); text-decoration: none; margin-left: auto; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="header">
+    <img src="/static/logo.svg" alt="" style="height:28px;width:28px">
+    <h1>DNS Monitor <span>/ Guia do Admin</span></h1>
+    <a href="/admin" class="back-link">Voltar ao painel</a>
+  </div>
+
+  <h2>Adicionar um novo agente</h2>
+  <ol>
+    <li>No servidor Linux de destino, copie o arquivo <code>install_agent.sh</code></li>
+    <li>Crie o arquivo <code>env</code> na mesma pasta com o token:
+      <pre>BACKEND_URL=http://SEU_SERVIDOR:8000
+AGENT_TOKEN=seu_token_aqui</pre>
+    </li>
+    <li>Execute: <code>sudo bash install_agent.sh</code></li>
+    <li>O agente aparecera automaticamente no painel em ate 5 minutos</li>
+    <li>Edite o agente no painel para adicionar localizacao e nome amigavel</li>
+  </ol>
+
+  <h2>Criar um cliente</h2>
+  <ol>
+    <li>No painel admin, va ate a secao <strong>Clientes</strong></li>
+    <li>Clique em <strong>"+ Novo Cliente"</strong></li>
+    <li>Preencha: username, senha, e os hostnames que o cliente pode ver (separados por virgula)</li>
+    <li>O cliente acessa o portal em <code>/client/login</code> com as credenciais criadas</li>
+  </ol>
+
+  <h2>Comandos disponiveis</h2>
+  <table>
+    <tr><th>Comando</th><th>Descricao</th><th>Risco</th></tr>
+    <tr><td><code>restart</code></td><td>Reinicia o servico DNS (Bind9/Unbound)</td><td>Baixo</td></tr>
+    <tr><td><code>stop</code></td><td>Para o servico DNS</td><td>Alto — DNS offline</td></tr>
+    <tr><td><code>enable</code></td><td>Habilita o servico DNS no boot</td><td>Baixo</td></tr>
+    <tr><td><code>disable</code></td><td>Desabilita o servico DNS no boot</td><td>Medio</td></tr>
+    <tr><td><code>update_agent</code></td><td>Atualiza o agente para a versao mais recente</td><td>Baixo</td></tr>
+    <tr><td><code>decommission</code></td><td>Desinstala o agente e remove do sistema</td><td>Irreversivel</td></tr>
+    <tr><td><code>purge</code></td><td>Remove todos os dados do agente do banco</td><td>Irreversivel</td></tr>
+    <tr><td><code>dnstop</code></td><td>Captura DNS sob demanda (pcap + analise)</td><td>Baixo</td></tr>
+  </table>
+
+  <h2>Acoes em lote (bulk)</h2>
+  <p>Use os checkboxes na tabela de agentes para selecionar multiplos hosts. Opcoes:</p>
+  <ul>
+    <li><strong>Sel. offline</strong> — Seleciona automaticamente todos os agentes com status offline</li>
+    <li><strong>Restart / Update / Decommission</strong> — Executa o comando em todos os selecionados</li>
+  </ul>
+
+  <h2>Diagnostico remoto</h2>
+  <p>No menu de acoes (⋯) de cada agente:</p>
+  <ul>
+    <li><strong>Bind9 Validacao</strong> — Executa <code>named-checkconf</code> e <code>named-checkzone</code></li>
+    <li><strong>DIG Teste</strong> — Resolve dominios de teste e mostra latencia</li>
+    <li><strong>DNS Trace</strong> — Trace completo da resolucao de um dominio especifico</li>
+  </ul>
+
+  <h2>Status dos agentes</h2>
+  <table>
+    <tr><th>Status</th><th>Cor</th><th>Significado</th></tr>
+    <tr><td>Online</td><td>Verde</td><td>Heartbeat recebido nos ultimos 10 minutos</td></tr>
+    <tr><td>Instavel</td><td>Amarelo</td><td>Heartbeat atrasado (10-30 minutos)</td></tr>
+    <tr><td>Offline</td><td>Vermelho</td><td>Sem heartbeat ha mais de 30 minutos</td></tr>
+    <tr><td>Nunca visto</td><td>Cinza</td><td>Agente registrado mas nunca enviou dados</td></tr>
+  </table>
+
+  <h2>Troubleshooting</h2>
+  <h3>Agente nao aparece no painel</h3>
+  <ul>
+    <li>Verifique se o servico esta rodando: <code>systemctl status dns-agent</code></li>
+    <li>Verifique os logs: <code>journalctl -u dns-agent -f</code></li>
+    <li>Confirme que <code>BACKEND_URL</code> e <code>AGENT_TOKEN</code> estao corretos no <code>/etc/dns-agent/env</code></li>
+    <li>Teste conectividade: <code>curl -s http://SEU_SERVIDOR:8000/health</code></li>
+  </ul>
+  <h3>Comando nao executa</h3>
+  <ul>
+    <li>O agente faz polling a cada 60 segundos — aguarde ate 1 minuto</li>
+    <li>Se NATS estiver conectado, a entrega e quase instantanea</li>
+    <li>Verifique o historico de comandos no painel — status "expired" indica que o agente nao buscou a tempo</li>
+  </ul>
+
+  <h2>API</h2>
+  <p>A documentacao completa da API esta disponivel em <a href="/docs" style="color:var(--accent)">/docs</a> (Swagger/OpenAPI).</p>
+  <h3>Exemplos com curl</h3>
+  <pre>
+# Listar agentes
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/api/v1/agents
+
+# Enviar comando
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"hostname":"dns01","command":"restart","issued_by":"admin"}' \
+  http://localhost:8000/api/v1/commands
+
+# Health check
+curl http://localhost:8000/health</pre>
+</div>
+</body>
+</html>
