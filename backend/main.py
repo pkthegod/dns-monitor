@@ -969,7 +969,7 @@ async def dashboard_data(period: str = "24h", host: str = "") -> _SafeJSONRespon
             WHERE ts > NOW() - INTERVAL '{interval}'{host_filter}
             GROUP BY hostname, bucket
             ORDER BY bucket
-        """)]
+        """, *host_params)]
 
         recent_alerts = [dict(r) for r in await conn.fetch(f"""
             SELECT hostname, alert_type, severity, message, ts
