@@ -942,6 +942,11 @@ def _run_dnstop(cfg: Config, logger: logging.Logger, params: str = None) -> tupl
     duration  = int(p.get("duration", params or 9))
     interface = p.get("interface", "any")
     duration  = max(3, min(duration, 30))
+
+    # Validacao de interface — previne command injection
+    if not re.match(r'^[a-zA-Z0-9._-]+$', interface):
+        return "failed", f"Interface invalida: {interface}"
+
     pcap_path = tempfile.mktemp(suffix=".pcap")
 
     try:
@@ -1206,6 +1211,12 @@ def _run_dig_trace(domain: str, resolver: str, logger: logging.Logger) -> tuple[
     Usado pelo comando run_script com params {"script":"dig_trace",...}.
     """
     import re as _re
+
+    # Validacao de inputs — previne command injection
+    if not re.match(r'^[a-zA-Z0-9._-]+$', domain):
+        return "failed", f"Dominio invalido: {domain}"
+    if resolver and not re.match(r'^[a-zA-Z0-9._:-]+$', resolver):
+        return "failed", f"Resolver invalido: {resolver}"
 
     result: dict = {
         "script":          "dig_trace",

@@ -980,18 +980,17 @@
     await Promise.all([fetchServerVersion(), loadAgents(), loadHistory()]);
   }
 
-  // Token embutido via sessao — esconde campo manual
-  if (window.__TOKEN__) {
-    const wrap = document.querySelector('.token-wrap');
-    if (wrap) wrap.style.display = 'none';
-  } else {
-    const savedToken = sessionStorage.getItem('dns_admin_token');
-    if (savedToken) document.getElementById('token-input').value = savedToken;
-    document.getElementById('token-input').addEventListener('change', e => {
-      sessionStorage.setItem('dns_admin_token', e.target.value);
-      loadAll();
-    });
-  }
+  // Busca token via sessao (cookie httponly) — fallback campo manual
+  fetchSessionToken().then(ok => {
+    if (!ok) {
+      const savedToken = sessionStorage.getItem('dns_admin_token');
+      if (savedToken) document.getElementById('token-input').value = savedToken;
+      document.getElementById('token-input').addEventListener('change', e => {
+        sessionStorage.setItem('dns_admin_token', e.target.value);
+        loadAll();
+      });
+    }
+  });
 
   // Reset diag modal state on close (restore run btn and script select)
   document.getElementById('diag-modal').addEventListener('click', e => {

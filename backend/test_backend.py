@@ -2400,84 +2400,64 @@ class TestApiVersioning:
 # Token embutido no admin — Feature 010 Fase 1
 # ===========================================================================
 
-class TestEmbeddedToken:
-    """Verifica que o admin/dashboard injeta o token na sessao autenticada."""
+class TestSessionTokenSecurity:
+    """Verifica que token NAO e exposto no HTML e que endpoint /session/token funciona."""
 
     def _run(self, coro):
         return asyncio.run(coro)
 
-    def test_admin_html_contains_embedded_token(self):
-        """GET /admin com sessao valida deve injetar __TOKEN__ no HTML."""
-        import importlib
-        import main as m
-
+    def test_admin_html_never_contains_token(self):
+        """GET /admin NAO deve ter AGENT_TOKEN no HTML (seguranca)."""
+        import importlib, main as m
         with patch.dict(os.environ, {"AGENT_TOKEN": "secret-tok-xyz"}):
             importlib.reload(m)
-
             async def run():
                 request = MagicMock()
                 cookie_val = m._sign_admin_cookie("admin")
                 request.cookies = {"admin_session": cookie_val}
-                resp = await m.admin_panel(request)
-                return resp
-
+                return await m.admin_panel(request)
             resp = self._run(run())
             body = resp.body.decode()
-            assert "window.__TOKEN__" in body
-            assert "secret-tok-xyz" in body
+            assert "secret-tok-xyz" not in body
 
-    def test_admin_html_no_token_without_session(self):
-        """GET /admin sem sessao deve redirecionar, nao expor token."""
-        import importlib
-        import main as m
-        importlib.reload(m)
-
-        async def run():
-            request = MagicMock()
-            request.cookies = {}
-            resp = await m.admin_panel(request)
-            return resp
-
-        resp = self._run(run())
-        assert resp.status_code == 303
-
-    def test_dashboard_has_embedded_token_with_session(self):
-        """GET /dashboard com sessao admin deve injetar __TOKEN__."""
-        import importlib
-        import main as m
-
+    def test_dashboard_html_never_contains_token(self):
+        """GET /dashboard NAO deve ter AGENT_TOKEN no HTML."""
+        import importlib, main as m
         with patch.dict(os.environ, {"AGENT_TOKEN": "dash-tok-123"}):
             importlib.reload(m)
-
-            async def run():
-                request = MagicMock()
-                cookie_val = m._sign_admin_cookie("admin")
-                request.cookies = {"admin_session": cookie_val}
-                resp = await m.dashboard_page(request)
-                return resp
-
-            resp = self._run(run())
-            body = resp.body.decode()
-            assert "window.__TOKEN__" in body
-            assert "dash-tok-123" in body
-
-    def test_dashboard_no_token_value_without_session(self):
-        """GET /dashboard sem sessao nao deve injetar o valor do token."""
-        import importlib
-        import main as m
-
-        with patch.dict(os.environ, {"AGENT_TOKEN": "should-not-appear"}):
-            importlib.reload(m)
-
             async def run():
                 request = MagicMock()
                 request.cookies = {}
-                resp = await m.dashboard_page(request)
-                return resp
-
+                return await m.dashboard_page(request)
             resp = self._run(run())
-            body = resp.body.decode()
-            assert "should-not-appear" not in body
+            assert "dash-tok-123" not in resp.body.decode()
+
+    def test_session_token_returns_token_with_admin_cookie(self):
+        """GET /session/token com sessao admin retorna token."""
+        import importlib, main as m
+        with patch.dict(os.environ, {"AGENT_TOKEN": "tok-abc"}):
+            importlib.reload(m)
+            async def run():
+                request = MagicMock()
+                request.cookies = {"admin_session": m._sign_admin_cookie("admin"), "client_session": ""}
+                return await m.session_token(request)
+            resp = self._run(run())
+            import json
+            body = json.loads(resp.body)
+            assert body["token"] == "tok-abc"
+
+    def test_session_token_rejects_without_session(self):
+        """GET /session/token sem sessao retorna 401."""
+        import importlib, main as m
+        importlib.reload(m)
+        async def run():
+            request = MagicMock()
+            request.cookies = {"admin_session": "", "client_session": ""}
+            return await m.session_token(request)
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc:
+            self._run(run())
+        assert exc.value.status_code == 401
 
 
 # ===========================================================================

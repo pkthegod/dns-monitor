@@ -258,11 +258,8 @@ async function loadDashboard() {
   });
 })();
 
-// Auto-load se token embutido via sessao admin
-if (window.__TOKEN__) {
-  document.querySelector('.token-bar').style.display = 'none';
-  loadDashboard();
-}
+// Auto-load se sessao admin valida
+fetchSessionToken().then(ok => { if (ok) loadDashboard(); });
 </script>
 </body>
 </html>
