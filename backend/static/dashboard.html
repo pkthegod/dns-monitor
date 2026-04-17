@@ -11,8 +11,33 @@
 <link rel="stylesheet" href="/static/base.css">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <style>
-  .page { max-width: 1400px; margin: 0 auto; padding: 28px 36px 48px; }
+  .page { max-width: 1400px; margin: 0 auto; padding: 0 36px 48px; }
   .token-bar { margin-bottom: 28px; }
+
+  /* Status bar sticky */
+  .status-bar {
+    position: sticky; top: 0; z-index: 100;
+    display: flex; align-items: center; gap: 20px;
+    background: var(--bg-card); border-bottom: 1px solid var(--border);
+    padding: 10px 36px; margin: 0 -36px 24px;
+    font-family: var(--font-mono); font-size: 12px; font-weight: 600;
+    animation: fadeIn .4s ease both;
+  }
+  .sb-item { display: flex; align-items: center; gap: 8px; }
+  .sb-count {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 26px; height: 26px; border-radius: 50%;
+    font-size: 12px; font-weight: 700;
+  }
+  .sb-critical { color: var(--red); }
+  .sb-critical .sb-count { background: #f7768e22; border: 1px solid #f7768e44; }
+  .sb-warning { color: var(--yellow); }
+  .sb-warning .sb-count { background: #e0af6822; border: 1px solid #e0af6844; }
+  .sb-healthy { color: var(--green); }
+  .sb-healthy .sb-count { background: #9ece6a22; border: 1px solid #9ece6a44; }
+  .sb-offline { color: var(--text-dim); }
+  .sb-offline .sb-count { background: var(--bg-subtle); border: 1px solid var(--border); }
+  .sb-updated { margin-left: auto; color: var(--text-dim); font-weight: 400; }
   .token-bar .status { font-size: 12px; color: var(--text-dim); font-family: var(--font-mono); }
 
   /* KPIs */
@@ -60,6 +85,14 @@
 </head>
 <body>
 <div class="page">
+
+  <div class="status-bar" id="statusBar">
+    <div class="sb-item sb-critical"><span class="sb-count" id="sbCritical">0</span> Critico</div>
+    <div class="sb-item sb-warning"><span class="sb-count" id="sbWarning">0</span> Alertas</div>
+    <div class="sb-item sb-healthy"><span class="sb-count" id="sbHealthy">0</span> Saudavel</div>
+    <div class="sb-item sb-offline"><span class="sb-count" id="sbOffline">0</span> Offline</div>
+    <span class="sb-updated" id="sbUpdated"></span>
+  </div>
 
   <div class="header fade-in">
     <img src="/static/logo.svg" alt="">
@@ -154,17 +187,29 @@ function renderKPIs(data) {
   const ag = data.agents || [];
   const on = ag.filter(a => a.agent_status === 'online').length;
   const off = ag.filter(a => ['offline','never_seen'].includes(a.agent_status)).length;
+  const stale = ag.filter(a => a.agent_status === 'stale').length;
+  const alerts = data.recent_alerts || [];
+  const critical = alerts.filter(a => a.severity === 'critical').length;
+  const warnings = alerts.filter(a => a.severity === 'warning').length;
   const cpus = ag.map(a => a.cpu_percent).filter(v => v != null);
   const cpuA = cpus.length ? (cpus.reduce((a,b)=>a+b,0)/cpus.length).toFixed(1) : '--';
   const lats = (data.dns_latency||[]).map(d=>d.avg_ms).filter(v=>v!=null);
   const latA = lats.length ? (lats.reduce((a,b)=>a+b,0)/lats.length).toFixed(1) : '--';
 
+  // Status bar
+  document.getElementById('sbCritical').textContent = critical;
+  document.getElementById('sbWarning').textContent = warnings;
+  document.getElementById('sbHealthy').textContent = on;
+  document.getElementById('sbOffline').textContent = off + stale;
+  document.getElementById('sbUpdated').textContent = new Date().toLocaleTimeString('pt-BR');
+
+  // KPIs
   document.getElementById('kpiAgents').textContent = ag.length || '--';
   document.getElementById('kpiOnline').textContent = on || '0';
   document.getElementById('kpiOffline').textContent = off || '0';
   document.getElementById('kpiAvgLatency').textContent = latA !== '--' ? latA+'ms' : '--';
   document.getElementById('kpiCpuAvg').textContent = cpuA !== '--' ? cpuA+'%' : '--';
-  document.getElementById('kpiAlerts24h').textContent = (data.recent_alerts||[]).length;
+  document.getElementById('kpiAlerts24h').textContent = alerts.length;
   animateChildren('#kpiContainer', 'fade-in');
 }
 
