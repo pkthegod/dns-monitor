@@ -97,32 +97,6 @@ services:
     volumes:
       - nats_data:/data
 
-  # ─────────────────────────────────────────────
-  # Grafana
-  # ─────────────────────────────────────────────
-  grafana:
-    image: grafana/grafana:latest
-    container_name: dns_monitor_grafana
-    restart: unless-stopped
-    networks:
-      dns_monitor_net:
-        ipv4_address: 172.20.0.12
-    ports:
-      - "3000:3000"
-    environment:
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:?Defina GRAFANA_PASSWORD no .env}
-      GF_SERVER_ROOT_URL: http://localhost:3000
-      GF_USERS_ALLOW_SIGN_UP: "false"
-      TZ: America/Sao_Paulo
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ../grafana/provisioning:/etc/grafana/provisioning:ro
-      - ../grafana/dashboards:/var/lib/grafana/dashboards:ro
-    depends_on:
-      - postgres
-
 volumes:
   pgdata:
-  grafana_data:
   nats_data:

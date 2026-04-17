@@ -2,6 +2,81 @@
 
 ---
 
+## [v0.6.1] — 2026-04-17 — Grafana removido, zoom temporal, hardening A+
+
+### Mudancas
+
+#### Grafana removido
+- Container grafana removido do docker-compose
+- Volume grafana_data removido
+- -1 servico, -1 porta (3000), -1 senha (GRAFANA_PASSWORD)
+- Dashboard e portal proprios substituem completamente
+
+#### Zoom temporal + drill-down por host
+- Seletor de periodo: 1h / 24h / 7d nos dashboards e portal
+- Filtro por hostname no dashboard admin
+- Bucket automatico: 5min (1h), 30min (6h), 1h (24h), 6h (7d)
+- Alertas filtrados pelo mesmo periodo e host
+- Portal do cliente com seletor de periodo
+
+#### Security hardening final
+- Cookies com nonce aleatorio (previne session fixation)
+- TTL reduzido: admin 4h, cliente 12h
+- Timing attack mitigado: dummy bcrypt para users inexistentes
+- Audit log persistente: tabela audit_log no DB
+- Request logging: POST/PATCH/DELETE em /api/ logados com IP
+- Mensagens de erro sanitizadas (sem detalhes internos)
+- HSTS + CSP headers adicionados
+
+### Testes
+
+- 303 testes passando (165 backend + 138 agent)
+
+---
+
+## [v0.6.0] — 2026-04-17 — Security Hardening (Grade A)
+
+### Seguranca
+
+#### Input Validation (SEC-7)
+- Interface do dnstop validada com regex `^[a-zA-Z0-9._-]+$` — previne RCE
+- Domain e resolver do dig_trace validados com regex
+- Hostname no payload do agente validado (max 128 chars, alfanumerico)
+
+#### Token removido do HTML (SEC-8)
+- `window.__TOKEN__` NUNCA mais injetado no frontend
+- Novo endpoint `GET /api/v1/session/token` retorna token via cookie httponly
+- app.js: `fetchSessionToken()` busca token com credentials same-origin
+- Token nao aparece no source HTML, DevTools, ou network tab
+
+#### Security Headers (SEC-9)
+- `Strict-Transport-Security: max-age=31536000; includeSubDomains`
+- `Content-Security-Policy` com whitelist de origens (self, cdn.jsdelivr.net, fonts)
+- `X-Frame-Options: DENY` — previne clickjacking
+- `X-Content-Type-Options: nosniff`
+- `Referrer-Policy: strict-origin-when-cross-origin`
+- `Permissions-Policy: camera=(), microphone=(), geolocation=()`
+- `Cache-Control: no-store, private` em todos os endpoints /api/
+
+#### Session Hardening
+- Cookies com nonce aleatorio (`secrets.token_hex`) — previne session fixation
+- TTL reduzido: admin 4h (era 24h), cliente 12h (era 24h)
+- Timing attack mitigado: dummy bcrypt verify para users inexistentes
+
+#### Audit Log
+- Tabela `audit_log` (actor, action, target, detail, ip, timestamp)
+- Logados: login ok/falho (admin + cliente), comandos emitidos, clientes criados
+
+#### Error Sanitization
+- Health endpoint retorna "unavailable" em vez de detalhes do DB
+- Erros genericos para o frontend, detalhes so no log do servidor
+
+### Testes
+
+- 303 testes passando (165 backend + 138 agent)
+
+---
+
 ## [v0.5.0] — 2026-04-16 — Portal do Cliente, Token Embutido & NATS
 
 ### Novidades
