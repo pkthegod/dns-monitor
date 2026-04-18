@@ -384,6 +384,37 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \\
 
 from starlette.middleware.base import BaseHTTPMiddleware
 
+class CSRFMiddleware(BaseHTTPMiddleware):
+    """Valida Origin/Referer em requests mutativos (POST/PATCH/DELETE).
+    Requests com Bearer token (agentes) sao isentos — CSRF so afeta cookies."""
+    async def dispatch(self, request, call_next):
+        if request.method in ("POST", "PATCH", "DELETE"):
+            # Agentes usam Bearer token, nao cookies — isentos de CSRF
+            auth = request.headers.get("authorization", "")
+            if auth.startswith("Bearer "):
+                return await call_next(request)
+
+            origin = request.headers.get("origin", "")
+            referer = request.headers.get("referer", "")
+            host = request.headers.get("host", "")
+
+            # Valida que origin/referer pertence ao mesmo host
+            if origin:
+                if not origin.endswith(host) and not origin.endswith(host.split(":")[0]):
+                    logger.warning("CSRF bloqueado: origin=%s host=%s", origin, host)
+                    return JSONResponse({"error": "CSRF validation failed"}, status_code=403)
+            elif referer:
+                from urllib.parse import urlparse
+                ref_host = urlparse(referer).netloc
+                if ref_host != host and ref_host.split(":")[0] != host.split(":")[0]:
+                    logger.warning("CSRF bloqueado: referer=%s host=%s", referer, host)
+                    return JSONResponse({"error": "CSRF validation failed"}, status_code=403)
+            # Se nenhum header presente: requests de form POST do browser SEMPRE enviam origin/referer
+            # Requests sem ambos sao provavelmente curl/API — ok (cobertos por Bearer token)
+
+        return await call_next(request)
+
+
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
     """Loga chamadas de API mutativas (POST/PATCH/DELETE) para auditoria."""
     async def dispatch(self, request, call_next):
@@ -401,7 +432,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
             "script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; "
@@ -414,7 +445,20 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             response.headers["Cache-Control"] = "no-store, private"
         return response
 
+class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
+    """Rejeita requests com body > 10MB."""
+    MAX_BODY = 10 * 1024 * 1024  # 10MB
+
+    async def dispatch(self, request, call_next):
+        if request.method in ("POST", "PATCH", "PUT"):
+            cl = request.headers.get("content-length")
+            if cl and int(cl) > self.MAX_BODY:
+                return JSONResponse({"error": "Request body too large"}, status_code=413)
+        return await call_next(request)
+
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(CSRFMiddleware)
+app.add_middleware(RequestSizeLimitMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 
 app.mount("/static", StaticFiles(directory=str(pathlib.Path(__file__).parent / "static")), name="static")
@@ -705,7 +749,8 @@ async def admin_login_post(request: Request):
     await db.audit("admin", "login_ok", username, ip=ip)
     resp = RedirectResponse("/admin", status_code=303)
     cookie_val = _sign_admin_cookie(username)
-    resp.set_cookie("admin_session", cookie_val, httponly=True, samesite="strict", max_age=_ADMIN_SESSION_TTL)
+    _secure = os.environ.get("COOKIE_SECURE", "true").lower() in ("true", "1", "yes")
+    resp.set_cookie("admin_session", cookie_val, httponly=True, secure=_secure, samesite="strict", max_age=_ADMIN_SESSION_TTL)
     return resp
 
 
