@@ -146,9 +146,11 @@ async def client_portal(request: Request) -> HTMLResponse:
         return RedirectResponse("/client/login", status_code=303)
     html_path = pathlib.Path(__file__).parent / "static" / "client.html"
     html = html_path.read_text(encoding="utf-8")
-    snippet = f'<script>window.__CLIENT__="{username}";</script>'
+    nonce = getattr(request.state, "csp_nonce", "")
+    snippet = f'<script nonce="{nonce}">window.__CLIENT__="{username}";</script>'
     html = html.replace("</head>", snippet + "\n</head>", 1)
-    return HTMLResponse(html)
+    from main import _html_with_nonce
+    return HTMLResponse(_html_with_nonce(html, nonce))
 
 
 # ---------------------------------------------------------------------------

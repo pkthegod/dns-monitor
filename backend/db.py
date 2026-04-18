@@ -696,6 +696,19 @@ _VALID_PERIODS = {"1h": "1 hour", "6h": "6 hours", "24h": "24 hours", "7d": "7 d
 _BUCKET_MAP    = {"1h": "5 minutes", "6h": "30 minutes", "24h": "1 hour", "7d": "6 hours"}
 
 
+async def validate_client_hostnames(client_username: str, requested_hostnames: list[str]) -> bool:
+    """Valida que os hostnames pertencem ao cliente. Previne acesso cross-client."""
+    async with get_conn() as conn:
+        row = await conn.fetchrow(
+            "SELECT hostnames FROM client_users WHERE username = $1 AND active = TRUE",
+            client_username,
+        )
+    if not row:
+        return False
+    allowed = set(row["hostnames"] or [])
+    return all(h in allowed for h in requested_hostnames)
+
+
 async def get_aggregated_metrics(
     period: str = "24h",
     hostnames: list[str] | None = None,

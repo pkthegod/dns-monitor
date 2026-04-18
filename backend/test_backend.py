@@ -1644,7 +1644,10 @@ class TestAdminLogin:
         import main as m
 
         async def run():
-            resp = await m.admin_login_page()
+            request = MagicMock()
+            request.state = MagicMock()
+            request.state.csp_nonce = "test-nonce"
+            resp = await m.admin_login_page(request)
             return resp
 
         resp = self._run(run())
