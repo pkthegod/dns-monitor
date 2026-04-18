@@ -438,5 +438,21 @@ CREATE TABLE IF NOT EXISTS client_users (
     email         TEXT
 );
 
--- Migracao: campo email (ADD COLUMN IF NOT EXISTS e idempotente)
+-- Migracoes (ADD COLUMN IF NOT EXISTS e idempotente)
 ALTER TABLE client_users ADD COLUMN IF NOT EXISTS email TEXT;
+ALTER TABLE client_users ADD COLUMN IF NOT EXISTS webhook_url TEXT;
+
+
+-- =============================================================================
+-- DAILY REPORTS — relatorios diarios gerados automaticamente
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS daily_reports (
+    id            SERIAL       PRIMARY KEY,
+    report_date   DATE         NOT NULL,
+    client_id     INTEGER      REFERENCES client_users(id) ON DELETE CASCADE,
+    pdf_data      BYTEA        NOT NULL,
+    generated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    UNIQUE (report_date, client_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_reports_client ON daily_reports (client_id, report_date DESC);

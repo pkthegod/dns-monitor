@@ -82,6 +82,8 @@ async def update_client_endpoint(client_id: int, request: Request) -> JSONRespon
         fields["password_hash"] = _hash_password(body["password"])
     if "email" in body:
         fields["email"] = body["email"].strip() or None
+    if "webhook_url" in body:
+        fields["webhook_url"] = body["webhook_url"].strip() or None
     ok = await db.update_client(client_id, **fields)
     if not ok:
         raise HTTPException(status_code=404, detail="Cliente nao encontrado")
@@ -409,3 +411,82 @@ async def client_data(request: Request, period: str = "24h"):
 
     data = await db.get_aggregated_metrics(period, hostnames)
     return _SafeJSONResponse(data)
+
+
+# ---------------------------------------------------------------------------
+# Daily Reports — listagem e download
+# ---------------------------------------------------------------------------
+
+@client_v1.get("/client/reports")
+async def list_client_reports(request: Request):
+    """Lista relatorios diarios disponiveis para o cliente logado."""
+    from main import _SafeJSONResponse
+    cookie = request.cookies.get("client_session", "")
+    client_user = _verify_client_cookie(cookie)
+    if not client_user:
+        raise HTTPException(status_code=403, detail="Acesso negado")
+    user = await db.get_client(client_user)
+    if not user or not user["active"]:
+        raise HTTPException(status_code=403)
+    reports = await db.list_daily_reports(user["id"])
+    return _SafeJSONResponse(reports)
+
+
+@client_v1.get("/client/reports/{date}")
+async def download_client_report(date: str, request: Request):
+    """Download PDF do relatorio diario de uma data especifica."""
+    cookie = request.cookies.get("client_session", "")
+    client_user = _verify_client_cookie(cookie)
+    if not client_user:
+        raise HTTPException(status_code=403, detail="Acesso negado")
+    user = await db.get_client(client_user)
+    if not user or not user["active"]:
+        raise HTTPException(status_code=403)
+
+    from datetime import date as _date_type
+    try:
+        report_date = _date_type.fromisoformat(date)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Formato de data invalido (YYYY-MM-DD)")
+
+    pdf = await db.get_daily_report_pdf(report_date, user["id"])
+    if not pdf:
+        raise HTTPException(status_code=404, detail="Relatorio nao encontrado para esta data")
+
+    from starlette.responses import Response
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="dns-daily-{date}.pdf"'},
+    )
+
+
+@client_v1.get("/reports")
+async def list_all_reports(request: Request):
+    """Admin: lista todos os relatorios diarios."""
+    await require_token(request)
+    from main import _SafeJSONResponse
+    reports = await db.list_all_daily_reports()
+    return _SafeJSONResponse(reports)
+
+
+@client_v1.get("/reports/{date}/{client_id}")
+async def download_report_admin(date: str, client_id: int, request: Request):
+    """Admin: download PDF de qualquer cliente por data."""
+    await require_token(request)
+    from datetime import date as _date_type
+    try:
+        report_date = _date_type.fromisoformat(date)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Formato de data invalido")
+
+    pdf = await db.get_daily_report_pdf(report_date, client_id)
+    if not pdf:
+        raise HTTPException(status_code=404, detail="Relatorio nao encontrado")
+
+    from starlette.responses import Response
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="dns-daily-{date}-{client_id}.pdf"'},
+    )

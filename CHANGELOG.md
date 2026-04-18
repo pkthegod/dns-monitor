@@ -2,6 +2,40 @@
 
 ---
 
+## [v1.1.0] — 2026-04-18 — Daily reports, mobile, webhooks, WebSocket real-time
+
+### Novidades
+
+#### Relatorio diario automatico (Feature 013)
+- Job scheduler as 23:59: gera PDF do dia para cada cliente ativo
+- Tabela `daily_reports` com PDF armazenado no banco
+- Endpoints: `GET /api/v1/client/reports` (lista), `GET /api/v1/client/reports/{date}` (download)
+- Admin: `GET /api/v1/reports` (todos), `GET /api/v1/reports/{date}/{client_id}` (download)
+
+#### Mobile responsive
+- Media queries em base.css: tabelas com scroll horizontal, touch targets maiores
+- Portal do cliente: hero, charts, gauges e timeline adaptaveis
+- Admin: bulk bar, modais full-width, diagnostico ajustado
+- Input font-size 16px (previne zoom automatico no iOS)
+
+#### Webhook integrations (Slack, Teams, PagerDuty, generico)
+- Modulo `webhooks.py`: auto-detecta formato pela URL
+- Campo `webhook_url` no CRUD de clientes
+- Disparo automatico em alertas critical para clientes com webhook configurado
+- Suporte: Slack attachments, Teams MessageCard, PagerDuty Events v2, JSON generico
+
+#### Dashboard real-time via WebSocket
+- Endpoint `ws://host/ws/live?token=...` — push de metricas ao vivo
+- Admin e dashboard reconectam automaticamente em 5s se conexao cair
+- Atualiza dados instantaneamente quando agente envia metricas
+- Fallback: polling a cada 5 min continua funcionando se WS indisponivel
+
+### Testes
+
+- 165 passed, 2 skipped (sem regressao)
+
+---
+
 ## [v1.0.2] — 2026-04-18 — Security Grade A+ (monitoring, nonces, rotation)
 
 ### Seguranca
