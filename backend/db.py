@@ -624,11 +624,11 @@ async def get_client(username: str) -> Optional[dict]:
 async def list_clients() -> list[dict]:
     async with get_conn() as conn:
         rows = await conn.fetch(
-            "SELECT id, username, hostnames, active, created_at, notes, email FROM client_users ORDER BY username")
+            "SELECT id, username, hostnames, active, created_at, notes, email, webhook_url FROM client_users ORDER BY username")
         return [dict(r) for r in rows]
 
 
-_CLIENT_ALLOWED_FIELDS = {"hostnames", "active", "password_hash", "notes", "email"}
+_CLIENT_ALLOWED_FIELDS = {"hostnames", "active", "password_hash", "notes", "email", "webhook_url"}
 
 
 async def update_client(client_id: int, **fields) -> bool:
@@ -686,6 +686,56 @@ async def audit(actor: str, action: str, target: str = None,
             )
     except Exception as exc:
         logger.warning("Audit log falhou: %s", exc)
+
+
+# ===========================================================================
+# Daily Reports
+# ===========================================================================
+
+async def save_daily_report(report_date, client_id: int, pdf_data: bytes) -> int:
+    async with get_conn() as conn:
+        row = await conn.fetchrow(
+            """INSERT INTO daily_reports (report_date, client_id, pdf_data)
+               VALUES ($1, $2, $3)
+               ON CONFLICT (report_date, client_id) DO UPDATE SET pdf_data = $3, generated_at = NOW()
+               RETURNING id""",
+            report_date, client_id, pdf_data,
+        )
+        return row["id"]
+
+
+async def list_daily_reports(client_id: int, limit: int = 30) -> list[dict]:
+    async with get_conn() as conn:
+        rows = await conn.fetch(
+            """SELECT id, report_date, generated_at, LENGTH(pdf_data) AS size_bytes
+               FROM daily_reports WHERE client_id = $1
+               ORDER BY report_date DESC LIMIT $2""",
+            client_id, limit,
+        )
+        return [dict(r) for r in rows]
+
+
+async def get_daily_report_pdf(report_date, client_id: int) -> bytes | None:
+    async with get_conn() as conn:
+        row = await conn.fetchrow(
+            "SELECT pdf_data FROM daily_reports WHERE report_date = $1 AND client_id = $2",
+            report_date, client_id,
+        )
+        return row["pdf_data"] if row else None
+
+
+async def list_all_daily_reports(limit: int = 50) -> list[dict]:
+    """Admin: lista todos os relatorios de todos os clientes."""
+    async with get_conn() as conn:
+        rows = await conn.fetch(
+            """SELECT dr.id, dr.report_date, dr.client_id, dr.generated_at,
+                      LENGTH(dr.pdf_data) AS size_bytes, cu.username
+               FROM daily_reports dr
+               JOIN client_users cu ON cu.id = dr.client_id
+               ORDER BY dr.report_date DESC LIMIT $1""",
+            limit,
+        )
+        return [dict(r) for r in rows]
 
 
 # ===========================================================================

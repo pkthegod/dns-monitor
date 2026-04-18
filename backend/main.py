@@ -53,6 +53,8 @@ from routes_client import (  # noqa: F401
     client_data, client_dns_test, client_report,
     list_clients_endpoint, create_client_endpoint,
     update_client_endpoint, delete_client_endpoint,
+    list_client_reports, download_client_report,
+    list_all_reports, download_report_admin,
 )
 
 try:
@@ -271,10 +273,84 @@ async def job_monthly_email() -> None:
     logger.info("Emails mensais: %d enviados de %d clientes com email", sent, len(clients))
 
 
+async def job_daily_report() -> None:
+    """Roda as 23:59: gera relatorio PDF do dia para cada cliente ativo."""
+    from datetime import datetime as _dt, timedelta as _td, date as _date
+    from routes_client import _build_report_pdf
+
+    today = _date.today()
+    start = _dt(today.year, today.month, today.day)
+    end = start + _td(days=1)
+
+    clients = await db.list_clients()
+    generated = 0
+    for client in clients:
+        if not client.get("active"):
+            continue
+        hostnames = client.get("hostnames", [])
+        if not hostnames:
+            continue
+
+        placeholders = ", ".join(f"${i+1}" for i in range(len(hostnames)))
+        p_start = f"${len(hostnames)+1}"
+        p_end = f"${len(hostnames)+2}"
+        params = [*hostnames, start, end]
+
+        async with db.get_conn() as conn:
+            hb_count = await conn.fetchval(f"""
+                SELECT COUNT(*) FROM agent_heartbeats
+                WHERE hostname IN ({placeholders}) AND ts BETWEEN {p_start} AND {p_end}
+            """, *params)
+
+            total_minutes = (end - start).total_seconds() / 60
+            expected_hb = int(total_minutes / 5) * len(hostnames)
+            uptime_pct = round((hb_count / max(expected_hb, 1)) * 100, 2)
+
+            lat_stats = await conn.fetchrow(f"""
+                SELECT ROUND(AVG(latency_ms)::numeric, 1) AS avg_ms,
+                       ROUND(MAX(latency_ms)::numeric, 1) AS max_ms,
+                       ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms)::numeric, 1) AS p95_ms,
+                       COUNT(*) AS total_checks,
+                       SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failures
+                FROM dns_checks
+                WHERE hostname IN ({placeholders}) AND ts BETWEEN {p_start} AND {p_end}
+                      AND latency_ms IS NOT NULL
+            """, *params) or {}
+
+            alerts = await conn.fetchval(f"""
+                SELECT COUNT(*) FROM alerts_log
+                WHERE hostname IN ({placeholders}) AND ts BETWEEN {p_start} AND {p_end}
+            """, *params)
+            critical = await conn.fetchval(f"""
+                SELECT COUNT(*) FROM alerts_log
+                WHERE hostname IN ({placeholders}) AND ts BETWEEN {p_start} AND {p_end}
+                      AND severity = 'critical'
+            """, *params)
+
+        report_data = {
+            "period": {"start": start.isoformat(), "end": end.isoformat()},
+            "hostnames": hostnames,
+            "uptime_pct": uptime_pct,
+            "downtime_minutes": round(total_minutes * (1 - uptime_pct / 100)),
+            "latency": dict(lat_stats) if lat_stats else {},
+            "alerts_total": alerts,
+            "alerts_critical": critical,
+            "heartbeats": hb_count,
+            "expected_heartbeats": expected_hb,
+        }
+
+        pdf_bytes = _build_report_pdf(report_data, client["username"])
+        await db.save_daily_report(today, client["id"], pdf_bytes)
+        generated += 1
+
+    logger.info("Daily reports: %d gerados para %s", generated, today)
+
+
 def setup_scheduler() -> None:
     scheduler.add_job(job_check_offline,   "interval", minutes=5,  id="check_offline")
     scheduler.add_job(job_purge_inactive,  "interval", hours=1,    id="purge_inactive")
     scheduler.add_job(job_monthly_email,   "cron", day=1, hour=8, minute=0, id="monthly_email")
+    scheduler.add_job(job_daily_report,    "cron", hour=23, minute=59, id="daily_report")
     for t in REPORT_TIMES:
         h, m = t.split(":")
         scheduler.add_job(
@@ -283,7 +359,7 @@ def setup_scheduler() -> None:
             id=f"report_{t.replace(':', '')}",
         )
     scheduler.start()
-    logger.info("Scheduler iniciado: check_offline 5min, relatorios %s, email mensal dia 1 08:00", REPORT_TIMES)
+    logger.info("Scheduler: offline 5min, relatorios %s, daily 23:59, email mensal dia 1", REPORT_TIMES)
 
 
 # ---------------------------------------------------------------------------
@@ -537,6 +613,40 @@ def _html_with_nonce(html: str, nonce: str) -> str:
     return html
 
 
+# ---------------------------------------------------------------------------
+# WebSocket — push real-time de metricas
+# ---------------------------------------------------------------------------
+
+class WSManager:
+    """Gerencia conexoes WebSocket ativas."""
+    def __init__(self):
+        self._connections: list = []
+
+    async def connect(self, ws):
+        await ws.accept()
+        self._connections.append(ws)
+
+    def disconnect(self, ws):
+        if ws in self._connections:
+            self._connections.remove(ws)
+
+    async def broadcast(self, data: dict):
+        dead = []
+        for ws in self._connections:
+            try:
+                await ws.send_json(data)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect(ws)
+
+    @property
+    def count(self) -> int:
+        return len(self._connections)
+
+ws_manager = WSManager()
+
+
 class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
     """Rejeita requests com body > 10MB."""
     MAX_BODY = 10 * 1024 * 1024  # 10MB
@@ -628,6 +738,17 @@ async def receive_metrics(payload: AgentPayload) -> JSONResponse:
     await _evaluate_alerts(payload)
     await db.resolve_alert(hostname, "offline")
 
+    # Push real-time via WebSocket
+    if ws_manager.count > 0:
+        ws_data = {"event": "metrics", "hostname": hostname, "type": payload.type}
+        if payload.system and payload.system.cpu:
+            ws_data["cpu"] = payload.system.cpu.percent
+        if payload.system and payload.system.ram:
+            ws_data["ram"] = payload.system.ram.percent
+        if payload.dns_checks:
+            ws_data["dns_ok"] = all(c.success for c in payload.dns_checks)
+        await ws_manager.broadcast(ws_data)
+
     return JSONResponse({"status": "ok", "hostname": hostname, "type": payload.type})
 
 
@@ -684,6 +805,38 @@ async def _evaluate_alerts(payload: AgentPayload) -> None:
         aid = await db.insert_alert(hostname, "dns_service", "critical", f"Servico DNS '{svc}' inativo")
         if await tg.alert_dns_service_down(hostname, svc):
             await db.mark_alert_notified(aid)
+
+    # Dispatch webhooks para clientes que monitoram este hostname
+    await _dispatch_webhooks_for_host(hostname, payload)
+
+
+async def _dispatch_webhooks_for_host(hostname: str, payload: AgentPayload) -> None:
+    """Envia alertas critical via webhook para clientes que monitoram este host."""
+    import webhooks
+    try:
+        clients = await db.list_clients()
+    except Exception:
+        return  # DB indisponivel — nao bloqueia o fluxo de metricas
+    for client in clients:
+        if not client.get("webhook_url") or not client.get("active"):
+            continue
+        if hostname not in (client.get("hostnames") or []):
+            continue
+        # So dispara webhook para alertas critical reais
+        alerts = []
+        if payload.dns_service and payload.dns_service.active is False:
+            alerts.append(("dns_service", "critical", f"Servico DNS inativo em {hostname}"))
+        for check in (payload.dns_checks or []):
+            if not check.success:
+                alerts.append(("dns_fail", "critical", f"DNS falhou: {check.domain}"))
+        sys = payload.system
+        if sys and sys.cpu and sys.cpu.percent and sys.cpu.percent >= THRESHOLDS["cpu_critical"]:
+            alerts.append(("cpu", "critical", f"CPU {sys.cpu.percent:.1f}%"))
+        if sys and sys.ram and sys.ram.percent and sys.ram.percent >= THRESHOLDS["ram_critical"]:
+            alerts.append(("ram", "critical", f"RAM {sys.ram.percent:.1f}%"))
+
+        for alert_type, severity, message in alerts:
+            webhooks.send_webhook(client["webhook_url"], alert_type, severity, hostname, message)
 
 
 @v1.patch("/agents/{hostname}", dependencies=[Depends(require_token)], tags=["agents"])
@@ -986,6 +1139,23 @@ async def dashboard_data(period: str = "24h", host: str = "") -> _SafeJSONRespon
         hostnames = [host]
     data = await db.get_aggregated_metrics(period, hostnames)
     return _SafeJSONResponse(data)
+
+
+from fastapi import WebSocket, WebSocketDisconnect
+
+@app.websocket("/ws/live")
+async def ws_live(websocket: WebSocket):
+    """WebSocket para metricas em tempo real. Auth via query param token."""
+    token_param = websocket.query_params.get("token", "")
+    if token_param != AGENT_TOKEN:
+        await websocket.close(code=4001, reason="Unauthorized")
+        return
+    await ws_manager.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()  # keepalive
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket)
 
 
 @app.get("/health")

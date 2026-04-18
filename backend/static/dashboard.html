@@ -346,9 +346,31 @@ document.getElementById('hostFilter').addEventListener('change', e => {
   });
 })();
 
+// WebSocket real-time — reload quando metricas chegam
+let _ws = null;
+function connectWS() {
+  const t = token();
+  if (!t) return;
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  _ws = new WebSocket(`${proto}//${location.host}/ws/live?token=${t}`);
+  _ws.onmessage = (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      if (data.event === 'metrics') {
+        // Reload dashboard com novos dados
+        loadDashboard();
+        const st = document.getElementById('loadStatus');
+        if (st) st.textContent = 'Live update ' + new Date().toLocaleTimeString('pt-BR');
+      }
+    } catch(_) {}
+  };
+  _ws.onclose = () => { setTimeout(connectWS, 5000); }; // reconecta em 5s
+  _ws.onerror = () => { _ws.close(); };
+}
+
 // Auto-load se sessao admin valida
 fetchSessionToken().then(ok => {
-  if (ok) { loadDashboard(); }
+  if (ok) { loadDashboard(); connectWS(); }
   else { toast.err('Sessao expirada. Redirecionando...'); setTimeout(() => { window.location.href = '/admin/login'; }, 1500); }
 });
 </script>

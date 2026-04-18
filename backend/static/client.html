@@ -108,6 +108,22 @@
   .timeline-legend .dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
 
   @media (max-width: 960px) { .charts, .gauges { grid-template-columns: 1fr; } }
+  @media (max-width: 768px) {
+    .page { padding: 16px 14px 32px; }
+    .hero { padding: 18px 16px; gap: 14px; }
+    .hero-label { font-size: 1rem; }
+    .hero-metrics { gap: 14px; margin-left: 0; width: 100%; justify-content: space-around; }
+    .hero-metric .val { font-size: 1.1rem; }
+    .sla-card { padding: 14px 16px; }
+    .sla-row { gap: 8px; }
+    .sla-bar { min-width: 120px; }
+    .chart-card { padding: 14px 16px; }
+    .chart-card canvas { max-height: 200px; }
+    .controls { flex-wrap: wrap; }
+    .test-dns { flex-direction: column; align-items: stretch; }
+    .timeline-bar { height: 22px; }
+    .alerts-section { padding: 14px 16px; }
+  }
 </style>
 </head>
 <body>

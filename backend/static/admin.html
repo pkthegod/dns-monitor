@@ -1298,6 +1298,18 @@
   document.getElementById('agentSearch').addEventListener('input', () => renderAgentRows(agentsCache));
   document.getElementById('statusFilter').addEventListener('change', () => renderAgentRows(agentsCache));
 
+  // WebSocket real-time
+  let _ws = null;
+  function connectWS() {
+    const t = token();
+    if (!t) return;
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    _ws = new WebSocket(`${proto}//${location.host}/ws/live?token=${t}`);
+    _ws.onmessage = () => { loadAll(); };
+    _ws.onclose = () => { setTimeout(connectWS, 5000); };
+    _ws.onerror = () => { _ws.close(); };
+  }
+
   // Busca token via sessao ANTES de carregar dados
   fetchSessionToken().then(ok => {
     if (!ok) {
@@ -1306,6 +1318,7 @@
       return;
     }
     loadAll();
+    connectWS();
   });
 </script>
 </body>

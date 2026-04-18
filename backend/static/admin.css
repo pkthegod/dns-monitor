@@ -342,3 +342,12 @@ code { font-family: var(--font-mono); color: var(--text-mid); }
 .status-noerror { color: var(--green); }
 .status-fail    { color: var(--red); }
 .trace-geo-loading { color: var(--text-dim); font-style: italic; font-size: .7rem; }
+
+/* ── Mobile admin ── */
+@media (max-width: 768px) {
+  #bulk-bar { flex-wrap: wrap; }
+  .agent-menu-trigger { font-size: 1.2rem; padding: 6px 10px; }
+  .diag-script-select { flex-wrap: wrap; }
+  .trace-controls { flex-wrap: wrap; }
+  .trace-controls .field { min-width: 100%; }
+}

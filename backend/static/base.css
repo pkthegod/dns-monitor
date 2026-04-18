@@ -309,3 +309,36 @@ a:hover { opacity: .85; }
   font-size: 12px;
   padding-top: 20px;
 }
+
+/* ===========================================================================
+   Mobile responsive
+   =========================================================================== */
+
+@media (max-width: 768px) {
+  body { padding: 10px 12px 24px; font-size: 12px; }
+
+  /* Header */
+  .header { flex-wrap: wrap; gap: 8px; padding-bottom: 12px; }
+  .header h1 { font-size: .9rem; }
+  .btn-nav { font-size: .65rem; padding: 4px 8px; }
+
+  /* Tables — horizontal scroll */
+  .table-wrap { -webkit-overflow-scrolling: touch; }
+  .table-wrap table { min-width: 600px; }
+  .table-wrap td, .table-wrap th { padding: 6px 8px; font-size: .68rem; }
+
+  /* Buttons — larger touch targets */
+  .btn, button { min-height: 36px; min-width: 36px; }
+  .btn-ghost { padding: 6px 10px; }
+
+  /* Modals — full width on mobile */
+  .modal { width: 95vw; max-width: none; margin: 12px; max-height: 90vh; overflow-y: auto; }
+  .modal-backdrop { align-items: flex-start; padding-top: 5vh; }
+
+  /* Section titles */
+  .section-title { flex-wrap: wrap; gap: 6px; }
+  .section-title h2 { font-size: .65rem; }
+
+  /* Form fields */
+  input, select, textarea { font-size: 16px !important; /* previne zoom iOS */ }
+}
