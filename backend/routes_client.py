@@ -126,8 +126,10 @@ async def client_login_post(request: Request):
     _clear_login_attempts(ip)
     await db.audit("client", "login_ok", username, ip=ip)
     resp = RedirectResponse("/client", status_code=303)
+    import os as _os
+    _secure = _os.environ.get("COOKIE_SECURE", "true").lower() in ("true", "1", "yes")
     resp.set_cookie("client_session", _sign_client_cookie(username),
-                    httponly=True, samesite="strict", max_age=_CLIENT_SESSION_TTL)
+                    httponly=True, secure=_secure, samesite="strict", max_age=_CLIENT_SESSION_TTL)
     return resp
 
 

@@ -2,6 +2,50 @@
 
 ---
 
+## [v1.0.1] — 2026-04-18 — Security hardening (5 CRITICAL fixes)
+
+### Seguranca
+
+#### DB SSL configuravel (CRITICAL)
+- `ssl=False` removido — agora le `DB_SSL` do env (default: `disable` para Docker local)
+- Em producao com DB externo: `DB_SSL=require`
+- `DATABASE_URL` validado na inicializacao
+
+#### Session secrets sem fallback fraco (CRITICAL)
+- Removido fallback para `AGENT_TOKEN` / `"fallback"` — impossivel forjar cookies
+- Se `ADMIN_SESSION_SECRET` / `CLIENT_SESSION_SECRET` nao configurados: gera aleatorio + warning
+- Sessions invalidam no restart se secrets nao persistidos (comportamento seguro)
+
+#### SQL interval protegido (CRITICAL)
+- `assert` explicito que `interval` e `bucket` vem de dicts internos `_VALID_PERIODS` / `_BUCKET_MAP`
+- Impossivel injetar SQL via parametro `period`
+
+#### CSRF protection (CRITICAL)
+- Novo `CSRFMiddleware`: valida `Origin` / `Referer` em POST/PATCH/DELETE
+- Requests com Bearer token (agentes) isentos — CSRF so afeta cookies
+- Bloqueia form submissions cross-origin
+
+#### Request body limit (CRITICAL)
+- Novo `RequestSizeLimitMiddleware`: rejeita payloads > 10MB (HTTP 413)
+- Previne DoS por exaustao de memoria
+
+#### Cookies com flag secure
+- `secure=True` em cookies admin e client (configuravel via `COOKIE_SECURE`)
+- Em dev local HTTP: `COOKIE_SECURE=false`
+
+#### NATS password obrigatorio
+- Docker-compose: `${NATS_PASS:?}` — nao sobe sem senha configurada
+- Removido default "changeme"
+
+#### HSTS preload
+- Header `Strict-Transport-Security` agora inclui `preload`
+
+### Testes
+
+- 165 passed, 2 skipped (sem regressao)
+
+---
+
 ## [v1.0.0] — 2026-04-17 — Release 1.0
 
 ### Novidades

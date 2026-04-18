@@ -91,10 +91,20 @@ def _record_action(key: str) -> None:
 ADMIN_USER = os.environ.get("ADMIN_USER", "")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
-_ADMIN_SECRET  = os.environ.get("ADMIN_SESSION_SECRET", "").encode() or \
-                 hashlib.sha256(b"admin:" + (AGENT_TOKEN or "fallback").encode()).digest()
-_CLIENT_SECRET = os.environ.get("CLIENT_SESSION_SECRET", "").encode() or \
-                 hashlib.sha256(b"client:" + (AGENT_TOKEN or "fallback").encode()).digest()
+def _load_secret(env_name: str, context: str) -> bytes:
+    """Carrega secret do env. Se vazio, gera aleatorio (warn: sessions invalidam no restart)."""
+    val = os.environ.get(env_name, "").encode()
+    if val and len(val) >= 16:
+        return val
+    import logging as _log
+    _log.getLogger("dns-monitor.auth").warning(
+        "%s nao configurado ou muito curto — gerando aleatorio (sessions invalidam no restart). "
+        "Configure %s com pelo menos 32 chars para persistencia.", env_name, env_name
+    )
+    return secrets.token_bytes(32)
+
+_ADMIN_SECRET  = _load_secret("ADMIN_SESSION_SECRET", "admin")
+_CLIENT_SECRET = _load_secret("CLIENT_SESSION_SECRET", "client")
 
 _ADMIN_SESSION_TTL  = 14400   # 4 horas
 _CLIENT_SESSION_TTL = 43200   # 12 horas

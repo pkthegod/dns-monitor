@@ -68,6 +68,8 @@ services:
       NATS_PASS: ${NATS_PASS:-}
       ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:-}
       CLIENT_SESSION_SECRET: ${CLIENT_SESSION_SECRET:-}
+      DB_SSL: ${DB_SSL:-disable}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USER: ${SMTP_USER:-}
@@ -93,7 +95,7 @@ services:
     container_name: dns_monitor_nats
     restart: unless-stopped
     command: ["--jetstream", "--store_dir", "/data", "--name", "dns-monitor-nats",
-              "--user", "${NATS_USER:-dnsmonitor}", "--pass", "${NATS_PASS:-changeme}"]
+              "--user", "${NATS_USER:-dnsmonitor}", "--pass", "${NATS_PASS:?Defina NATS_PASS no .env}"]
     networks:
       dns_monitor_net:
         ipv4_address: 172.20.0.13

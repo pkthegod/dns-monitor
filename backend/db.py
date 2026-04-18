@@ -26,12 +26,17 @@ def _parse_ts(ts: str) -> datetime:
 
 async def init_pool() -> None:
     global _pool
-    dsn = os.environ["DATABASE_URL"]
+    dsn = os.environ.get("DATABASE_URL")
+    if not dsn:
+        raise RuntimeError("DATABASE_URL environment variable is required")
+    # SSL: 'require' em prod, 'disable' para dev/docker local
+    ssl_mode = os.environ.get("DB_SSL", "disable")
+    ssl_param = ssl_mode if ssl_mode in ("require", "prefer", "verify-full") else False
     _pool = await asyncpg.create_pool(
-        dsn, ssl=False, min_size=2, max_size=10, command_timeout=60,
+        dsn, ssl=ssl_param, min_size=2, max_size=10, command_timeout=60,
         server_settings={"application_name": "dns-monitor-backend"},
     )
-    logger.info("Pool de conexões criado (min=2 max=10)")
+    logger.info("Pool de conexoes criado (min=2 max=10 ssl=%s)", ssl_mode)
 
 
 async def close_pool() -> None:
@@ -702,6 +707,10 @@ async def get_aggregated_metrics(
     """
     interval = _VALID_PERIODS.get(period, "24 hours")
     bucket   = _BUCKET_MAP.get(period, "1 hour")
+
+    # Seguranca: interval e bucket SEMPRE vem de dicts internos (nunca de input do usuario)
+    assert interval in _VALID_PERIODS.values(), f"interval invalido: {interval}"
+    assert bucket in _BUCKET_MAP.values(), f"bucket invalido: {bucket}"
 
     # Monta filtro de hostnames (parameterized — sem f-string SQL)
     if hostnames:
