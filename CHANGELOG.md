@@ -2,6 +2,46 @@
 
 ---
 
+## [v1.0.2] — 2026-04-18 — Security Grade A+ (monitoring, nonces, rotation)
+
+### Seguranca
+
+#### Rate limit global em API
+- Middleware `APIRateLimitMiddleware`: 200 requests/min por IP em /api/*
+- Configuravel via `API_RATE_LIMIT` env
+- Header `Retry-After` no 429
+
+#### CSP sem unsafe-inline — nonces
+- `SecurityHeadersMiddleware` gera nonce unico por request
+- Todos os `<script>` tags recebem `nonce="..."` automaticamente via `_html_with_nonce()`
+- `script-src 'unsafe-inline'` removido do CSP — agora usa `'nonce-{nonce}'`
+- `frame-ancestors 'none'`, `base-uri 'self'`, `form-action 'self'` adicionados
+
+#### Rotacao de secrets sem downtime
+- Suporte a `ADMIN_SESSION_SECRET_PREV` e `CLIENT_SESSION_SECRET_PREV`
+- `_verify_admin_cookie` e `_verify_client_cookie` tentam secret atual e anterior
+- Permite trocar secret sem invalidar sessoes ativas
+
+#### Security monitoring (deteccao proativa)
+- Novo modulo `security.py`: deteccao de scans, brute force, credential stuffing
+- Honeypot endpoints: `/wp-admin`, `/.env`, `/.git/config`, etc — bloqueia IP + alerta
+- Auto-block: 30min para IPs que excedem thresholds
+- Alertas de seguranca via Telegram (anti-spam com cooldown 5min)
+- Endpoint `/api/v1/security/blocked` — admin ve IPs bloqueados
+
+#### Validacao de isolamento cross-client
+- `db.validate_client_hostnames()` — verifica que hostnames pertencem ao cliente
+
+#### Versoes pinadas
+- `requirements.txt`: todas as dependencias com `~=` (compatible release)
+- Docker: `timescale/timescaledb:2.17.2-pg15`, `nats:2.10-alpine`
+
+### Testes
+
+- 165 passed, 2 skipped (sem regressao)
+
+---
+
 ## [v1.0.1] — 2026-04-18 — Security hardening (5 CRITICAL fixes)
 
 ### Seguranca

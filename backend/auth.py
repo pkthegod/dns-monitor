@@ -106,6 +106,10 @@ def _load_secret(env_name: str, context: str) -> bytes:
 _ADMIN_SECRET  = _load_secret("ADMIN_SESSION_SECRET", "admin")
 _CLIENT_SECRET = _load_secret("CLIENT_SESSION_SECRET", "client")
 
+# Secrets anteriores para rotacao sem downtime — aceita cookies do secret antigo durante transicao
+_ADMIN_SECRET_PREV  = os.environ.get("ADMIN_SESSION_SECRET_PREV", "").encode() or None
+_CLIENT_SECRET_PREV = os.environ.get("CLIENT_SESSION_SECRET_PREV", "").encode() or None
+
 _ADMIN_SESSION_TTL  = 14400   # 4 horas
 _CLIENT_SESSION_TTL = 43200   # 12 horas
 
@@ -119,13 +123,16 @@ def _sign_admin_cookie(username: str) -> str:
 
 
 def _verify_admin_cookie(cookie: str) -> Optional[str]:
-    """Verifica cookie admin. Retorna username ou None."""
+    """Verifica cookie admin. Tenta secret atual e anterior (rotacao). Retorna username ou None."""
     if not cookie or "." not in cookie:
         return None
     payload, sig = cookie.rsplit(".", 1)
-    expected = hmac.new(_ADMIN_SECRET, payload.encode(), hashlib.sha256).hexdigest()
-    if hmac.compare_digest(sig, expected):
-        return payload.split(":")[0] if ":" in payload else payload
+    for secret in (_ADMIN_SECRET, _ADMIN_SECRET_PREV):
+        if not secret:
+            continue
+        expected = hmac.new(secret, payload.encode(), hashlib.sha256).hexdigest()
+        if hmac.compare_digest(sig, expected):
+            return payload.split(":")[0] if ":" in payload else payload
     return None
 
 
@@ -153,12 +160,17 @@ def _sign_client_cookie(username: str) -> str:
 
 
 def _verify_client_cookie(cookie: str) -> Optional[str]:
-    """Verifica cookie de cliente. Retorna username ou None."""
+    """Verifica cookie de cliente. Tenta secret atual e anterior (rotacao). Retorna username ou None."""
     if not cookie or "." not in cookie:
         return None
     payload, sig = cookie.rsplit(".", 1)
-    expected = hmac.new(_CLIENT_SECRET, payload.encode(), hashlib.sha256).hexdigest()
-    if hmac.compare_digest(sig, expected) and payload.startswith("client:"):
-        parts = payload[7:].split(":")  # remove "client:", split username:nonce
-        return parts[0] if parts else None
+    if not payload.startswith("client:"):
+        return None
+    for secret in (_CLIENT_SECRET, _CLIENT_SECRET_PREV):
+        if not secret:
+            continue
+        expected = hmac.new(secret, payload.encode(), hashlib.sha256).hexdigest()
+        if hmac.compare_digest(sig, expected):
+            parts = payload[7:].split(":")
+            return parts[0] if parts else None
     return None

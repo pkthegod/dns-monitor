@@ -383,6 +383,36 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \\
 )
 
 from starlette.middleware.base import BaseHTTPMiddleware
+import time as _time
+
+
+class APIRateLimitMiddleware(BaseHTTPMiddleware):
+    """Rate limit global por IP em /api/. Default: 200 requests/min."""
+    _requests: dict[str, list[float]] = {}
+    LIMIT = int(os.environ.get("API_RATE_LIMIT", "200"))
+    WINDOW = 60  # segundos
+
+    async def dispatch(self, request, call_next):
+        if not request.url.path.startswith("/api/"):
+            return await call_next(request)
+
+        ip = request.client.host if request.client else "unknown"
+        now = _time.time()
+        reqs = self._requests.get(ip, [])
+        reqs = [t for t in reqs if now - t < self.WINDOW]
+
+        if len(reqs) >= self.LIMIT:
+            logger.warning("Rate limit API: %s (%d req/%ds)", ip, len(reqs), self.WINDOW)
+            return JSONResponse(
+                {"error": "Rate limit exceeded. Try again later."},
+                status_code=429,
+                headers={"Retry-After": str(self.WINDOW)},
+            )
+
+        reqs.append(now)
+        self._requests[ip] = reqs
+        return await call_next(request)
+
 
 class CSRFMiddleware(BaseHTTPMiddleware):
     """Valida Origin/Referer em requests mutativos (POST/PATCH/DELETE).
@@ -415,6 +445,53 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+class SecurityMonitorMiddleware(BaseHTTPMiddleware):
+    """Detecta anomalias (scans, brute force, honeypots) e bloqueia IPs."""
+    async def dispatch(self, request, call_next):
+        import security
+
+        ip = request.client.host if request.client else "unknown"
+        path = request.url.path
+
+        # IP bloqueado?
+        if security.is_blocked(ip):
+            return JSONResponse({"error": "Access denied"}, status_code=403)
+
+        # Honeypot?
+        if security.is_honeypot_hit(path):
+            alert = await security.handle_honeypot(ip, path)
+            if alert:
+                await _security_alert(alert)
+            return JSONResponse({"error": "Not found"}, status_code=404)
+
+        response = await call_next(request)
+
+        # Analisa resposta para detectar padroes
+        alert = await security.analyze_request(ip, path, response.status_code, request.method)
+        if alert:
+            await _security_alert(alert)
+
+        return response
+
+
+async def _security_alert(alert: dict) -> None:
+    """Envia alerta de seguranca via Telegram."""
+    try:
+        msg = (
+            f"🚨 *SECURITY ALERT*\n"
+            f"Type: `{alert.get('type', 'unknown')}`\n"
+            f"IP: `{alert.get('ip', '?')}`\n"
+        )
+        if alert.get("count"):
+            msg += f"Count: {alert['count']} in {alert.get('window', '?')}\n"
+        if alert.get("path"):
+            msg += f"Path: `{alert['path']}`\n"
+        msg += "Action: IP blocked 30min"
+        await tg.send_message(msg, parse_mode="Markdown")
+    except Exception as exc:
+        logger.warning("Security alert telegram failed: %s", exc)
+
+
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
     """Loga chamadas de API mutativas (POST/PATCH/DELETE) para auditoria."""
     async def dispatch(self, request, call_next):
@@ -427,6 +504,11 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
+        # Gera nonce unico por request para CSP script-src
+        import base64
+        nonce = base64.b64encode(secrets.token_bytes(16)).decode()
+        request.state.csp_nonce = nonce
+
         response = await call_next(request)
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -435,15 +517,25 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; "
+            f"script-src 'self' 'nonce-{nonce}' cdn.jsdelivr.net; "
             "style-src 'self' 'unsafe-inline' fonts.googleapis.com; "
             "font-src fonts.gstatic.com; "
             "img-src 'self' data:; "
-            "connect-src 'self'"
+            "connect-src 'self'; "
+            "frame-ancestors 'none'; "
+            "base-uri 'self'; "
+            "form-action 'self'"
         )
         if request.url.path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store, private"
         return response
+
+def _html_with_nonce(html: str, nonce: str) -> str:
+    """Injeta nonce CSP em todas as tags <script> de um HTML."""
+    import re as _re_nonce
+    html = _re_nonce.sub(r'<script(?!\s+nonce)', f'<script nonce="{nonce}"', html)
+    return html
+
 
 class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
     """Rejeita requests com body > 10MB."""
@@ -458,7 +550,9 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(CSRFMiddleware)
+app.add_middleware(APIRateLimitMiddleware)
 app.add_middleware(RequestSizeLimitMiddleware)
+app.add_middleware(SecurityMonitorMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 
 app.mount("/static", StaticFiles(directory=str(pathlib.Path(__file__).parent / "static")), name="static")
@@ -718,10 +812,12 @@ async def get_command_history(hostname: str, request: Request) -> _SafeJSONRespo
 # ---------------------------------------------------------------------------
 
 @app.get("/admin/login", response_class=HTMLResponse, include_in_schema=False)
-async def admin_login_page() -> HTMLResponse:
+async def admin_login_page(request: Request) -> HTMLResponse:
     """Formulario de login do painel admin."""
     html_path = pathlib.Path(__file__).parent / "static" / "login.html"
-    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+    html = html_path.read_text(encoding="utf-8")
+    nonce = getattr(request.state, "csp_nonce", "")
+    return HTMLResponse(_html_with_nonce(html, nonce))
 
 
 @app.post("/admin/login", include_in_schema=False)
@@ -779,7 +875,15 @@ async def admin_panel(request: Request) -> HTMLResponse:
     if not _verify_admin_cookie(cookie):
         return RedirectResponse("/admin/login", status_code=303)
     html_path = pathlib.Path(__file__).parent / "static" / "admin.html"
-    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+    nonce = getattr(request.state, "csp_nonce", "")
+    return HTMLResponse(_html_with_nonce(html_path.read_text(encoding="utf-8"), nonce))
+
+
+@v1.get("/security/blocked", tags=["tools"], dependencies=[Depends(require_token)])
+async def list_blocked_ips() -> JSONResponse:
+    """Lista IPs bloqueados pelo security monitor."""
+    import security
+    return JSONResponse(security.get_blocked_ips())
 
 
 @v1.get("/commands/history", tags=["commands"])
@@ -870,7 +974,8 @@ async def dashboard_page(request: Request) -> HTMLResponse:
     html_path = pathlib.Path(__file__).parent / "static" / "dashboard.html"
     if not html_path.exists():
         raise HTTPException(status_code=404, detail="Dashboard nao encontrado")
-    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+    nonce = getattr(request.state, "csp_nonce", "")
+    return HTMLResponse(_html_with_nonce(html_path.read_text(encoding="utf-8"), nonce))
 
 
 @v1.get("/dashboard/data", dependencies=[Depends(require_token)], tags=["dashboard"])
@@ -932,9 +1037,10 @@ app.get("/client", response_class=HTMLResponse, include_in_schema=False)(client_
 # ---------------------------------------------------------------------------
 
 @app.get("/client/help", response_class=HTMLResponse, include_in_schema=False)
-async def client_help_page() -> HTMLResponse:
+async def client_help_page(request: Request) -> HTMLResponse:
     html_path = pathlib.Path(__file__).parent / "static" / "client-help.html"
-    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+    nonce = getattr(request.state, "csp_nonce", "")
+    return HTMLResponse(_html_with_nonce(html_path.read_text(encoding="utf-8"), nonce))
 
 
 @app.get("/admin/help", response_class=HTMLResponse, include_in_schema=False)
@@ -943,7 +1049,8 @@ async def admin_help_page(request: Request) -> HTMLResponse:
     if not _verify_admin_cookie(cookie):
         return RedirectResponse("/admin/login", status_code=303)
     html_path = pathlib.Path(__file__).parent / "static" / "admin-help.html"
-    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+    nonce = getattr(request.state, "csp_nonce", "")
+    return HTMLResponse(_html_with_nonce(html_path.read_text(encoding="utf-8"), nonce))
 
 # ---------------------------------------------------------------------------
 # Registra routers versionados (DEVE ficar depois de todos os endpoints)
