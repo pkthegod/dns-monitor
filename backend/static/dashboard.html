@@ -295,10 +295,11 @@ async function loadDashboard() {
     sel.value = currentHost;
 
     renderKPIs(data);
-    renderDnsBar(data);
-    renderLine('chartCpu', groupBy(data.cpu_history||[],'hostname'), 'cpu_avg');
-    renderLine('chartRam', groupBy(data.ram_history||[],'hostname'), 'ram_avg');
-    renderLine('chartDnsHistory', groupBy(data.dns_history||[],'hostname'), 'latency_avg');
+    // Cada chart em try/catch isolado — uma falha nao bloqueia os outros
+    try { renderDnsBar(data); } catch(ce) { console.warn('chartDnsLatency:', ce); }
+    try { renderLine('chartCpu', groupBy(data.cpu_history||[],'hostname'), 'cpu_avg'); } catch(ce) { console.warn('chartCpu:', ce); }
+    try { renderLine('chartRam', groupBy(data.ram_history||[],'hostname'), 'ram_avg'); } catch(ce) { console.warn('chartRam:', ce); }
+    try { renderLine('chartDnsHistory', groupBy(data.dns_history||[],'hostname'), 'latency_avg'); } catch(ce) { console.warn('chartDnsHistory:', ce); }
     renderAlerts(data);
     animateChildren('#chartsContainer', 'slide-up');
     st.innerHTML = '<span class="live-dot"></span>Atualizado ' + new Date().toLocaleTimeString('pt-BR');
@@ -328,22 +329,25 @@ document.getElementById('hostFilter').addEventListener('change', e => {
   loadDashboard();
 });
 
-// Chart.js time adapter
+// Chart.js time adapter — retorna timestamps (numeros) para compatibilidade com Chart.js 4
 (function(){
-  const pad = n => String(n).padStart(2,'0');
-  Chart._adapters._date.override({
-    formats: () => ({}),
-    parse: v => new Date(v),
-    format: (d, f) => {
-      const t = new Date(d);
-      if (f==='HH:mm') return pad(t.getHours())+':'+pad(t.getMinutes());
-      if (f==='dd/MM HH:mm') return pad(t.getDate())+'/'+pad(t.getMonth()+1)+' '+pad(t.getHours())+':'+pad(t.getMinutes());
-      return t.toLocaleString('pt-BR');
-    },
-    startOf: (d,u) => { const t=new Date(d); if(u==='hour')t.setMinutes(0,0,0); else if(u==='day')t.setHours(0,0,0,0); return t; },
-    add: (d,n,u) => { const t=new Date(d); if(u==='hour')t.setHours(t.getHours()+n); else if(u==='day')t.setDate(t.getDate()+n); else if(u==='minute')t.setMinutes(t.getMinutes()+n); return t; },
-    diff: (a,b,u) => { const ms=new Date(a)-new Date(b); return u==='hour'?ms/36e5:u==='day'?ms/864e5:u==='minute'?ms/6e4:ms; }
-  });
+  try {
+    const pad = n => String(n).padStart(2,'0');
+    Chart._adapters._date.override({
+      formats: () => ({}),
+      parse: v => v == null ? null : +new Date(v),
+      format: (d, f) => {
+        const t = new Date(d);
+        if (isNaN(t)) return '';
+        if (f==='HH:mm') return pad(t.getHours())+':'+pad(t.getMinutes());
+        if (f==='dd/MM HH:mm') return pad(t.getDate())+'/'+pad(t.getMonth()+1)+' '+pad(t.getHours())+':'+pad(t.getMinutes());
+        return t.toLocaleString('pt-BR');
+      },
+      startOf: (d,u) => { const t=new Date(d); if(u==='hour')t.setMinutes(0,0,0); else if(u==='day')t.setHours(0,0,0,0); return +t; },
+      add: (d,n,u) => { const t=new Date(d); if(u==='hour')t.setHours(t.getHours()+n); else if(u==='day')t.setDate(t.getDate()+n); else if(u==='minute')t.setMinutes(t.getMinutes()+n); return +t; },
+      diff: (a,b,u) => { const ms=new Date(a)-new Date(b); return u==='hour'?ms/36e5:u==='day'?ms/864e5:u==='minute'?ms/6e4:ms; }
+    });
+  } catch(e) { console.warn('Chart.js adapter failed:', e); }
 })();
 
 // WebSocket real-time — reload quando metricas chegam
