@@ -141,7 +141,10 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* No background grid/pattern. Clean. */
+/* Subtle radial gradient — dark theme only */
+html[data-theme="dark"] body {
+  background: radial-gradient(ellipse 60% 40% at 50% 0%, rgba(94,155,255,.025) 0%, transparent 70%) no-repeat, var(--bg);
+}
 
 /* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -301,18 +304,20 @@ select:focus {
 }
 
 .btn-primary {
-  background: var(--accent);
+  background: linear-gradient(135deg, var(--accent) 0%, #3b82f6 50%, var(--teal) 100%);
+  background-size: 200% 200%;
   color: #fff;
 }
 html[data-theme="light"] .btn-primary {
   color: #fff;
 }
 .btn-primary:hover {
-  filter: brightness(1.1);
-  box-shadow: 0 4px 12px rgba(94,155,255,.3);
+  filter: brightness(1.12);
+  box-shadow: 0 4px 18px rgba(94,155,255,.4), 0 0 30px rgba(94,155,255,.12);
+  background-position: 100% 0;
 }
 html[data-theme="light"] .btn-primary:hover {
-  box-shadow: 0 4px 12px rgba(37,99,235,.25);
+  box-shadow: 0 4px 18px rgba(37,99,235,.3), 0 0 30px rgba(37,99,235,.08);
 }
 
 .btn-danger {
@@ -394,6 +399,12 @@ html[data-theme="light"] .btn-nav-highlight {
   white-space: nowrap;
   background: var(--bg-subtle);
 }
+.table thead tr {
+  background-image: linear-gradient(90deg, var(--accent), var(--teal));
+  background-size: 100% 1px;
+  background-repeat: no-repeat;
+  background-position: bottom;
+}
 .table td {
   padding: 10px 12px;
   border-bottom: 1px solid var(--border-lo);
@@ -473,6 +484,7 @@ html[data-theme="light"] .btn-nav-highlight {
 .header img {
   height: 32px;
   opacity: .9;
+  animation: logoPulse 3s ease-in-out infinite;
 }
 .header h1 {
   flex: 1;
@@ -566,6 +578,14 @@ html[data-theme="light"] .btn-nav-highlight {
 }
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+@keyframes shimmer {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+@keyframes logoPulse {
+  0%, 100% { filter: drop-shadow(0 0 4px rgba(94,155,255,.25)); }
+  50%      { filter: drop-shadow(0 0 10px rgba(94,155,255,.45)); }
 }
 
 .fade-in   { animation: fadeIn .4s cubic-bezier(.4,0,.2,1) both; }
@@ -835,6 +855,49 @@ html[data-theme="light"] .theme-toggle:hover {
 .theme-toggle .icon-moon { display: none; }
 html[data-theme="light"] .theme-toggle .icon-sun  { display: none; }
 html[data-theme="light"] .theme-toggle .icon-moon { display: inline; }
+
+/* ── UI Polish: status bar gradient ── */
+.status-bar {
+  border-bottom: none !important;
+  border-image: linear-gradient(90deg, var(--blue), var(--teal)) 1;
+  border-bottom-width: 1px !important;
+  border-bottom-style: solid !important;
+}
+
+/* ── UI Polish: KPI shimmer on hover ── */
+.kpi {
+  position: relative;
+  overflow: hidden;
+}
+.kpi::after {
+  content: '';
+  position: absolute;
+  top: 0; left: 0;
+  width: 50%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.04), transparent);
+  transform: translateX(-100%);
+  pointer-events: none;
+}
+.kpi:hover::after {
+  animation: shimmer .8s ease-out;
+}
+html[data-theme="light"] .kpi::after {
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.2), transparent);
+}
+
+/* ── UI Polish: card ::before accent glow ── */
+.kpi::before,
+.card::before {
+  height: 3px !important;
+  filter: blur(0);
+}
+.kpi.blue::before   { box-shadow: 0 2px 8px rgba(94,155,255,.3); }
+.kpi.green::before  { box-shadow: 0 2px 8px rgba(52,211,153,.3); }
+.kpi.red::before    { box-shadow: 0 2px 8px rgba(248,113,113,.3); }
+.kpi.teal::before   { box-shadow: 0 2px 8px rgba(45,212,191,.3); }
+.kpi.purple::before { box-shadow: 0 2px 8px rgba(167,139,250,.3); }
+.kpi.yellow::before { box-shadow: 0 2px 8px rgba(251,191,36,.3); }
 
 /* ===========================================================================
    Mobile responsive

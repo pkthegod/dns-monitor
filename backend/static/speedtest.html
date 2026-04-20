@@ -8,8 +8,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<script src="/static/theme.js?v=082"></script>
-<link rel="stylesheet" href="/static/base.css?v=082">
+<script src="/static/theme.js?v=083"></script>
+<link rel="stylesheet" href="/static/base.css?v=083">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <style>
   .page { max-width: 1400px; margin: 0 auto; padding: 0 36px 48px; }
@@ -167,6 +167,11 @@
     </div>
   </div>
 
+  <div class="card chart-card" id="historyChartCard" style="margin-bottom:28px;display:none">
+    <h3><span class="dot" style="background:var(--teal)"></span> Historico — Ultimos 30 Scans</h3>
+    <canvas id="chartHistory" style="width:100%!important;max-height:340px"></canvas>
+  </div>
+
   <div class="card domains-section">
     <h3>Dominios — Ultimo Scan</h3>
     <div class="domains-controls">
@@ -205,11 +210,33 @@
 
 <div id="toast-container"></div>
 
-<script src="/static/app.js?v=082"></script>
+<script src="/static/app.js?v=083"></script>
 <script>
 const COLORS = ['#7aa2f7','#9ece6a','#e0af68','#ff9e64','#f7768e','#bb9af7','#73daca','#7dcfff','#c0caf5','#b4f9f8'];
 let charts = {};
 let domainsCache = [];
+
+// Chart.js time adapter (same pattern as dashboard.html)
+(function(){
+  try {
+    const pad = n => String(n).padStart(2,'0');
+    Chart._adapters._date.override({
+      formats: () => ({}),
+      parse: v => v == null ? null : +new Date(v),
+      format: (d, f) => {
+        const t = new Date(d);
+        if (isNaN(t)) return '';
+        if (f==='HH:mm') return pad(t.getHours())+':'+pad(t.getMinutes());
+        if (f==='dd/MM') return pad(t.getDate())+'/'+pad(t.getMonth()+1);
+        if (f==='dd/MM HH:mm') return pad(t.getDate())+'/'+pad(t.getMonth()+1)+' '+pad(t.getHours())+':'+pad(t.getMinutes());
+        return t.toLocaleString('pt-BR');
+      },
+      startOf: (d,u) => { const t=new Date(d); if(u==='hour')t.setMinutes(0,0,0); else if(u==='day')t.setHours(0,0,0,0); return +t; },
+      add: (d,n,u) => { const t=new Date(d); if(u==='hour')t.setHours(t.getHours()+n); else if(u==='day')t.setDate(t.getDate()+n); else if(u==='minute')t.setMinutes(t.getMinutes()+n); return +t; },
+      diff: (a,b,u) => { const ms=new Date(a)-new Date(b); return u==='hour'?ms/36e5:u==='day'?ms/864e5:u==='minute'?ms/6e4:ms; }
+    });
+  } catch(e) { console.warn('Chart.js adapter failed:', e); }
+})();
 
 function makeOrUpdate(id, cfg) {
   if (charts[id]) charts[id].destroy();
@@ -319,6 +346,87 @@ function renderCharts(domains) {
   });
 }
 
+function renderHistoryChart(history) {
+  if (!history || !history.length) return;
+  document.getElementById('historyChartCard').style.display = '';
+  const sorted = [...history].sort((a,b) => new Date(a.ts) - new Date(b.ts));
+  const labels = sorted.map(h => new Date(h.ts));
+  makeOrUpdate('chartHistory', {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Acessiveis',
+          data: sorted.map(h => h.reachable),
+          borderColor: '#34d399',
+          backgroundColor: 'rgba(52,211,153,.08)',
+          fill: true,
+          tension: .35,
+          pointRadius: 3,
+          pointHoverRadius: 5,
+          borderWidth: 2
+        },
+        {
+          label: 'SSL Valido',
+          data: sorted.map(h => h.ssl_valid),
+          borderColor: '#2dd4bf',
+          backgroundColor: 'rgba(45,212,191,.06)',
+          fill: false,
+          tension: .35,
+          pointRadius: 3,
+          pointHoverRadius: 5,
+          borderWidth: 2
+        },
+        {
+          label: 'Inacessiveis',
+          data: sorted.map(h => h.unreachable),
+          borderColor: '#f87171',
+          backgroundColor: 'rgba(248,113,113,.06)',
+          fill: false,
+          tension: .35,
+          pointRadius: 3,
+          pointHoverRadius: 5,
+          borderWidth: 2
+        },
+        {
+          label: 'Expirando 30d',
+          data: sorted.map(h => h.expiring_soon),
+          borderColor: '#fbbf24',
+          backgroundColor: 'rgba(251,191,36,.06)',
+          fill: false,
+          tension: .35,
+          pointRadius: 3,
+          pointHoverRadius: 5,
+          borderWidth: 2
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'bottom', labels: { color: '#6a7ba0', padding: 16, usePointStyle: true, pointStyleWidth: 10 } },
+        tooltip: { backgroundColor: 'rgba(22,27,40,.95)', titleColor: '#d8dde9', bodyColor: '#d8dde9', borderColor: '#2a3450', borderWidth: 1, padding: 10, cornerRadius: 8 }
+      },
+      scales: {
+        x: {
+          type: 'time',
+          time: { unit: 'day', displayFormats: { day: 'dd/MM', hour: 'HH:mm' }, tooltipFormat: 'dd/MM HH:mm' },
+          grid: { color: '#1c203822' },
+          ticks: { color: '#6a7ba0', font: { family: "'JetBrains Mono'", size: 10 }, maxTicksLimit: 10 }
+        },
+        y: {
+          beginAtZero: true,
+          grid: { color: '#1c203822' },
+          ticks: { color: '#6a7ba0', font: { family: "'JetBrains Mono'", size: 10 } }
+        }
+      }
+    }
+  });
+}
+
 function timeClass(ms) {
   if (ms == null) return 'dim';
   if (ms < 300) return 'time-fast';
@@ -396,6 +504,7 @@ async function loadSpeedtest() {
 
     renderKPIs(scan);
     try { renderCharts(domainsCache); } catch(e) { console.warn('Charts:', e); }
+    try { renderHistoryChart(data.history); } catch(e) { console.warn('History chart:', e); }
     renderTable(domainsCache);
   } catch (e) {
     toast.err('Erro ao carregar dados: ' + e.message);
