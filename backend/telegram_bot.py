@@ -177,9 +177,47 @@ async def send_command_result(
       qualquer + failed → comando falhou
     """
     ts = _ts_now()
+    detail = result[:300] if result else ""
 
+    # ── update_agent — feedback detalhado ────────────────────────────────────
+    if command == "update_agent":
+        if status == "done":
+            if "já está" in detail or "nenhuma ação" in detail:
+                text = (
+                    f"✅ <b>AGENTE JÁ ATUALIZADO</b>\n"
+                    f"<b>Host:</b> <code>{hostname}</code>\n"
+                    f"<b>Info:</b> {detail}\n"
+                    f"<b>Por:</b> {issued_by}\n"
+                    f"<b>Hora:</b> {ts}"
+                )
+            else:
+                text = (
+                    f"🔄 <b>AGENTE ATUALIZADO</b>\n"
+                    f"<b>Host:</b> <code>{hostname}</code>\n"
+                    f"<b>Resultado:</b> {detail}\n"
+                    f"<b>Por:</b> {issued_by}\n"
+                    f"<b>Hora:</b> {ts}"
+                )
+        else:
+            text = (
+                f"❌ <b>UPDATE FALHOU</b>\n"
+                f"<b>Host:</b> <code>{hostname}</code>\n"
+                f"<b>Erro:</b> <code>{detail or 'sem detalhes'}</code>\n"
+                f"<b>Por:</b> {issued_by}\n"
+                f"<b>Hora:</b> {ts}"
+            )
+        return await send_message(text)
+
+    # ── demais comandos ──────────────────────────────────────────────────────
     if status == "done":
-        if command == "enable":
+        if command == "restart":
+            text = (
+                f"🔁 <b>SERVIÇO DNS REINICIADO</b>\n"
+                f"<b>Host:</b> <code>{hostname}</code>\n"
+                f"<b>Por:</b> {issued_by}\n"
+                f"<b>Hora:</b> {ts}"
+            )
+        elif command == "enable":
             text = (
                 f"✅ <b>SERVIÇO DNS RESTABELECIDO</b>\n"
                 f"<b>Host:</b> <code>{hostname}</code>\n"
@@ -194,8 +232,7 @@ async def send_command_result(
                 f"<b>Hora:</b> {ts}\n"
                 f"⚠️ O pacote DNS foi desinstalado desta máquina."
             )
-        else:
-            # stop ou disable
+        elif command in ("stop", "disable"):
             acao = "parado" if command == "stop" else "desabilitado"
             text = (
                 f"⏸️ <b>SERVIÇO DNS SUSPENSO</b>\n"
@@ -204,14 +241,22 @@ async def send_command_result(
                 f"<b>Por:</b> {issued_by}\n"
                 f"<b>Hora:</b> {ts}"
             )
+        else:
+            text = (
+                f"✅ <b>COMANDO EXECUTADO</b>\n"
+                f"<b>Host:</b> <code>{hostname}</code>\n"
+                f"<b>Comando:</b> {command}\n"
+                f"<b>Resultado:</b> {detail or 'OK'}\n"
+                f"<b>Por:</b> {issued_by}\n"
+                f"<b>Hora:</b> {ts}"
+            )
     else:
         # failed
-        motivo = result[:200] if result else "sem detalhes"
         text = (
             f"⚠️ <b>COMANDO FALHOU</b>\n"
             f"<b>Host:</b> <code>{hostname}</code>\n"
             f"<b>Comando:</b> {command}\n"
-            f"<b>Erro:</b> <code>{motivo}</code>\n"
+            f"<b>Erro:</b> <code>{detail or 'sem detalhes'}</code>\n"
             f"<b>Por:</b> {issued_by}\n"
             f"<b>Hora:</b> {ts}"
         )
