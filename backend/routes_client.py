@@ -25,7 +25,7 @@ try:
 except ImportError:
     nc = None
 
-logger = logging.getLogger("dns-monitor.api")
+logger = logging.getLogger("infra-vision.api")
 
 # Router para endpoints versionados (/api/v1/client/*, /api/v1/clients)
 client_v1 = APIRouter()
@@ -317,7 +317,7 @@ def _build_report_pdf(data: dict, client_user: str) -> bytes:
 
     # Header
     period = data["period"]
-    elements.append(Paragraph("DNS Monitor — Relatorio Mensal", title_style))
+    elements.append(Paragraph("Infra-Vision — Relatorio Mensal", title_style))
     elements.append(Paragraph(f"Cliente: {client_user} | Periodo: {period['start'][:10]} a {period['end'][:10]}", subtitle_style))
     elements.append(Paragraph(f"Hosts: {', '.join(data['hostnames'])}", normal))
     elements.append(Spacer(1, 8*mm))
@@ -384,7 +384,7 @@ def _build_report_pdf(data: dict, client_user: str) -> bytes:
     # Footer
     elements.append(Spacer(1, 12*mm))
     from datetime import datetime as _dt
-    elements.append(Paragraph(f"Gerado em {_dt.now().strftime('%d/%m/%Y %H:%M')} — DNS Monitor", subtitle_style))
+    elements.append(Paragraph(f"Gerado em {_dt.now().strftime('%d/%m/%Y %H:%M')} — Infra-Vision", subtitle_style))
 
     doc.build(elements)
     return buf.getvalue()

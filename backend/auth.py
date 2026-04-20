@@ -97,7 +97,7 @@ def _load_secret(env_name: str, context: str) -> bytes:
     if val and len(val) >= 16:
         return val
     import logging as _log
-    _log.getLogger("dns-monitor.auth").warning(
+    _log.getLogger("infra-vision.auth").warning(
         "%s nao configurado ou muito curto — gerando aleatorio (sessions invalidam no restart). "
         "Configure %s com pelo menos 32 chars para persistencia.", env_name, env_name
     )

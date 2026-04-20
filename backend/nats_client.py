@@ -1,5 +1,5 @@
 """
-nats_client.py — Cliente NATS para o backend DNS Monitor.
+nats_client.py — Cliente NATS para o backend Infra-Vision.
 Gerencia conexao, publish, subscribe e JetStream.
 Fallback gracioso: se NATS indisponivel, operacoes sao no-op.
 """
@@ -13,7 +13,7 @@ from typing import Callable, Optional
 import nats
 from nats.js.api import StreamConfig, RetentionPolicy
 
-logger = logging.getLogger("dns-monitor.nats")
+logger = logging.getLogger("infra-vision.nats")
 
 _nc: Optional[nats.NATS] = None
 _js = None  # JetStream context
@@ -39,7 +39,7 @@ async def connect() -> bool:
     try:
         connect_opts = dict(
             servers=NATS_URL,
-            name="dns-monitor-backend",
+            name="infra-vision-backend",
             reconnect_time_wait=2,
             max_reconnect_attempts=-1,
         )

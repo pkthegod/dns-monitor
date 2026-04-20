@@ -7,7 +7,7 @@ import logging
 import time
 from collections import defaultdict
 
-logger = logging.getLogger("dns-monitor.security")
+logger = logging.getLogger("infra-vision.security")
 
 # ---------------------------------------------------------------------------
 # Contadores de eventos por IP (janela deslizante)

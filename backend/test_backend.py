@@ -1,5 +1,5 @@
 """
-test_backend.py — Testes dos caminhos críticos do backend DNS Monitor.
+test_backend.py — Testes dos caminhos críticos do backend Infra-Vision.
 
 Cobre:
   - Autenticação Bearer (require_token)

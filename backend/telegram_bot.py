@@ -10,7 +10,7 @@ from typing import Optional
 
 import httpx
 
-logger = logging.getLogger("dns-monitor.telegram")
+logger = logging.getLogger("infra-vision.telegram")
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
 
@@ -295,7 +295,7 @@ async def send_report(
     status_icon = "✅" if not offline_agents and not dns_failures else "⚠️"
 
     lines = [
-        f"{status_icon} <b>Relatório DNS Monitor</b> — {_ts_now()}",
+        f"{status_icon} <b>Relatório Infra-Vision</b> — {_ts_now()}",
         "",
         f"<b>Agentes:</b> {online_agents}/{total_agents} online",
     ]

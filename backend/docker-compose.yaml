@@ -1,5 +1,5 @@
 networks:
-  dns_monitor_net:
+  infra_vision_net:
     driver: bridge
     ipam:
       config:
@@ -12,10 +12,10 @@ services:
   # ─────────────────────────────────────────────
   postgres:
     image: timescale/timescaledb:2.25.2-pg15
-    container_name: dns_monitor_db
+    container_name: infra_vision_db
     restart: unless-stopped
     networks:
-      dns_monitor_net:
+      infra_vision_net:
         ipv4_address: 172.20.0.10
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-dnsmonitor}
@@ -38,10 +38,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: dns_monitor_api
+    container_name: infra_vision_api
     restart: unless-stopped
     networks:
-      dns_monitor_net:
+      infra_vision_net:
         ipv4_address: 172.20.0.11
     ports:
       - "8000:8000"
@@ -95,12 +95,12 @@ services:
   # ─────────────────────────────────────────────
   nats:
     image: nats:2.10-alpine
-    container_name: dns_monitor_nats
+    container_name: infra_vision_nats
     restart: unless-stopped
-    command: ["--jetstream", "--store_dir", "/data", "--name", "dns-monitor-nats",
+    command: ["--jetstream", "--store_dir", "/data", "--name", "infra-vision-nats",
               "--user", "${NATS_USER:-dnsmonitor}", "--pass", "${NATS_PASS:?Defina NATS_PASS no .env}"]
     networks:
-      dns_monitor_net:
+      infra_vision_net:
         ipv4_address: 172.20.0.13
     ports:
       - "4222:4222"
