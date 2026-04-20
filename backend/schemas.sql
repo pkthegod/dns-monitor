@@ -456,3 +456,62 @@ CREATE TABLE IF NOT EXISTS daily_reports (
 );
 
 CREATE INDEX IF NOT EXISTS idx_daily_reports_client ON daily_reports (client_id, report_date DESC);
+
+
+-- =============================================================================
+-- SPEEDTEST — Domain SSL/Port checker (medidores)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS speedtest_scans (
+    id              BIGSERIAL    PRIMARY KEY,
+    ts              TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    total_domains   INTEGER      NOT NULL DEFAULT 0,
+    reachable       INTEGER      NOT NULL DEFAULT 0,
+    unreachable     INTEGER      NOT NULL DEFAULT 0,
+    ssl_valid       INTEGER      NOT NULL DEFAULT 0,
+    ssl_invalid     INTEGER      NOT NULL DEFAULT 0,
+    ssl_expired     INTEGER      NOT NULL DEFAULT 0,
+    expiring_soon   INTEGER      NOT NULL DEFAULT 0,
+    avg_response_ms NUMERIC(8,2),
+    scan_duration_s NUMERIC(8,2),
+    errors_count    INTEGER      NOT NULL DEFAULT 0,
+    timeouts_count  INTEGER      NOT NULL DEFAULT 0,
+    source          TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_speedtest_scans_ts ON speedtest_scans (ts DESC);
+
+CREATE TABLE IF NOT EXISTS speedtest_domains (
+    ts                  TIMESTAMPTZ  NOT NULL,
+    scan_id             BIGINT       NOT NULL,
+    domain              TEXT         NOT NULL,
+    port                INTEGER      DEFAULT 8080,
+    reachable           BOOLEAN,
+    ssl_enabled         BOOLEAN,
+    certificate_valid   BOOLEAN,
+    certificate_expired BOOLEAN,
+    days_until_expiry   INTEGER,
+    expiry_date         TEXT,
+    issuer              TEXT,
+    subject             TEXT,
+    tls_version         TEXT,
+    cipher_suite        TEXT,
+    response_time_ms    NUMERIC(8,2),
+    error_message       TEXT
+);
+
+SELECT create_hypertable(
+    'speedtest_domains', 'ts',
+    chunk_time_interval => INTERVAL '1 day',
+    if_not_exists       => TRUE
+);
+
+CREATE INDEX IF NOT EXISTS idx_speedtest_domains_scan
+    ON speedtest_domains (scan_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_speedtest_domains_domain
+    ON speedtest_domains (domain, ts DESC);
+
+SELECT add_retention_policy('speedtest_domains', INTERVAL '1 year', if_not_exists => TRUE);
+
+ALTER TABLE speedtest_domains SET (timescaledb.compress, timescaledb.compress_segmentby = 'domain');
+SELECT add_compression_policy('speedtest_domains', INTERVAL '7 days', if_not_exists => TRUE);
