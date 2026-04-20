@@ -10,7 +10,7 @@ from email.mime.base import MIMEBase
 from email.mime.text import MIMEText
 from email import encoders
 
-logger = logging.getLogger("dns-monitor.email")
+logger = logging.getLogger("infra-vision.email")
 
 SMTP_HOST = os.environ.get("SMTP_HOST", "")
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
@@ -43,13 +43,13 @@ def send_report_email(
     msg = MIMEMultipart()
     msg["From"] = SMTP_FROM
     msg["To"] = to_email
-    msg["Subject"] = f"DNS Monitor — Relatorio {month_label}"
+    msg["Subject"] = f"Infra-Vision — Relatorio {month_label}"
 
     # Corpo do email (HTML simples)
     body = f"""
     <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 600px; margin: 0 auto;
                 background: #1a1b26; color: #a9b1d6; padding: 32px; border-radius: 12px;">
-        <h2 style="color: #7aa2f7; margin-top: 0;">DNS Monitor</h2>
+        <h2 style="color: #7aa2f7; margin-top: 0;">Infra-Vision</h2>
         <p>Ola, <strong>{client_name}</strong>.</p>
         <p>Segue em anexo o relatorio mensal de monitoramento DNS referente a <strong>{month_label}</strong>.</p>
         <div style="background: #24283b; padding: 16px 20px; border-radius: 8px; margin: 20px 0;">
@@ -60,7 +60,7 @@ def send_report_email(
         <p>Para mais detalhes, acesse o <a href="#" style="color: #7aa2f7;">portal do cliente</a> ou abra o PDF anexo.</p>
         <hr style="border: none; border-top: 1px solid #3b4261; margin: 24px 0;">
         <p style="font-size: 11px; color: #565f89;">
-            Este email foi gerado automaticamente pelo DNS Monitor. Nao responda este email.
+            Este email foi gerado automaticamente pelo Infra-Vision. Nao responda este email.
         </p>
     </div>
     """

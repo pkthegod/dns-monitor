@@ -7,7 +7,7 @@ import logging
 import urllib.request
 from typing import Optional
 
-logger = logging.getLogger("dns-monitor.webhooks")
+logger = logging.getLogger("infra-vision.webhooks")
 
 
 def detect_format(url: str) -> str:
@@ -35,13 +35,13 @@ def _build_payload(
         return {
             "attachments": [{
                 "color": color,
-                "title": f"DNS Monitor — {severity.upper()}",
+                "title": f"Infra-Vision — {severity.upper()}",
                 "text": message,
                 "fields": [
                     {"title": "Host", "value": hostname, "short": True},
                     {"title": "Tipo", "value": alert_type, "short": True},
                 ],
-                "footer": "DNS Monitor",
+                "footer": "Infra-Vision",
             }]
         }
 
@@ -50,9 +50,9 @@ def _build_payload(
             "@type": "MessageCard",
             "@context": "http://schema.org/extensions",
             "themeColor": color.replace("#", ""),
-            "summary": f"DNS Monitor — {alert_type} ({severity})",
+            "summary": f"Infra-Vision — {alert_type} ({severity})",
             "sections": [{
-                "activityTitle": f"DNS Monitor — {severity.upper()}",
+                "activityTitle": f"Infra-Vision — {severity.upper()}",
                 "facts": [
                     {"name": "Host", "value": hostname},
                     {"name": "Tipo", "value": alert_type},
@@ -69,7 +69,7 @@ def _build_payload(
             "payload": {
                 "summary": f"[{severity.upper()}] {hostname}: {message}",
                 "severity": "critical" if severity == "critical" else "warning",
-                "source": "dns-monitor",
+                "source": "infra-vision",
                 "component": hostname,
                 "custom_details": {"alert_type": alert_type, "message": message},
             },
@@ -77,7 +77,7 @@ def _build_payload(
 
     # generic — JSON simples
     return {
-        "source": "dns-monitor",
+        "source": "infra-vision",
         "severity": severity,
         "alert_type": alert_type,
         "hostname": hostname,

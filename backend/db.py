@@ -11,7 +11,7 @@ from typing import Optional
 
 import asyncpg
 
-logger = logging.getLogger("dns-monitor.db")
+logger = logging.getLogger("infra-vision.db")
 
 _pool: Optional[asyncpg.Pool] = None
 
@@ -34,7 +34,7 @@ async def init_pool() -> None:
     ssl_param = ssl_mode if ssl_mode in ("require", "prefer", "verify-full") else False
     _pool = await asyncpg.create_pool(
         dsn, ssl=ssl_param, min_size=2, max_size=10, command_timeout=60,
-        server_settings={"application_name": "dns-monitor-backend"},
+        server_settings={"application_name": "infra-vision-backend"},
     )
     logger.info("Pool de conexoes criado (min=2 max=10 ssl=%s)", ssl_mode)
 

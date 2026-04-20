@@ -1,5 +1,5 @@
 """
-main.py — Backend central do DNS Monitor.
+main.py — Backend central do Infra-Vision.
 Recebe metricas dos agentes, persiste no TimescaleDB,
 e executa o scheduler de alertas via APScheduler.
 """
@@ -71,7 +71,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%dT%H:%M:%S",
 )
-logger = logging.getLogger("dns-monitor.api")
+logger = logging.getLogger("infra-vision.api")
 
 # ---------------------------------------------------------------------------
 # Serializacao JSON — converte tipos do asyncpg nao suportados pelo json nativo
@@ -403,7 +403,7 @@ async def lifespan(app: FastAPI):
         if nc.is_connected():
             await _setup_nats_subscriptions()
     setup_scheduler()
-    logger.info("Backend DNS Monitor iniciado (NATS=%s)", "OK" if nc and nc.is_connected() else "offline")
+    logger.info("Backend Infra-Vision iniciado (NATS=%s)", "OK" if nc and nc.is_connected() else "offline")
     yield
     scheduler.shutdown(wait=False)
     if nc:
@@ -415,10 +415,10 @@ async def lifespan(app: FastAPI):
 from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(
-    title="DNS Monitor — Backend",
+    title="Infra-Vision — Backend",
     version="1.0.0",
     description="""
-API do DNS Monitor — sistema distribuido de monitoramento DNS.
+API do Infra-Vision — sistema distribuido de monitoramento DNS.
 
 ## Autenticacao
 
