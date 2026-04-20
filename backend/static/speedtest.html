@@ -70,19 +70,48 @@
   .chart-card canvas { width: 100% !important; max-height: 300px; }
 
   .domains-section { margin-bottom: 28px; }
-  .domains-section h3 { font-size: 12px; font-weight: 500; color: var(--text-mid); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 14px; }
-  .domains-controls { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; flex-wrap: wrap; }
-  .domains-controls input { width: 240px; font-size: .75rem; padding: 6px 10px; }
-  .domains-controls select { background: var(--bg-input); border: 1px solid var(--border); color: var(--text); border-radius: 5px; padding: 6px 10px; font-family: var(--font-mono); font-size: .75rem; }
+  .domains-section > h3 { font-size: 12px; font-weight: 500; color: var(--text-mid); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 14px; }
+  .domains-controls { display: flex; gap: 10px; margin-bottom: 16px; align-items: center; flex-wrap: wrap; }
+  .domains-controls input { width: 260px; font-size: .78rem; padding: 8px 12px; }
+  .domains-controls select { background: var(--bg-input); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 8px 12px; font-family: var(--font-mono); font-size: .78rem; }
 
-  .pill-ok { background: #9ece6a22; color: var(--green); border: 1px solid #9ece6a44; }
-  .pill-err { background: #f7768e22; color: var(--red); border: 1px solid #f7768e44; }
-  .pill-warn { background: #e0af6822; color: var(--yellow); border: 1px solid #e0af6844; }
-  .pill-info { background: #7aa2f722; color: var(--blue); border: 1px solid #7aa2f744; }
+  /* Table refinements */
+  .domains-section table { border-collapse: separate; border-spacing: 0; width: 100%; }
+  .domains-section th {
+    font-size: .68rem; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--text-dim); padding: 10px 12px; border-bottom: 1px solid var(--border);
+    white-space: nowrap; font-weight: 600;
+  }
+  .domains-section td { padding: 10px 12px; border-bottom: 1px solid var(--border-lo); vertical-align: middle; }
+  .domains-section tr { transition: background .15s; }
+  .domains-section tbody tr:hover { background: var(--bg-subtle); }
+  .domains-section .col-domain { font-family: var(--font-mono); font-size: .78rem; font-weight: 500; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .domains-section .col-time { font-family: var(--font-mono); font-size: .78rem; text-align: right; }
+  .domains-section .col-expiry { font-family: var(--font-mono); font-size: .78rem; font-weight: 600; }
+  .domains-section .col-meta { font-size: .72rem; color: var(--text-dim); }
+  .domains-section .col-err { max-width: 180px; }
+  .domains-section .err-badge { display: inline-flex; align-items: center; gap: 4px; font-size: .7rem; color: var(--red); background: #f7768e0a; border: 1px solid #f7768e22; border-radius: 4px; padding: 2px 7px; max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: help; }
+  .row-border-ok { border-left: 3px solid var(--green); }
+  .row-border-warn { border-left: 3px solid var(--yellow); }
+  .row-border-err { border-left: 3px solid var(--red); }
+  .row-border-info { border-left: 3px solid var(--blue); }
 
-  .expiry-ok { color: var(--green); }
-  .expiry-warn { color: var(--yellow); }
-  .expiry-crit { color: var(--red); }
+  /* Pills */
+  .pill-ok { background: #9ece6a18; color: var(--green); border: 1px solid #9ece6a33; padding: 3px 10px; border-radius: 12px; font-size: .7rem; font-weight: 600; letter-spacing: .02em; }
+  .pill-err { background: #f7768e18; color: var(--red); border: 1px solid #f7768e33; padding: 3px 10px; border-radius: 12px; font-size: .7rem; font-weight: 600; }
+  .pill-warn { background: #e0af6818; color: var(--yellow); border: 1px solid #e0af6833; padding: 3px 10px; border-radius: 12px; font-size: .7rem; font-weight: 600; }
+  .pill-info { background: #7aa2f718; color: var(--blue); border: 1px solid #7aa2f733; padding: 3px 10px; border-radius: 12px; font-size: .7rem; font-weight: 600; }
+
+  /* Expiry coloring */
+  .expiry-ok { color: var(--green); font-weight: 600; }
+  .expiry-warn { color: var(--yellow); font-weight: 700; }
+  .expiry-crit { color: var(--red); font-weight: 700; }
+
+  /* Response time coloring */
+  .time-fast { color: var(--green); }
+  .time-mid { color: var(--text); }
+  .time-slow { color: var(--yellow); }
+  .time-dead { color: var(--red); }
 
   @media (max-width: 960px) { .charts { grid-template-columns: 1fr; } .kpis { grid-template-columns: repeat(3, 1fr); } }
   @media (max-width: 600px) { .page { padding: 16px; } .kpis { grid-template-columns: repeat(2, 1fr); } }
@@ -149,22 +178,20 @@
       </select>
       <span class="dim" style="font-size:11px;margin-left:auto" id="domainCount">--</span>
     </div>
-    <div class="table-wrap">
+    <div class="table-wrap" style="overflow-x:auto">
       <table>
         <thead>
           <tr>
-            <th>Dominio</th>
-            <th>Porta</th>
+            <th style="min-width:200px">Dominio</th>
             <th>Status</th>
-            <th>SSL</th>
-            <th>Expira em</th>
-            <th>Emissor</th>
-            <th>TLS</th>
-            <th>Tempo (ms)</th>
-            <th>Erro</th>
+            <th>Certificado</th>
+            <th style="text-align:center">Expira</th>
+            <th>Emissor / TLS</th>
+            <th style="text-align:right">Tempo</th>
+            <th>Detalhes</th>
           </tr>
         </thead>
-        <tbody id="domainsBody"><tr><td colspan="9" class="dim" style="padding:14px">Carregando...</td></tr></tbody>
+        <tbody id="domainsBody"><tr><td colspan="7" class="dim" style="padding:14px">Carregando...</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -290,6 +317,22 @@ function renderCharts(domains) {
   });
 }
 
+function timeClass(ms) {
+  if (ms == null) return 'dim';
+  if (ms < 300) return 'time-fast';
+  if (ms < 600) return 'time-mid';
+  if (ms < 1000) return 'time-slow';
+  return 'time-dead';
+}
+
+function rowBorder(d) {
+  if (!d.reachable) return 'row-border-err';
+  if (d.certificate_expired) return 'row-border-err';
+  if (d.days_until_expiry != null && d.days_until_expiry <= 30) return 'row-border-warn';
+  if (d.certificate_valid) return 'row-border-ok';
+  return 'row-border-info';
+}
+
 function renderTable(domains) {
   const search = (document.getElementById('domainSearch').value || '').toLowerCase();
   const filter = document.getElementById('domainFilter').value;
@@ -307,23 +350,33 @@ function renderTable(domains) {
 
   const tbody = document.getElementById('domainsBody');
   if (!filtered.length) {
-    tbody.innerHTML = '<tr><td colspan="9" class="dim" style="padding:14px">Nenhum dominio encontrado.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="dim" style="padding:14px">Nenhum dominio encontrado.</td></tr>';
     return;
   }
 
   tbody.innerHTML = filtered.map(d => {
-    const expDays = d.days_until_expiry != null ? `<span class="${expiryClass(d.days_until_expiry)}">${d.days_until_expiry}d</span>` : '<span class="dim">—</span>';
-    const timeMs = d.response_time_ms != null ? `${d.response_time_ms.toFixed(0)}` : '—';
-    return `<tr>
-      <td><strong style="font-size:.8rem">${esc(d.domain)}</strong></td>
-      <td class="dim">${d.port || 8080}</td>
+    const expDays = d.days_until_expiry != null
+      ? `<span class="col-expiry ${expiryClass(d.days_until_expiry)}">${d.days_until_expiry}d</span>`
+      : '<span class="dim">—</span>';
+
+    const timeMs = d.response_time_ms != null
+      ? `<span class="${timeClass(d.response_time_ms)}">${d.response_time_ms.toFixed(0)}ms</span>`
+      : '<span class="dim">—</span>';
+
+    const metaInfo = [d.issuer, d.tls_version].filter(Boolean).join(' · ') || '—';
+
+    const errHtml = d.error_message
+      ? `<span class="err-badge" title="${esc(d.error_message)}">${esc(d.error_message.split(':')[0])}</span>`
+      : '<span class="dim">—</span>';
+
+    return `<tr class="${rowBorder(d)}">
+      <td class="col-domain" title="${esc(d.domain)}">${esc(d.domain)}</td>
       <td>${statusPill(d)}</td>
       <td>${sslPill(d)}</td>
-      <td>${expDays}</td>
-      <td><span class="dim" style="font-size:.75rem">${esc(d.issuer || '—')}</span></td>
-      <td><span class="dim">${esc(d.tls_version || '—')}</span></td>
-      <td class="dim">${timeMs}</td>
-      <td><span class="dim" style="font-size:.72rem" title="${esc(d.error_message || '')}">${esc((d.error_message || '').slice(0,40))}${(d.error_message||'').length > 40 ? '...' : ''}</span></td>
+      <td style="text-align:center">${expDays}</td>
+      <td class="col-meta">${esc(metaInfo)}</td>
+      <td class="col-time">${timeMs}</td>
+      <td class="col-err">${errHtml}</td>
     </tr>`;
   }).join('');
 }
