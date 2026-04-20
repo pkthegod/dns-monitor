@@ -76,6 +76,9 @@ services:
       SMTP_PASS: ${SMTP_PASS:-}
       SMTP_FROM: ${SMTP_FROM:-}
       SMTP_TLS: ${SMTP_TLS:-true}
+      AGENT_FILE_PATH: /app/agent/dns_agent.py
+    volumes:
+      - ../agent/dns_agent.py:/app/agent/dns_agent.py:ro
     depends_on:
       postgres:
         condition: service_healthy
