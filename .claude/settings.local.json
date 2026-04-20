@@ -72,7 +72,13 @@
       "Bash(sed -i 's/dns_monitor_db/infra_vision_db/g' docker-compose.yaml)",
       "Bash(sed -i 's/dns_monitor_api/infra_vision_api/g' docker-compose.yaml)",
       "Bash(sed -i 's/dns_monitor_nats/infra_vision_nats/g' docker-compose.yaml)",
-      "Bash(sed -i 's/dns_monitor_net/infra_vision_net/g' docker-compose.yaml)"
+      "Bash(sed -i 's/dns_monitor_net/infra_vision_net/g' docker-compose.yaml)",
+      "Bash(sed -i 's|/ Dashboard|/ DNS Metrics|g; s|>Dashboard<|>DNS Metrics<|g' admin.html dashboard.html speedtest.html)",
+      "Bash(sed -i 's|/ Speedtest|/ Speedtest Metrics|g; s|>Speedtest<|>Speedtest Metrics<|g' admin.html dashboard.html speedtest.html)",
+      "Bash(sed -i 's|Infra-Vision — Dashboard|Infra-Vision — DNS Metrics|g' dashboard.html)",
+      "Bash(sed -i 's|Infra-Vision — Speedtest|Infra-Vision — Speedtest Metrics|g' speedtest.html)",
+      "Bash(sed -i 's/v=072/v=080/g; s/v=073/v=080/g' admin.html dashboard.html speedtest.html login.html client-login.html client.html client-help.html admin-help.html)",
+      "Bash(grep -l \"v=07\" *.html)"
     ]
   }
 }
