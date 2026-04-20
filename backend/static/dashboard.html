@@ -8,7 +8,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/base.css?v=080">
+<script src="/static/theme.js?v=081"></script>
+<link rel="stylesheet" href="/static/base.css?v=081">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <style>
   .page { max-width: 1400px; margin: 0 auto; padding: 0 36px 48px; }
@@ -97,7 +98,7 @@
   <div class="header fade-in">
     <img src="/static/logo.svg" alt="">
     <h1>Infra-Vision <span>/ DNS Metrics</span></h1>
-    <div style="display:flex;gap:8px"><a href="/admin" class="btn btn-ghost">Admin</a><a href="/speedtest" class="btn btn-ghost">Speedtest Metrics</a></div>
+    <div style="display:flex;gap:8px;align-items:center"><a href="/admin" class="btn btn-ghost">Admin</a><a href="/speedtest" class="btn btn-ghost">Speedtest Metrics</a><button class="theme-toggle" onclick="toggleTheme()" title="Alternar tema"><span class="icon-sun">&#9728;</span><span class="icon-moon">&#9790;</span></button></div>
   </div>
 
   <div class="token-bar fade-in stagger-1" style="display:none">
@@ -155,7 +156,7 @@
   <div class="footer">auto-refresh a cada 60s</div>
 </div>
 
-<script src="/static/app.js?v=080"></script>
+<script src="/static/app.js?v=081"></script>
 <script>
 const COLORS = ['#7aa2f7','#9ece6a','#e0af68','#ff9e64','#f7768e','#bb9af7','#73daca','#7dcfff','#c0caf5','#b4f9f8'];
 let charts = {};

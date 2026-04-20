@@ -8,7 +8,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/base.css?v=080">
+<script src="/static/theme.js?v=081"></script>
+<link rel="stylesheet" href="/static/base.css?v=081">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <style>
   .page { max-width: 1400px; margin: 0 auto; padding: 0 36px 48px; }
@@ -131,9 +132,10 @@
   <div class="header fade-in">
     <img src="/static/logo.svg" alt="">
     <h1>Infra-Vision <span>/ Speedtest Metrics</span></h1>
-    <div style="display:flex;gap:8px">
+    <div style="display:flex;gap:8px;align-items:center">
       <a href="/admin" class="btn btn-ghost">Admin</a>
       <a href="/dashboard" class="btn btn-ghost">DNS Metrics</a>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Alternar tema"><span class="icon-sun">&#9728;</span><span class="icon-moon">&#9790;</span></button>
     </div>
   </div>
 
@@ -182,12 +184,12 @@
       <table>
         <thead>
           <tr>
-            <th style="min-width:200px">Dominio</th>
-            <th>Status</th>
+            <th style="min-width:200px;cursor:pointer" onclick="sortDomains('domain')">Dominio &#8645;</th>
+            <th style="cursor:pointer" onclick="sortDomains('status')">Status &#8645;</th>
             <th>Certificado</th>
-            <th style="text-align:center">Expira</th>
+            <th style="text-align:center;cursor:pointer" onclick="sortDomains('expiry')">Expira &#8645;</th>
             <th>Emissor / TLS</th>
-            <th style="text-align:right">Tempo</th>
+            <th style="text-align:right;cursor:pointer" onclick="sortDomains('time')">Tempo &#8645;</th>
             <th>Detalhes</th>
           </tr>
         </thead>
@@ -203,7 +205,7 @@
 
 <div id="toast-container"></div>
 
-<script src="/static/app.js?v=080"></script>
+<script src="/static/app.js?v=081"></script>
 <script>
 const COLORS = ['#7aa2f7','#9ece6a','#e0af68','#ff9e64','#f7768e','#bb9af7','#73daca','#7dcfff','#c0caf5','#b4f9f8'];
 let charts = {};
@@ -346,6 +348,7 @@ function renderTable(domains) {
     return true;
   });
 
+  filtered = applySortToFiltered(filtered);
   document.getElementById('domainCount').textContent = `${filtered.length} de ${domains.length} dominios`;
 
   const tbody = document.getElementById('domainsBody');
@@ -397,6 +400,32 @@ async function loadSpeedtest() {
   } catch (e) {
     toast.err('Erro ao carregar dados: ' + e.message);
   }
+}
+
+// Sorting
+let _sortField = 'domain', _sortAsc = true;
+function sortDomains(field) {
+  if (_sortField === field) _sortAsc = !_sortAsc;
+  else { _sortField = field; _sortAsc = true; }
+  renderTable(domainsCache);
+}
+
+function applySortToFiltered(list) {
+  return list.sort((a, b) => {
+    let va, vb;
+    switch (_sortField) {
+      case 'domain': va = a.domain || ''; vb = b.domain || ''; break;
+      case 'status':
+        va = a.reachable ? (a.certificate_valid ? 2 : 1) : 0;
+        vb = b.reachable ? (b.certificate_valid ? 2 : 1) : 0;
+        break;
+      case 'expiry': va = a.days_until_expiry ?? 9999; vb = b.days_until_expiry ?? 9999; break;
+      case 'time': va = a.response_time_ms ?? 0; vb = b.response_time_ms ?? 0; break;
+      default: va = a.domain; vb = b.domain;
+    }
+    if (typeof va === 'string') return _sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+    return _sortAsc ? va - vb : vb - va;
+  });
 }
 
 // Filtros
