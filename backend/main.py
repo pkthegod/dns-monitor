@@ -593,9 +593,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            f"script-src 'self' 'nonce-{nonce}' cdn.jsdelivr.net; "
-            "style-src 'self' 'unsafe-inline' fonts.googleapis.com; "
-            "font-src fonts.gstatic.com; "
+            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src https://fonts.gstatic.com; "
             "img-src 'self' data:; "
             "connect-src 'self'; "
             "frame-ancestors 'none'; "
