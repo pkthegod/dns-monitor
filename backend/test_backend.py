@@ -1088,8 +1088,8 @@ class TestSendCommandResult:
         with patch("telegram_bot.send_message", AsyncMock(return_value=True)) as mock_send:
             self._run(tg.send_command_result("ns1", "stop", "failed", long_result))
         text = mock_send.call_args[0][0]
-        # Resultado deve ser truncado a 200 chars
-        assert "x" * 201 not in text
+        # Resultado deve ser truncado a 300 chars
+        assert "x" * 301 not in text
 
 
 # ===========================================================================
