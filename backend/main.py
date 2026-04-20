@@ -1141,6 +1141,44 @@ async def dashboard_data(period: str = "24h", host: str = "") -> _SafeJSONRespon
     return _SafeJSONResponse(data)
 
 
+# ---------------------------------------------------------------------------
+# Speedtest — Domain SSL/Port checker (medidores)
+# ---------------------------------------------------------------------------
+
+@v1.post("/speedtest", dependencies=[Depends(require_token)], tags=["speedtest"])
+async def ingest_speedtest(request: Request) -> JSONResponse:
+    """Recebe JSON completo do script domain checker (speedtest)."""
+    body = await request.json()
+    domains = body.get("domains", [])
+    if not domains:
+        return JSONResponse({"error": "Campo 'domains' obrigatorio"}, status_code=422)
+
+    metadata = body.get("metadata", {})
+    summary = body.get("summary", {})
+    scan_id = await db.insert_speedtest_scan(metadata, summary, domains)
+    logger.info("Speedtest ingerido: scan_id=%d, domains=%d", scan_id, len(domains))
+    return JSONResponse({"status": "ok", "scan_id": scan_id, "domains": len(domains)}, status_code=201)
+
+
+@v1.get("/speedtest/data", dependencies=[Depends(require_token)], tags=["speedtest"])
+async def speedtest_data_endpoint() -> _SafeJSONResponse:
+    """Dados do ultimo scan + historico para o frontend."""
+    latest = await db.get_latest_speedtest()
+    history = await db.get_speedtest_history(30)
+    return _SafeJSONResponse({"latest": latest, "history": history})
+
+
+@app.get("/speedtest", response_class=HTMLResponse, include_in_schema=False)
+async def speedtest_page(request: Request) -> HTMLResponse:
+    """Pagina Speedtest — verificacao de dominios/SSL."""
+    cookie = request.cookies.get("admin_session", "")
+    if not _verify_admin_cookie(cookie):
+        return RedirectResponse("/admin/login", status_code=303)
+    html_path = pathlib.Path(__file__).parent / "static" / "speedtest.html"
+    nonce = getattr(request.state, "csp_nonce", "")
+    return HTMLResponse(_html_with_nonce(html_path.read_text(encoding="utf-8"), nonce))
+
+
 from fastapi import WebSocket, WebSocketDisconnect
 
 @app.websocket("/ws/live")

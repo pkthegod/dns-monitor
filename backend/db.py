@@ -850,3 +850,92 @@ async def get_aggregated_metrics(
         "dns_history": dns_history,
         "recent_alerts": recent_alerts,
     }
+
+
+# ===========================================================================
+# Speedtest — Domain SSL/Port checker (medidores)
+# ===========================================================================
+
+async def insert_speedtest_scan(metadata: dict, summary: dict, domains: list) -> int:
+    """Insere scan completo do speedtest. Retorna scan_id."""
+    from datetime import datetime as _dt, timezone as _tz
+    ts = _parse_ts(metadata.get("scan_timestamp", _dt.now(_tz.utc).isoformat()))
+
+    async with get_conn() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO speedtest_scans
+                (ts, total_domains, reachable, unreachable, ssl_valid, ssl_invalid,
+                 ssl_expired, expiring_soon, avg_response_ms, scan_duration_s,
+                 errors_count, timeouts_count, source)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+            RETURNING id
+            """,
+            ts,
+            metadata.get("total_domains", len(domains)),
+            metadata.get("reachable_domains", 0),
+            metadata.get("total_domains", 0) - metadata.get("reachable_domains", 0),
+            metadata.get("valid_certificates", 0),
+            metadata.get("ssl_enabled_domains", 0) - metadata.get("valid_certificates", 0),
+            metadata.get("expired_certificates", 0),
+            metadata.get("expiring_soon_count", 0),
+            summary.get("performance_metrics", {}).get("avg_response_time_ms"),
+            metadata.get("scan_duration_seconds"),
+            metadata.get("errors_count", 0),
+            metadata.get("timeouts_count", 0),
+            metadata.get("source"),
+        )
+        scan_id = row["id"]
+
+        if domains:
+            await conn.executemany(
+                """
+                INSERT INTO speedtest_domains
+                    (ts, scan_id, domain, port, reachable, ssl_enabled,
+                     certificate_valid, certificate_expired, days_until_expiry,
+                     expiry_date, issuer, subject, tls_version, cipher_suite,
+                     response_time_ms, error_message)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+                """,
+                [
+                    (
+                        ts, scan_id,
+                        d.get("domain"), d.get("port", 8080),
+                        d.get("reachable"), d.get("ssl_enabled"),
+                        d.get("certificate_valid"), d.get("certificate_expired"),
+                        d.get("days_until_expiry"), d.get("expiry_date"),
+                        d.get("issuer"), d.get("subject"),
+                        d.get("tls_version"), d.get("cipher_suite"),
+                        d.get("response_time_ms"), d.get("error_message"),
+                    )
+                    for d in domains
+                ],
+            )
+
+    return scan_id
+
+
+async def get_latest_speedtest() -> Optional[dict]:
+    """Retorna o scan mais recente com todos os domínios."""
+    async with get_conn() as conn:
+        scan = await conn.fetchrow(
+            "SELECT * FROM speedtest_scans ORDER BY ts DESC LIMIT 1"
+        )
+        if not scan:
+            return None
+        scan_dict = dict(scan)
+        domains = await conn.fetch(
+            "SELECT * FROM speedtest_domains WHERE scan_id = $1 ORDER BY domain",
+            scan_dict["id"],
+        )
+        scan_dict["domains"] = [dict(d) for d in domains]
+        return scan_dict
+
+
+async def get_speedtest_history(limit: int = 30) -> list[dict]:
+    """Historico de scans (sem dominios individuais)."""
+    async with get_conn() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM speedtest_scans ORDER BY ts DESC LIMIT $1", limit
+        )
+        return [dict(r) for r in rows]

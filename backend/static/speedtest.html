@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DNS Monitor — Speedtest</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/base.css?v=073">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  .page { max-width: 1400px; margin: 0 auto; padding: 0 36px 48px; }
+
+  .status-bar {
+    position: sticky; top: 0; z-index: 100;
+    display: flex; align-items: center; gap: 20px;
+    background: var(--bg-card); border-bottom: 1px solid var(--border);
+    padding: 10px 36px; margin: 0 -36px 24px;
+    font-family: var(--font-mono); font-size: 12px; font-weight: 600;
+    flex-wrap: wrap;
+  }
+  .sb-item { display: flex; align-items: center; gap: 8px; }
+  .sb-count {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 26px; height: 26px; border-radius: 50%;
+    font-size: 12px; font-weight: 700;
+  }
+  .sb-ok { color: var(--green); }
+  .sb-ok .sb-count { background: #9ece6a22; border: 1px solid #9ece6a44; }
+  .sb-warn { color: var(--yellow); }
+  .sb-warn .sb-count { background: #e0af6822; border: 1px solid #e0af6844; }
+  .sb-err { color: var(--red); }
+  .sb-err .sb-count { background: #f7768e22; border: 1px solid #f7768e44; }
+  .sb-total { color: var(--blue); }
+  .sb-total .sb-count { background: #7aa2f722; border: 1px solid #7aa2f744; }
+  .sb-updated { margin-left: auto; color: var(--text-dim); font-weight: 400; }
+
+  .kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px; margin-bottom: 28px; }
+  .kpi {
+    background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg);
+    padding: 20px 16px; position: relative; overflow: hidden;
+    transition: border-color var(--transition), transform .15s;
+  }
+  .kpi:hover { border-color: var(--border-hi); transform: translateY(-1px); }
+  .kpi::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
+  .kpi.blue::before   { background: var(--blue); }
+  .kpi.green::before  { background: var(--green); }
+  .kpi.red::before    { background: var(--red); }
+  .kpi.teal::before   { background: var(--teal); }
+  .kpi.purple::before { background: var(--purple); }
+  .kpi.yellow::before { background: var(--yellow); }
+  .kpi .label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .08em; font-weight: 500; margin-bottom: 8px; }
+  .kpi .value { font-size: 1.75rem; font-weight: 700; font-family: var(--font-mono); line-height: 1; }
+  .kpi.blue .value   { color: var(--blue); }
+  .kpi.green .value  { color: var(--green); }
+  .kpi.red .value    { color: var(--red); }
+  .kpi.teal .value   { color: var(--teal); }
+  .kpi.purple .value { color: var(--purple); }
+  .kpi.yellow .value { color: var(--yellow); }
+
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 28px; }
+  .chart-card h3 {
+    font-size: 12px; font-weight: 500; color: var(--text-mid);
+    text-transform: uppercase; letter-spacing: .06em; margin-bottom: 16px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .chart-card h3 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+  .chart-card canvas { width: 100% !important; max-height: 300px; }
+
+  .domains-section { margin-bottom: 28px; }
+  .domains-section h3 { font-size: 12px; font-weight: 500; color: var(--text-mid); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 14px; }
+  .domains-controls { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; flex-wrap: wrap; }
+  .domains-controls input { width: 240px; font-size: .75rem; padding: 6px 10px; }
+  .domains-controls select { background: var(--bg-input); border: 1px solid var(--border); color: var(--text); border-radius: 5px; padding: 6px 10px; font-family: var(--font-mono); font-size: .75rem; }
+
+  .pill-ok { background: #9ece6a22; color: var(--green); border: 1px solid #9ece6a44; }
+  .pill-err { background: #f7768e22; color: var(--red); border: 1px solid #f7768e44; }
+  .pill-warn { background: #e0af6822; color: var(--yellow); border: 1px solid #e0af6844; }
+  .pill-info { background: #7aa2f722; color: var(--blue); border: 1px solid #7aa2f744; }
+
+  .expiry-ok { color: var(--green); }
+  .expiry-warn { color: var(--yellow); }
+  .expiry-crit { color: var(--red); }
+
+  @media (max-width: 960px) { .charts { grid-template-columns: 1fr; } .kpis { grid-template-columns: repeat(3, 1fr); } }
+  @media (max-width: 600px) { .page { padding: 16px; } .kpis { grid-template-columns: repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="status-bar" id="statusBar">
+    <div class="sb-item sb-ok"><span class="sb-count" id="sbOk">0</span> SSL OK</div>
+    <div class="sb-item sb-warn"><span class="sb-count" id="sbWarn">0</span> Expirando</div>
+    <div class="sb-item sb-err"><span class="sb-count" id="sbErr">0</span> Falhas</div>
+    <div class="sb-item sb-total"><span class="sb-count" id="sbTotal">0</span> Total</div>
+    <span class="sb-updated" id="sbUpdated"></span>
+  </div>
+
+  <div class="header fade-in">
+    <img src="/static/logo.svg" alt="">
+    <h1>DNS Monitor <span>/ Speedtest</span></h1>
+    <div style="display:flex;gap:8px">
+      <a href="/admin" class="btn btn-ghost">Admin</a>
+      <a href="/dashboard" class="btn btn-ghost">Dashboard</a>
+    </div>
+  </div>
+
+  <div class="kpis" id="kpiContainer">
+    <div class="kpi blue"><div class="label">Dominios</div><div class="value" id="kpiTotal">--</div></div>
+    <div class="kpi green"><div class="label">Acessiveis</div><div class="value" id="kpiReachable">--</div></div>
+    <div class="kpi teal"><div class="label">SSL Valido</div><div class="value" id="kpiSslValid">--</div></div>
+    <div class="kpi red"><div class="label">Expirados</div><div class="value" id="kpiExpired">--</div></div>
+    <div class="kpi yellow"><div class="label">Expirando 30d</div><div class="value" id="kpiExpiring">--</div></div>
+    <div class="kpi purple"><div class="label">Tempo Medio</div><div class="value" id="kpiAvgTime">--</div></div>
+  </div>
+
+  <div class="charts" id="chartsContainer">
+    <div class="card chart-card">
+      <h3><span class="dot" style="background:var(--green)"></span> Status dos Dominios</h3>
+      <canvas id="chartStatus"></canvas>
+    </div>
+    <div class="card chart-card">
+      <h3><span class="dot" style="background:var(--purple)"></span> Top 15 — Tempo de Resposta (ms)</h3>
+      <canvas id="chartResponseTime"></canvas>
+    </div>
+    <div class="card chart-card">
+      <h3><span class="dot" style="background:var(--yellow)"></span> Certificados — Dias ate Expirar</h3>
+      <canvas id="chartExpiry"></canvas>
+    </div>
+    <div class="card chart-card">
+      <h3><span class="dot" style="background:var(--teal)"></span> Versoes TLS</h3>
+      <canvas id="chartTls"></canvas>
+    </div>
+  </div>
+
+  <div class="card domains-section">
+    <h3>Dominios — Ultimo Scan</h3>
+    <div class="domains-controls">
+      <input type="text" id="domainSearch" placeholder="Buscar dominio...">
+      <select id="domainFilter">
+        <option value="">Todos</option>
+        <option value="ok">SSL OK</option>
+        <option value="expiring">Expirando</option>
+        <option value="expired">Expirado</option>
+        <option value="unreachable">Inacessivel</option>
+      </select>
+      <span class="dim" style="font-size:11px;margin-left:auto" id="domainCount">--</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Dominio</th>
+            <th>Porta</th>
+            <th>Status</th>
+            <th>SSL</th>
+            <th>Expira em</th>
+            <th>Emissor</th>
+            <th>TLS</th>
+            <th>Tempo (ms)</th>
+            <th>Erro</th>
+          </tr>
+        </thead>
+        <tbody id="domainsBody"><tr><td colspan="9" class="dim" style="padding:14px">Carregando...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="footer dim" style="font-size:11px;text-align:center;padding:12px 0">
+    Ultima atualizacao: <span id="lastScan">--</span> | Duracao do scan: <span id="scanDuration">--</span>s
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script src="/static/app.js?v=073"></script>
+<script>
+const COLORS = ['#7aa2f7','#9ece6a','#e0af68','#ff9e64','#f7768e','#bb9af7','#73daca','#7dcfff','#c0caf5','#b4f9f8'];
+let charts = {};
+let domainsCache = [];
+
+function makeOrUpdate(id, cfg) {
+  if (charts[id]) charts[id].destroy();
+  charts[id] = new Chart(document.getElementById(id), cfg);
+}
+
+function expiryClass(days) {
+  if (days == null) return '';
+  if (days <= 7) return 'expiry-crit';
+  if (days <= 30) return 'expiry-warn';
+  return 'expiry-ok';
+}
+
+function statusPill(d) {
+  if (!d.reachable) return '<span class="pill pill-err">Offline</span>';
+  if (d.certificate_expired) return '<span class="pill pill-err">Expirado</span>';
+  if (d.certificate_valid) return '<span class="pill pill-ok">OK</span>';
+  if (d.ssl_enabled) return '<span class="pill pill-warn">SSL Inv.</span>';
+  return '<span class="pill pill-info">Sem SSL</span>';
+}
+
+function sslPill(d) {
+  if (!d.ssl_enabled) return '<span class="dim">—</span>';
+  if (d.certificate_valid) return '<span class="pill pill-ok">Valido</span>';
+  if (d.certificate_expired) return '<span class="pill pill-err">Expirado</span>';
+  return '<span class="pill pill-warn">Invalido</span>';
+}
+
+function renderKPIs(scan) {
+  document.getElementById('kpiTotal').textContent = scan.total_domains || '--';
+  document.getElementById('kpiReachable').textContent = scan.reachable || '0';
+  document.getElementById('kpiSslValid').textContent = scan.ssl_valid || '0';
+  document.getElementById('kpiExpired').textContent = scan.ssl_expired || '0';
+  document.getElementById('kpiExpiring').textContent = scan.expiring_soon || '0';
+  document.getElementById('kpiAvgTime').textContent = scan.avg_response_ms != null ? scan.avg_response_ms + 'ms' : '--';
+
+  document.getElementById('sbOk').textContent = scan.ssl_valid || 0;
+  document.getElementById('sbWarn').textContent = scan.expiring_soon || 0;
+  document.getElementById('sbErr').textContent = scan.unreachable || 0;
+  document.getElementById('sbTotal').textContent = scan.total_domains || 0;
+  document.getElementById('sbUpdated').textContent = fmtDate(scan.ts);
+  document.getElementById('lastScan').textContent = fmtDate(scan.ts);
+  document.getElementById('scanDuration').textContent = scan.scan_duration_s || '--';
+}
+
+function renderCharts(domains) {
+  // Status doughnut
+  const okCount = domains.filter(d => d.reachable && d.certificate_valid).length;
+  const warnCount = domains.filter(d => d.reachable && !d.certificate_valid).length;
+  const errCount = domains.filter(d => !d.reachable).length;
+  makeOrUpdate('chartStatus', {
+    type: 'doughnut',
+    data: {
+      labels: ['SSL Valido', 'SSL com Problema', 'Inacessivel'],
+      datasets: [{ data: [okCount, warnCount, errCount], backgroundColor: ['#9ece6a','#e0af68','#f7768e'], borderWidth: 0 }]
+    },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { color: '#6a7ba0', padding: 16 } } } }
+  });
+
+  // Response time bar (top 15 slowest)
+  const sorted = [...domains].filter(d => d.response_time_ms > 0).sort((a,b) => b.response_time_ms - a.response_time_ms).slice(0, 15);
+  makeOrUpdate('chartResponseTime', {
+    type: 'bar',
+    data: {
+      labels: sorted.map(d => d.domain.length > 25 ? d.domain.slice(0,22)+'...' : d.domain),
+      datasets: [{ label: 'ms', data: sorted.map(d => d.response_time_ms), backgroundColor: '#bb9af744', borderColor: '#bb9af7', borderWidth: 1.5, borderRadius: 3 }]
+    },
+    options: {
+      indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: { x: { beginAtZero: true, grid: { color: '#1c203833' }, ticks: { font: { family: "'JetBrains Mono'" } } }, y: { grid: { display: false }, ticks: { font: { family: "'JetBrains Mono'", size: 10 } } } }
+    }
+  });
+
+  // Expiry bar (next 15 to expire)
+  const expiring = [...domains].filter(d => d.days_until_expiry != null && d.days_until_expiry > 0).sort((a,b) => a.days_until_expiry - b.days_until_expiry).slice(0, 15);
+  makeOrUpdate('chartExpiry', {
+    type: 'bar',
+    data: {
+      labels: expiring.map(d => d.domain.length > 25 ? d.domain.slice(0,22)+'...' : d.domain),
+      datasets: [{
+        label: 'Dias',
+        data: expiring.map(d => d.days_until_expiry),
+        backgroundColor: expiring.map(d => d.days_until_expiry <= 7 ? '#f7768e44' : d.days_until_expiry <= 30 ? '#e0af6844' : '#9ece6a44'),
+        borderColor: expiring.map(d => d.days_until_expiry <= 7 ? '#f7768e' : d.days_until_expiry <= 30 ? '#e0af68' : '#9ece6a'),
+        borderWidth: 1.5, borderRadius: 3
+      }]
+    },
+    options: {
+      indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: { x: { beginAtZero: true, grid: { color: '#1c203833' }, ticks: { font: { family: "'JetBrains Mono'" } } }, y: { grid: { display: false }, ticks: { font: { family: "'JetBrains Mono'", size: 10 } } } }
+    }
+  });
+
+  // TLS versions doughnut
+  const tlsMap = {};
+  domains.forEach(d => { if (d.tls_version) tlsMap[d.tls_version] = (tlsMap[d.tls_version]||0) + 1; });
+  const tlsLabels = Object.keys(tlsMap);
+  makeOrUpdate('chartTls', {
+    type: 'doughnut',
+    data: {
+      labels: tlsLabels.length ? tlsLabels : ['Sem dados'],
+      datasets: [{ data: tlsLabels.length ? tlsLabels.map(k => tlsMap[k]) : [1], backgroundColor: tlsLabels.length ? COLORS.slice(0, tlsLabels.length) : ['#1c2038'], borderWidth: 0 }]
+    },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { color: '#6a7ba0', padding: 16 } } } }
+  });
+}
+
+function renderTable(domains) {
+  const search = (document.getElementById('domainSearch').value || '').toLowerCase();
+  const filter = document.getElementById('domainFilter').value;
+
+  let filtered = domains.filter(d => {
+    if (search && !d.domain.toLowerCase().includes(search)) return false;
+    if (filter === 'ok') return d.reachable && d.certificate_valid;
+    if (filter === 'expiring') return d.days_until_expiry != null && d.days_until_expiry > 0 && d.days_until_expiry <= 30;
+    if (filter === 'expired') return d.certificate_expired;
+    if (filter === 'unreachable') return !d.reachable;
+    return true;
+  });
+
+  document.getElementById('domainCount').textContent = `${filtered.length} de ${domains.length} dominios`;
+
+  const tbody = document.getElementById('domainsBody');
+  if (!filtered.length) {
+    tbody.innerHTML = '<tr><td colspan="9" class="dim" style="padding:14px">Nenhum dominio encontrado.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = filtered.map(d => {
+    const expDays = d.days_until_expiry != null ? `<span class="${expiryClass(d.days_until_expiry)}">${d.days_until_expiry}d</span>` : '<span class="dim">—</span>';
+    const timeMs = d.response_time_ms != null ? `${d.response_time_ms.toFixed(0)}` : '—';
+    return `<tr>
+      <td><strong style="font-size:.8rem">${esc(d.domain)}</strong></td>
+      <td class="dim">${d.port || 8080}</td>
+      <td>${statusPill(d)}</td>
+      <td>${sslPill(d)}</td>
+      <td>${expDays}</td>
+      <td><span class="dim" style="font-size:.75rem">${esc(d.issuer || '—')}</span></td>
+      <td><span class="dim">${esc(d.tls_version || '—')}</span></td>
+      <td class="dim">${timeMs}</td>
+      <td><span class="dim" style="font-size:.72rem" title="${esc(d.error_message || '')}">${esc((d.error_message || '').slice(0,40))}${(d.error_message||'').length > 40 ? '...' : ''}</span></td>
+    </tr>`;
+  }).join('');
+}
+
+async function loadSpeedtest() {
+  try {
+    const data = await apiFetch('/speedtest/data');
+    if (!data.latest) {
+      toast.info('Nenhum scan disponivel. Execute o script domain checker.');
+      return;
+    }
+    const scan = data.latest;
+    domainsCache = scan.domains || [];
+
+    renderKPIs(scan);
+    try { renderCharts(domainsCache); } catch(e) { console.warn('Charts:', e); }
+    renderTable(domainsCache);
+  } catch (e) {
+    toast.err('Erro ao carregar dados: ' + e.message);
+  }
+}
+
+// Filtros
+document.getElementById('domainSearch').addEventListener('input', () => renderTable(domainsCache));
+document.getElementById('domainFilter').addEventListener('change', () => renderTable(domainsCache));
+
+// Init
+fetchSessionToken().then(ok => {
+  if (!ok) { toast.err('Sessao expirada.'); setTimeout(() => { window.location.href = '/admin/login'; }, 1500); return; }
+  loadSpeedtest();
+  setInterval(loadSpeedtest, 300000); // refresh 5min
+});
+</script>
+</body>
+</html>
