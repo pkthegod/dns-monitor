@@ -123,6 +123,7 @@
 <!-- Modal de cliente (criar/editar) -->
 <div class="modal-backdrop" id="client-modal">
   <div class="modal">
+    <form onsubmit="saveClient(); return false;" autocomplete="off">
     <h3 id="client-modal-title">Novo Cliente</h3>
     <div class="field">
       <label>Username</label>
@@ -155,9 +156,10 @@
       </div>
     </div>
     <div class="modal-actions">
-      <button class="btn btn-cancel" onclick="closeClientModal()">CANCELAR</button>
-      <button class="btn btn-primary" id="client-save-btn" onclick="saveClient()">CRIAR</button>
+      <button type="button" class="btn btn-cancel" onclick="closeClientModal()">CANCELAR</button>
+      <button type="submit" class="btn btn-primary" id="client-save-btn">CRIAR</button>
     </div>
+    </form>
   </div>
 </div>
 
