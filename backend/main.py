@@ -614,11 +614,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://static.cloudflareinsights.com; "
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
             "font-src https://fonts.gstatic.com; "
             "img-src 'self' data:; "
-            "connect-src 'self'; "
+            "connect-src 'self' https://cloudflareinsights.com; "
             "frame-ancestors 'none'; "
             "base-uri 'self'; "
             "form-action 'self'"
@@ -1211,6 +1211,14 @@ async def ws_live(websocket: WebSocket):
             await websocket.receive_text()  # keepalive
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    """Serve favicon.svg como .ico fallback."""
+    fav = pathlib.Path(__file__).parent / "static" / "favicon.svg"
+    from fastapi.responses import FileResponse
+    return FileResponse(fav, media_type="image/svg+xml")
 
 
 @app.get("/health")
