@@ -53,20 +53,12 @@ DNS_TIMEOUT = 20
 # Alertas
 ALERT_EXPIRY_DAYS = 30
 
-# Telegram
-SEND_TELEGRAM_ALERTS = True
-TELEGRAM_DESTINATIONS = [
-    {
-        "chat_id": "-1002545279987",
-        "thread_id": 2,
-        "bot_token": "1943082730:AAH1yjt0xc9hdLs_DjIMx-7bg99tGmV5n3o",
-    },
-    {
-        "chat_id": "-1002471996857",
-        "thread_id": 220,
-        "bot_token": "8180435774:AAGYxwOLTeQ0_8OjYc-OTwYYFkQqfH0g79Y",
-    },
-]
+# Configuracoes do Telegram (via env var)
+# Format: JSON array, ex: TELEGRAM_DESTINATIONS='[{"chat_id":"-100...","thread_id":2,"bot_token":"TOKEN"}]'
+import json as _json
+_tg_raw = os.environ.get("TELEGRAM_DESTINATIONS", "")
+TELEGRAM_DESTINATIONS = _json.loads(_tg_raw) if _tg_raw else []
+SEND_TELEGRAM_ALERTS = bool(TELEGRAM_DESTINATIONS)
 
 # Infra-Vision backend
 SEND_TO_INFRAVISION = True
