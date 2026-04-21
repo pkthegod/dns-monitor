@@ -36,6 +36,7 @@ _il.reload(_rc_mod)
 from models import (  # noqa: F401
     DnsServiceModel, DnsCheckModel, CpuModel, RamModel, DiskModel,
     IoModel, LoadModel, SystemModel, AgentPayload, AgentMetaUpdate,
+    SpeedtestDomainModel, SpeedtestPayload,
 )
 from auth import (  # noqa: F401
     AGENT_TOKEN, require_token,
@@ -463,30 +464,50 @@ import time as _time
 
 
 class APIRateLimitMiddleware(BaseHTTPMiddleware):
-    """Rate limit global por IP em /api/. Default: 200 requests/min."""
+    """Rate limit por IP com limites diferenciados por endpoint."""
     _requests: dict[str, list[float]] = {}
-    LIMIT = int(os.environ.get("API_RATE_LIMIT", "200"))
-    WINDOW = 60  # segundos
+
+    # Limites por path prefix (requests/window)
+    LIMITS = {
+        "/api/v1/speedtest": (5, 300),       # 5 req / 5min (scans sao pesados)
+        "/api/v1/metrics": (30, 60),          # 30 req/min (agentes enviam a cada 5min)
+        "/api/v1/commands": (30, 60),         # 30 req/min
+        "/api/v1/session/token": (10, 60),    # 10 req/min
+        "/admin/login": (5, 900),             # 5 tentativas / 15min
+        "/client/login": (5, 900),            # 5 tentativas / 15min
+        "/api/": (120, 60),                   # 120 req/min (default API)
+    }
+
+    def _get_limit(self, path: str) -> tuple[int, int]:
+        for prefix, limit in self.LIMITS.items():
+            if path.startswith(prefix):
+                return limit
+        return (120, 60)  # default
 
     async def dispatch(self, request, call_next):
-        if not request.url.path.startswith("/api/"):
+        if not request.url.path.startswith(("/api/", "/admin/login", "/client/login")):
             return await call_next(request)
 
         ip = request.client.host if request.client else "unknown"
-        now = _time.time()
-        reqs = self._requests.get(ip, [])
-        reqs = [t for t in reqs if now - t < self.WINDOW]
+        path = request.url.path
+        limit, window = self._get_limit(path)
 
-        if len(reqs) >= self.LIMIT:
-            logger.warning("Rate limit API: %s (%d req/%ds)", ip, len(reqs), self.WINDOW)
+        # Key combines IP + path prefix for granular limiting
+        key = f"{ip}:{path.split('/')[1:4]}"  # e.g. "1.2.3.4:['api', 'v1', 'speedtest']"
+        now = _time.time()
+        reqs = self._requests.get(key, [])
+        reqs = [t for t in reqs if now - t < window]
+
+        if len(reqs) >= limit:
+            logger.warning("Rate limit: %s %s (%d req/%ds)", ip, path, len(reqs), window)
             return JSONResponse(
                 {"error": "Rate limit exceeded. Try again later."},
                 status_code=429,
-                headers={"Retry-After": str(self.WINDOW)},
+                headers={"Retry-After": str(window)},
             )
 
         reqs.append(now)
-        self._requests[ip] = reqs
+        self._requests[key] = reqs
         return await call_next(request)
 
 
@@ -1146,15 +1167,11 @@ async def dashboard_data(period: str = "24h", host: str = "") -> _SafeJSONRespon
 # ---------------------------------------------------------------------------
 
 @v1.post("/speedtest", dependencies=[Depends(require_token)], tags=["speedtest"])
-async def ingest_speedtest(request: Request) -> JSONResponse:
-    """Recebe JSON completo do script domain checker (speedtest)."""
-    body = await request.json()
-    domains = body.get("domains", [])
-    if not domains:
-        return JSONResponse({"error": "Campo 'domains' obrigatorio"}, status_code=422)
-
-    metadata = body.get("metadata", {})
-    summary = body.get("summary", {})
+async def ingest_speedtest(payload: SpeedtestPayload) -> JSONResponse:
+    """Recebe JSON validado do script domain checker (speedtest)."""
+    metadata = payload.metadata
+    summary = payload.summary
+    domains = [d.model_dump() for d in payload.domains]
     scan_id = await db.insert_speedtest_scan(metadata, summary, domains)
     logger.info("Speedtest ingerido: scan_id=%d, domains=%d", scan_id, len(domains))
     return JSONResponse({"status": "ok", "scan_id": scan_id, "domains": len(domains)}, status_code=201)

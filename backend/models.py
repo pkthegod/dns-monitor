@@ -78,3 +78,31 @@ class AgentMetaUpdate(BaseModel):
     location:     Optional[str]  = None
     notes:        Optional[str]  = None
     active:       Optional[bool] = None
+
+
+# ---------------------------------------------------------------------------
+# Speedtest — Domain SSL/Port checker (validacao de input)
+# ---------------------------------------------------------------------------
+
+class SpeedtestDomainModel(BaseModel):
+    domain: str = Field(..., min_length=1, max_length=253)
+    port: int = Field(default=8080, ge=1, le=65535)
+    reachable: bool = False
+    ssl_enabled: bool = False
+    certificate_valid: bool = False
+    certificate_expired: Optional[bool] = None
+    days_until_expiry: Optional[int] = None
+    expiry_date: Optional[str] = None
+    issued_date: Optional[str] = None
+    issuer: Optional[str] = Field(default=None, max_length=200)
+    subject: Optional[str] = Field(default=None, max_length=253)
+    tls_version: Optional[str] = Field(default=None, max_length=20)
+    cipher_suite: Optional[str] = Field(default=None, max_length=100)
+    response_time_ms: Optional[float] = None
+    error_message: Optional[str] = Field(default=None, max_length=500)
+
+
+class SpeedtestPayload(BaseModel):
+    metadata: dict = Field(default_factory=dict)
+    domains: list[SpeedtestDomainModel] = Field(..., min_length=1, max_length=5000)
+    summary: dict = Field(default_factory=dict)
