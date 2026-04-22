@@ -51,25 +51,37 @@ async def require_token(request: Request) -> None:
 # sessão — admin ou cliente — recebia o AGENT_TOKEN via /session/token e
 # podia chamar qualquer rota Bearer, quebrando isolamento multi-tenant.
 
-async def require_admin(request: Request) -> str:
+async def require_admin(request: Request) -> dict:
     """Aceita admin_session cookie OU Bearer AGENT_TOKEN (curl/tooling externo).
-    Retorna identidade do admin para audit log."""
+    Retorna {"username": ..., "role": ...} para audit log e role checks."""
     cookie = request.cookies.get("admin_session", "")
-    user = _verify_admin_cookie(cookie)
-    if user:
-        return user
+    info = _verify_admin_cookie(cookie)
+    if info:
+        return info
 
     # Fallback Bearer — apenas para tooling/curl administrativo.
     # Frontend nunca deve enviar Bearer (usa cookie via credentials=same-origin).
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer ") and AGENT_TOKEN and \
        hmac.compare_digest(auth[7:].encode(), AGENT_TOKEN.encode()):
-        return "admin:bearer"
+        return {"username": "admin:bearer", "role": "admin"}
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Acesso negado: requer sessao admin",
     )
+
+
+async def require_admin_role(request: Request) -> dict:
+    """Exige role='admin'. Viewers recebem 403.
+    Usado em endpoints mutativos (commands, delete, client CRUD, user management)."""
+    info = await require_admin(request)
+    if info["role"] != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Acesso negado: requer permissao de administrador",
+        )
+    return info
 
 
 async def require_client(request: Request) -> dict:
@@ -172,16 +184,20 @@ _ADMIN_SESSION_TTL  = 14400   # 4 horas
 _CLIENT_SESSION_TTL = 43200   # 12 horas
 
 
-def _sign_admin_cookie(username: str) -> str:
-    """Gera cookie assinado com nonce aleatorio (previne session fixation)."""
+def _sign_admin_cookie(username: str, role: str = "admin") -> str:
+    """Gera cookie assinado com role e nonce aleatorio (previne session fixation)."""
+    if role not in ("admin", "viewer"):
+        role = "viewer"
     nonce = secrets.token_hex(8)
-    payload = f"{username}:{nonce}"
+    payload = f"{username}:{role}:{nonce}"
     sig = hmac.new(_ADMIN_SECRET, payload.encode(), hashlib.sha256).hexdigest()
     return f"{payload}.{sig}"
 
 
-def _verify_admin_cookie(cookie: str) -> Optional[str]:
-    """Verifica cookie admin. Tenta secret atual e anterior (rotacao). Retorna username ou None."""
+def _verify_admin_cookie(cookie: str) -> Optional[dict]:
+    """Verifica cookie admin. Tenta secret atual e anterior (rotacao).
+    Retorna {"username": ..., "role": ...} ou None.
+    Backward-compat: cookies antigos (username:nonce) sao tratados como role='admin'."""
     if not cookie or "." not in cookie:
         return None
     payload, sig = cookie.rsplit(".", 1)
@@ -190,7 +206,14 @@ def _verify_admin_cookie(cookie: str) -> Optional[str]:
             continue
         expected = hmac.new(secret, payload.encode(), hashlib.sha256).hexdigest()
         if hmac.compare_digest(sig, expected):
-            return payload.split(":")[0] if ":" in payload else payload
+            parts = payload.split(":")
+            if len(parts) >= 3:
+                return {"username": parts[0], "role": parts[1]}
+            elif len(parts) == 2:
+                return {"username": parts[0], "role": "admin"}
+            elif len(parts) == 1:
+                return {"username": parts[0], "role": "admin"}
+            return None
     return None
 
 

@@ -10,7 +10,15 @@
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;600;700&display=swap" rel="stylesheet">
 <script src="/static/theme.js?v=091"></script>
 <link rel="stylesheet" href="/static/base.css?v=091">
-<link rel="stylesheet" href="/static/admin.css?v=091">
+<link rel="stylesheet" href="/static/admin.css?v=092">
+<style>
+  /* RBAC: esconde elementos mutativos para viewers */
+  .role-viewer .admin-only { display: none !important; }
+  .role-viewer .agent-menu-trigger { display: none !important; }
+  .role-viewer .bulk-cb { display: none !important; }
+  .role-viewer #bulk-select-all { display: none !important; }
+  .role-viewer #bulk-bar { display: none !important; }
+</style>
 </head>
 <body>
 <div class="header">
@@ -99,7 +107,7 @@
     <h2>Clientes</h2>
     <span class="section-badge" id="badge-clients">—</span>
     <div style="margin-left:auto">
-      <button class="btn btn-primary" onclick="openClientModal()" style="font-size:.75rem;padding:4px 14px">+ Novo Cliente</button>
+      <button class="btn btn-primary admin-only" onclick="openClientModal()" style="font-size:.75rem;padding:4px 14px">+ Novo Cliente</button>
     </div>
   </div>
   <div class="table-wrap">
@@ -158,6 +166,75 @@
     <div class="modal-actions">
       <button type="button" class="btn btn-cancel" onclick="closeClientModal()">CANCELAR</button>
       <button type="submit" class="btn btn-primary" id="client-save-btn">CRIAR</button>
+    </div>
+    </form>
+  </div>
+</div>
+
+<!-- Tabela de Admin Users (admin-only) -->
+<div class="section admin-only">
+  <div class="section-title">
+    <h2>Usuarios Admin</h2>
+    <span class="section-badge" id="badge-admin-users">--</span>
+    <div style="margin-left:auto">
+      <button class="btn btn-primary" onclick="openAdminUserModal()" style="font-size:.75rem;padding:4px 14px">+ Novo Admin</button>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Username</th>
+          <th>Role</th>
+          <th>Status</th>
+          <th>Criado em</th>
+          <th>Criado por</th>
+          <th>Notas</th>
+          <th>Acoes</th>
+        </tr>
+      </thead>
+      <tbody id="tbody-admin-users"><tr><td colspan="7" class="dim" style="padding:14px">Carregando...</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Modal de admin user (criar/editar) -->
+<div class="modal-backdrop" id="admin-user-modal">
+  <div class="modal">
+    <form onsubmit="saveAdminUser(); return false;" autocomplete="off">
+    <h3 id="admin-user-modal-title">Novo Admin User</h3>
+    <div class="field">
+      <label>Username</label>
+      <input type="text" id="admin-user-username" placeholder="login do admin" autocomplete="off">
+    </div>
+    <div class="field">
+      <label>Senha</label>
+      <input type="password" id="admin-user-password" placeholder="minimo 8 caracteres" autocomplete="new-password">
+    </div>
+    <div class="field">
+      <label>Role</label>
+      <select id="admin-user-role" style="background:var(--bg-input);border:1px solid var(--border);color:var(--text);border-radius:5px;padding:6px 10px;font-family:var(--font-mono);font-size:.8rem;width:100%">
+        <option value="viewer">viewer (somente leitura)</option>
+        <option value="admin">admin (acesso total)</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Notas</label>
+      <input type="text" id="admin-user-notes" placeholder="Observacoes (opcional)">
+    </div>
+    <div class="field" id="admin-user-active-wrap" style="display:none">
+      <label>Status</label>
+      <div class="toggle-wrap">
+        <label class="toggle">
+          <input type="checkbox" id="admin-user-active" checked>
+          <span class="slider"></span>
+        </label>
+        <span class="toggle-label" id="admin-user-active-label">Ativo</span>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-cancel" onclick="closeAdminUserModal()">CANCELAR</button>
+      <button type="submit" class="btn btn-primary" id="admin-user-save-btn">CRIAR</button>
     </div>
     </form>
   </div>
@@ -316,7 +393,7 @@
 
   // ── Send command ───────────────────────────────────────────────────────────
   async function sendCommand(hostname, command, btn) {
-    if (!token()) { toast.warn('Insira o token antes de enviar comandos.'); return; }
+    if (!canWrite()) { toast.warn('Permissao insuficiente. Requer role admin.'); return; }
     if (command === 'disable') {
       if (!confirm(`Desabilitar o serviço DNS em "${hostname}"?\nO serviço não iniciará no boot.`)) return;
     }
@@ -337,7 +414,7 @@
 
   // ── Delete agent ───────────────────────────────────────────────────────────
   async function deleteAgent(hostname, btn) {
-    if (!token()) { toast.warn('Insira o token antes de remover agentes.'); return; }
+    if (!canWrite()) { toast.warn('Permissao insuficiente. Requer role admin.'); return; }
     if (!confirm(`Remover "${hostname}" do banco de dados?\n\nTodos os dados históricos serão apagados permanentemente.`)) return;
     if (!confirm(`Confirmar remoção definitiva de "${hostname}"?`)) return;
     if (btn) btn.disabled = true;
@@ -355,7 +432,7 @@
   let agentsCache = [];
 
   function openEditModal(hostname) {
-    if (!token()) { toast.warn('Insira o token antes de editar.'); return; }
+    if (!canWrite()) { toast.warn('Permissao insuficiente. Requer role admin.'); return; }
     editingHostname = hostname;
     const a = agentsCache.find(x => x.hostname === hostname) || {};
     document.getElementById('modal-title').textContent = `EDITAR — ${hostname}`;
@@ -413,7 +490,7 @@
 
   // ── Diagnostic modal ───────────────────────────────────────────────────────
   function openDiagModal(hostname) {
-    if (!token()) { toast.warn('Insira o token antes de executar diagnostico.'); return; }
+    if (!canWrite()) { toast.warn('Permissao insuficiente. Requer role admin.'); return; }
     diagHostname = hostname;
     document.getElementById('diag-hostname-label').textContent = `// ${hostname}`;
     document.getElementById('diag-result-area').innerHTML = '';
@@ -644,7 +721,7 @@
 
   // ── Agent update ───────────────────────────────────────────────────────────
   async function fetchServerVersion() {
-    if (!token()) return;
+    if (!whoami()) return;
     try {
       const data = await apiFetch('/agent/version');
       serverVersion = data.version || null;
@@ -652,7 +729,7 @@
   }
 
   async function sendUpdate(hostname, btn) {
-    if (!token()) { toast.warn('Insira o token.'); return; }
+    if (!canWrite()) { toast.warn('Permissao insuficiente. Requer role admin.'); return; }
     if (!confirm(
       `Atualizar agente em "${hostname}"?\n\n` +
       `Versão atual do servidor: ${serverVersion || '?'}\n\n` +
@@ -764,8 +841,8 @@
   // ── Load history ───────────────────────────────────────────────────────────
   async function loadHistory() {
     const tbody = document.getElementById('tbody-history');
-    if (!token()) {
-      tbody.innerHTML = '<tr><td colspan="7" class="dim" style="padding:14px">Token necessário para ver o histórico.</td></tr>';
+    if (!whoami()) {
+      tbody.innerHTML = '<tr><td colspan="7" class="dim" style="padding:14px">Sessao necessaria para ver o historico.</td></tr>';
       return;
     }
     try {
@@ -833,7 +910,7 @@
   });
 
   function openTraceModal(hostname) {
-    if (!token()) { toast.warn('Insira o token antes de executar trace.'); return; }
+    if (!canWrite()) { toast.warn('Permissao insuficiente. Requer role admin.'); return; }
     traceHostname = hostname;
     document.getElementById('trace-hostname-label').textContent = `// ${hostname}`;
     document.getElementById('trace-area').innerHTML = '';
@@ -1182,7 +1259,7 @@
           <td><span class="dim">${esc(c.notes || '—')}</span></td>
           <td>${statusPill}</td>
           <td><span class="dim">${fmtDate(c.created_at)}</span></td>
-          <td>
+          <td class="admin-only">
             <button class="btn btn-ghost" style="font-size:.7rem;padding:2px 8px" onclick="openClientModal(${c.id})">Editar</button>
             <button class="btn btn-ghost" style="font-size:.7rem;padding:2px 8px;color:var(--red)" onclick="deleteClient(${c.id},'${esc(c.username)}')">Remover</button>
           </td>
@@ -1282,7 +1359,9 @@
 
   // ── Init ───────────────────────────────────────────────────────────────────
   async function loadAll() {
-    await Promise.all([fetchServerVersion(), loadAgents(), loadHistory(), loadClients()]);
+    const tasks = [fetchServerVersion(), loadAgents(), loadHistory(), loadClients()];
+    if (canWrite()) tasks.push(loadAdminUsers());
+    await Promise.all(tasks);
   }
 
   // Reset diag modal state on close (restore run btn and script select)
@@ -1313,12 +1392,144 @@
     _ws.onerror = () => { _ws.close(); };
   }
 
-  // Busca token via sessao ANTES de carregar dados
-  fetchSessionToken().then(ok => {
-    if (!ok) {
+  // ── CRUD Admin Users ─────────────────────────────────────────────────────
+  let adminUsersCache = [];
+
+  async function loadAdminUsers() {
+    const tbody = document.getElementById('tbody-admin-users');
+    if (!tbody) return;
+    try {
+      const users = await apiFetch('/admin-users');
+      adminUsersCache = users;
+      document.getElementById('badge-admin-users').textContent = `${users.filter(u=>u.active).length} ativos / ${users.length} total`;
+      if (!users.length) {
+        tbody.innerHTML = '<tr><td colspan="7" class="dim" style="padding:14px">Nenhum admin user cadastrado.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = users.map(u => {
+        const rolePill = u.role === 'admin'
+          ? '<span class="pill pill-client-active">admin</span>'
+          : '<span class="pill pill-host">viewer</span>';
+        const statusPill = u.active
+          ? '<span class="pill pill-client-active">Ativo</span>'
+          : '<span class="pill pill-client-inactive">Inativo</span>';
+        return `<tr>
+          <td><strong>${esc(u.username)}</strong></td>
+          <td>${rolePill}</td>
+          <td>${statusPill}</td>
+          <td><span class="dim">${fmtDate(u.created_at)}</span></td>
+          <td><span class="dim">${esc(u.created_by || '—')}</span></td>
+          <td><span class="dim">${esc(u.notes || '—')}</span></td>
+          <td>
+            <button class="btn btn-ghost" style="font-size:.7rem;padding:2px 8px" onclick="openAdminUserModal(${u.id})">Editar</button>
+            <button class="btn btn-ghost" style="font-size:.7rem;padding:2px 8px;color:var(--red)" onclick="deleteAdminUser(${u.id},'${esc(u.username)}')">Remover</button>
+          </td>
+        </tr>`;
+      }).join('');
+    } catch (e) {
+      if (tbody) tbody.innerHTML = `<tr><td colspan="7"><div class="inline-msg inline-error fade-in"><span class="inline-msg-icon">${ICONS.error}</span><div><strong>Erro</strong><p>${esc(e.message)}</p></div></div></td></tr>`;
+    }
+  }
+
+  let editingAdminUserId = null;
+
+  function openAdminUserModal(userId) {
+    editingAdminUserId = userId || null;
+    const isEdit = !!userId;
+    document.getElementById('admin-user-modal-title').textContent = isEdit ? 'Editar Admin User' : 'Novo Admin User';
+    document.getElementById('admin-user-save-btn').textContent = isEdit ? 'SALVAR' : 'CRIAR';
+    document.getElementById('admin-user-active-wrap').style.display = isEdit ? '' : 'none';
+    document.getElementById('admin-user-username').disabled = isEdit;
+
+    if (isEdit) {
+      const u = adminUsersCache.find(x => x.id === userId) || {};
+      document.getElementById('admin-user-username').value = u.username || '';
+      document.getElementById('admin-user-password').value = '';
+      document.getElementById('admin-user-password').placeholder = 'deixe vazio para manter';
+      document.getElementById('admin-user-role').value = u.role || 'viewer';
+      document.getElementById('admin-user-notes').value = u.notes || '';
+      document.getElementById('admin-user-active').checked = u.active !== false;
+      document.getElementById('admin-user-active-label').textContent = u.active !== false ? 'Ativo' : 'Inativo';
+    } else {
+      document.getElementById('admin-user-username').value = '';
+      document.getElementById('admin-user-password').value = '';
+      document.getElementById('admin-user-password').placeholder = 'minimo 8 caracteres';
+      document.getElementById('admin-user-role').value = 'viewer';
+      document.getElementById('admin-user-notes').value = '';
+      document.getElementById('admin-user-active').checked = true;
+    }
+    document.getElementById('admin-user-modal').classList.add('open');
+    document.getElementById(isEdit ? 'admin-user-role' : 'admin-user-username').focus();
+  }
+
+  function closeAdminUserModal() {
+    document.getElementById('admin-user-modal').classList.remove('open');
+    editingAdminUserId = null;
+  }
+
+  document.getElementById('admin-user-active')?.addEventListener('change', function() {
+    document.getElementById('admin-user-active-label').textContent = this.checked ? 'Ativo' : 'Inativo';
+  });
+
+  async function saveAdminUser() {
+    const username = document.getElementById('admin-user-username').value.trim();
+    const password = document.getElementById('admin-user-password').value;
+    const role     = document.getElementById('admin-user-role').value;
+    const notes    = document.getElementById('admin-user-notes').value.trim();
+
+    if (!editingAdminUserId) {
+      if (!username || !password) { toast.warn('Username e senha obrigatorios.'); return; }
+      if (password.length < 8) { toast.warn('Senha deve ter no minimo 8 caracteres.'); return; }
+      try {
+        await apiFetch('/admin-users', {
+          method: 'POST',
+          body: JSON.stringify({ username, password, role, notes }),
+        });
+        toast.ok(`Admin user "${username}" criado.`);
+        closeAdminUserModal();
+        await loadAdminUsers();
+      } catch (e) { toast.err(e.message); }
+    } else {
+      const body = { role, notes };
+      if (password) {
+        if (password.length < 8) { toast.warn('Senha deve ter no minimo 8 caracteres.'); return; }
+        body.password = password;
+      }
+      body.active = document.getElementById('admin-user-active').checked;
+      try {
+        await apiFetch(`/admin-users/${editingAdminUserId}`, {
+          method: 'PATCH',
+          body: JSON.stringify(body),
+        });
+        toast.ok('Admin user atualizado.');
+        closeAdminUserModal();
+        await loadAdminUsers();
+      } catch (e) { toast.err(e.message); }
+    }
+  }
+
+  async function deleteAdminUser(userId, username) {
+    if (!confirm(`Remover admin user "${username}"?`)) return;
+    try {
+      await apiFetch(`/admin-users/${userId}`, { method: 'DELETE' });
+      toast.ok(`Admin user "${username}" removido.`);
+      await loadAdminUsers();
+    } catch (e) { toast.err(e.message); }
+  }
+
+  document.getElementById('admin-user-modal')?.addEventListener('click', e => {
+    if (e.target === e.currentTarget) closeAdminUserModal();
+  });
+
+  // ── Init ──
+  fetchSession().then(session => {
+    if (!session || session.kind !== 'admin') {
       toast.err('Sessao expirada. Redirecionando...');
       setTimeout(() => { window.location.href = '/admin/login'; }, 1500);
       return;
+    }
+    if (session.role === 'viewer') {
+      document.body.classList.add('role-viewer');
     }
     loadAll();
     connectWS();
