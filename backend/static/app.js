@@ -4,34 +4,35 @@
 
 const API_BASE = '/api/v1';
 
-// ── Token (buscado via sessao, nunca exposto no HTML) ──
-let _cachedToken = '';
+// SEC: Removido fetch de AGENT_TOKEN e header Authorization. Frontend usa
+// apenas cookie de sessao (admin_session ou client_session) via
+// credentials: 'same-origin'. Antes, /api/v1/session/token entregava o token
+// compartilhado permitindo que clientes chamassem rotas admin.
+let _whoami = null;
 
-function token() {
-  return _cachedToken;
-}
-
-async function fetchSessionToken() {
-  /**Busca token via cookie de sessao. Retorna true se sucesso.*/
+async function fetchSession() {
+  /**Retorna {kind, username, hostnames?} ou null. Usa cookie de sessao.*/
   try {
-    const resp = await fetch(API_BASE + '/session/token', { credentials: 'same-origin' });
+    const resp = await fetch(API_BASE + '/session/whoami', { credentials: 'same-origin' });
     if (resp.ok) {
-      const data = await resp.json();
-      _cachedToken = data.token || '';
-      // Esconde campo manual de token se obteve via sessao
-      const wrap = document.querySelector('.token-wrap') || document.querySelector('.token-bar');
-      if (wrap && _cachedToken) wrap.style.display = 'none';
-      return true;
+      _whoami = await resp.json();
+      return _whoami;
     }
   } catch (_) {}
-  return false;
+  return null;
 }
+
+// Backward-compat: paginas legadas chamavam fetchSessionToken().then(ok => ...)
+async function fetchSessionToken() {
+  const s = await fetchSession();
+  return s !== null;
+}
+
+function whoami() { return _whoami; }
 
 // ── API fetch ──
 async function apiFetch(path, opts = {}) {
-  const t = token();
   const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
-  if (t) headers['Authorization'] = 'Bearer ' + t;
   const resp = await fetch(API_BASE + path, { ...opts, headers, credentials: 'same-origin' });
   if (!resp.ok) {
     let detail = resp.status + ' ' + resp.statusText;

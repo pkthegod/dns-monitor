@@ -39,7 +39,7 @@ from models import (  # noqa: F401
     SpeedtestDomainModel, SpeedtestPayload,
 )
 from auth import (  # noqa: F401
-    AGENT_TOKEN, require_token,
+    AGENT_TOKEN, require_token, require_admin, require_client,
     ADMIN_USER, ADMIN_PASSWORD,
     _check_rate_limit, _record_failed_login, _clear_login_attempts,
     _check_cooldown, _record_action,
@@ -639,21 +639,32 @@ def _html_with_nonce(html: str, nonce: str) -> str:
 # ---------------------------------------------------------------------------
 
 class WSManager:
-    """Gerencia conexoes WebSocket ativas."""
-    def __init__(self):
-        self._connections: list = []
+    """Gerencia conexoes WebSocket ativas com filtro por tenant.
 
-    async def connect(self, ws):
+    SEC: cada conexão guarda o conjunto de hostnames que o ator pode ver.
+    - None → admin: recebe tudo
+    - set[str] → cliente: recebe só métricas de hostnames associados
+    """
+    def __init__(self):
+        # lista de tuplas (ws, allowed_hostnames_or_None)
+        self._connections: list[tuple] = []
+
+    async def connect(self, ws, allowed_hostnames=None):
         await ws.accept()
-        self._connections.append(ws)
+        allowed = None if allowed_hostnames is None else set(allowed_hostnames)
+        self._connections.append((ws, allowed))
 
     def disconnect(self, ws):
-        if ws in self._connections:
-            self._connections.remove(ws)
+        self._connections = [(w, a) for (w, a) in self._connections if w is not ws]
 
     async def broadcast(self, data: dict):
+        """Envia data para conexões autorizadas. data deve conter 'hostname'."""
+        hostname = data.get("hostname")
         dead = []
-        for ws in self._connections:
+        for ws, allowed in self._connections:
+            # Filtro: admin (allowed=None) recebe tudo; cliente só se hostname está no set
+            if allowed is not None and hostname not in allowed:
+                continue
             try:
                 await ws.send_json(data)
             except Exception:
@@ -860,7 +871,7 @@ async def _dispatch_webhooks_for_host(hostname: str, payload: AgentPayload) -> N
             webhooks.send_webhook(client["webhook_url"], alert_type, severity, hostname, message)
 
 
-@v1.patch("/agents/{hostname}", dependencies=[Depends(require_token)], tags=["agents"])
+@v1.patch("/agents/{hostname}", dependencies=[Depends(require_admin)], tags=["agents"])
 async def update_agent(hostname: str, body: AgentMetaUpdate) -> JSONResponse:
     """Atualiza display_name, location e notes de um agente."""
     found = await db.update_agent_meta(
@@ -871,7 +882,7 @@ async def update_agent(hostname: str, body: AgentMetaUpdate) -> JSONResponse:
     return JSONResponse({"status": "ok", "hostname": hostname})
 
 
-@v1.delete("/agents/{hostname}", dependencies=[Depends(require_token)], tags=["agents"])
+@v1.delete("/agents/{hostname}", dependencies=[Depends(require_admin)], tags=["agents"])
 async def delete_agent(hostname: str) -> JSONResponse:
     """Remove o agente e todo o historico de dados do banco."""
     found = await db.delete_agent(hostname)
@@ -881,7 +892,7 @@ async def delete_agent(hostname: str) -> JSONResponse:
     return JSONResponse({"status": "ok", "hostname": hostname})
 
 
-@v1.get("/agents", dependencies=[Depends(require_token)], tags=["agents"])
+@v1.get("/agents", dependencies=[Depends(require_admin)], tags=["agents"])
 async def list_agents(request: Request) -> _SafeJSONResponse:
     """Lista status atual de todos os agentes registrados."""
     async with db.get_conn() as conn:
@@ -889,7 +900,7 @@ async def list_agents(request: Request) -> _SafeJSONResponse:
     return _SafeJSONResponse([dict(r) for r in rows])
 
 
-@v1.get("/alerts", dependencies=[Depends(require_token)], tags=["alerts"])
+@v1.get("/alerts", dependencies=[Depends(require_admin)], tags=["alerts"])
 async def list_alerts(hostname: Optional[str] = None) -> _SafeJSONResponse:
     """Lista alertas abertos."""
     alerts = await db.get_open_alerts(hostname)
@@ -934,7 +945,7 @@ async def create_command(request: Request) -> JSONResponse:
     """
     Cria um comando para um agente executar no proximo poll.
     """
-    await require_token(request)
+    await require_admin(request)
     body = await request.json()
     hostname = body.get("hostname", "").strip()
     command  = body.get("command",  "").strip()
@@ -976,7 +987,7 @@ async def create_command(request: Request) -> JSONResponse:
 @v1.get("/commands/{hostname}/history", tags=["commands"])
 async def get_command_history(hostname: str, request: Request) -> _SafeJSONResponse:
     """Historico de comandos executados em um host."""
-    await require_token(request)
+    await require_admin(request)
     history = await db.get_commands_history(hostname)
     return _SafeJSONResponse(history)
 
@@ -1032,14 +1043,40 @@ async def admin_logout():
     return resp
 
 
-@app.get("/api/v1/session/token", include_in_schema=False)
-async def session_token(request: Request) -> JSONResponse:
-    """Retorna AGENT_TOKEN se sessao admin ou client valida. Nunca expoe no HTML."""
+@app.get("/api/v1/session/whoami", include_in_schema=False)
+async def session_whoami(request: Request) -> JSONResponse:
+    """Retorna identidade da sessão SEM expor o AGENT_TOKEN.
+
+    SEC: substitui o antigo /session/token. Antes, este endpoint entregava
+    o AGENT_TOKEN para qualquer sessão (admin OU cliente), permitindo que
+    um cliente do portal chamasse rotas administrativas como /commands.
+    Agora frontend (admin/cliente) usa cookies via credentials=same-origin.
+    """
     admin = _verify_admin_cookie(request.cookies.get("admin_session", ""))
-    client = _verify_client_cookie(request.cookies.get("client_session", ""))
-    if not admin and not client:
-        raise HTTPException(status_code=401, detail="Sessao invalida")
-    return JSONResponse({"token": AGENT_TOKEN})
+    if admin:
+        return JSONResponse({"kind": "admin", "username": admin})
+    client_user = _verify_client_cookie(request.cookies.get("client_session", ""))
+    if client_user:
+        user = await db.get_client(client_user)
+        if user and user.get("active"):
+            return JSONResponse({
+                "kind": "client",
+                "username": client_user,
+                "hostnames": user.get("hostnames", []),
+            })
+    raise HTTPException(status_code=401, detail="Sessao invalida")
+
+
+# Rota legada: mantida APENAS para detectar uso indevido e quebrar com erro claro.
+# Frontends antigos que ainda chamem /session/token recebem 410 e log de warning.
+@app.get("/api/v1/session/token", include_in_schema=False)
+async def session_token_deprecated(request: Request) -> JSONResponse:
+    ip = request.client.host if request.client else "?"
+    logger.warning("DEPRECATED: /session/token chamado de %s — atualizar frontend para /session/whoami", ip)
+    raise HTTPException(
+        status_code=410,  # Gone
+        detail="Endpoint removido por motivos de seguranca. Use /api/v1/session/whoami.",
+    )
 
 
 @app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
@@ -1053,7 +1090,7 @@ async def admin_panel(request: Request) -> HTMLResponse:
     return HTMLResponse(_html_with_nonce(html_path.read_text(encoding="utf-8"), nonce))
 
 
-@v1.get("/security/blocked", tags=["tools"], dependencies=[Depends(require_token)])
+@v1.get("/security/blocked", tags=["tools"], dependencies=[Depends(require_admin)])
 async def list_blocked_ips() -> JSONResponse:
     """Lista IPs bloqueados pelo security monitor."""
     import security
@@ -1063,7 +1100,7 @@ async def list_blocked_ips() -> JSONResponse:
 @v1.get("/commands/history", tags=["commands"])
 async def get_all_commands_history(request: Request, limit: int = 50) -> _SafeJSONResponse:
     """Historico recente de todos os comandos (para o painel admin)."""
-    await require_token(request)
+    await require_admin(request)
     history = await db.get_all_commands_history(limit)
     return _SafeJSONResponse(history)
 
@@ -1099,7 +1136,7 @@ async def agent_latest_download(request: Request):
     )
 
 
-@v1.post("/tools/geolocate", dependencies=[Depends(require_token)], tags=["tools"])
+@v1.post("/tools/geolocate", dependencies=[Depends(require_admin)], tags=["tools"])
 async def geolocate_ips(request: Request) -> JSONResponse:
     import asyncio
     import urllib.request as _urllib
@@ -1134,12 +1171,31 @@ async def geolocate_ips(request: Request) -> JSONResponse:
 
 @v1.get("/commands/{command_id}/status", tags=["commands"])
 async def get_command_status(command_id: int, request: Request) -> _SafeJSONResponse:
-    """Retorna o status atual de um comando especifico (para polling no painel)."""
-    await require_token(request)
+    """Retorna o status atual de um comando.
+
+    SEC: admin vê tudo; cliente só vê comandos de hostnames associados a ele.
+    Antes, ambos usavam require_token com AGENT_TOKEN compartilhado, permitindo
+    que um cliente lesse comandos de hosts de outros clientes.
+    """
     cmd = await db.get_command_by_id(command_id)
     if not cmd:
         raise HTTPException(status_code=404, detail="Comando nao encontrado")
-    return _SafeJSONResponse(cmd)
+
+    # Admin: acesso irrestrito
+    admin = _verify_admin_cookie(request.cookies.get("admin_session", ""))
+    auth = request.headers.get("Authorization", "")
+    if admin or (auth.startswith("Bearer ") and AGENT_TOKEN and
+                 secrets.compare_digest(auth[7:], AGENT_TOKEN)):
+        return _SafeJSONResponse(cmd)
+
+    # Cliente: só comandos de seus hostnames
+    client_username = _verify_client_cookie(request.cookies.get("client_session", ""))
+    if client_username:
+        user = await db.get_client(client_username)
+        if user and user.get("active") and cmd.get("hostname") in (user.get("hostnames") or []):
+            return _SafeJSONResponse(cmd)
+
+    raise HTTPException(status_code=403, detail="Acesso negado")
 
 
 @app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
@@ -1152,7 +1208,7 @@ async def dashboard_page(request: Request) -> HTMLResponse:
     return HTMLResponse(_html_with_nonce(html_path.read_text(encoding="utf-8"), nonce))
 
 
-@v1.get("/dashboard/data", dependencies=[Depends(require_token)], tags=["dashboard"])
+@v1.get("/dashboard/data", dependencies=[Depends(require_admin)], tags=["dashboard"])
 async def dashboard_data(period: str = "24h", host: str = "") -> _SafeJSONResponse:
     """Dados agregados para o dashboard. Aceita ?period=1h|6h|24h|7d&host=hostname."""
     hostnames = None
@@ -1177,7 +1233,7 @@ async def ingest_speedtest(payload: SpeedtestPayload) -> JSONResponse:
     return JSONResponse({"status": "ok", "scan_id": scan_id, "domains": len(domains)}, status_code=201)
 
 
-@v1.get("/speedtest/data", dependencies=[Depends(require_token)], tags=["speedtest"])
+@v1.get("/speedtest/data", dependencies=[Depends(require_admin)], tags=["speedtest"])
 async def speedtest_data_endpoint() -> _SafeJSONResponse:
     """Dados do ultimo scan + historico para o frontend."""
     latest = await db.get_latest_speedtest()
@@ -1200,12 +1256,36 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 @app.websocket("/ws/live")
 async def ws_live(websocket: WebSocket):
-    """WebSocket para metricas em tempo real. Auth via query param token."""
-    token_param = websocket.query_params.get("token", "")
-    if token_param != AGENT_TOKEN:
-        await websocket.close(code=4001, reason="Unauthorized")
-        return
-    await ws_manager.connect(websocket)
+    """WebSocket para metricas em tempo real.
+
+    SEC: autenticacao via cookie de sessao (admin ou client), nunca via
+    query param ?token (evita token em server logs / referer / browser history).
+    Antes, qualquer portador do AGENT_TOKEN conectava e recebia metricas de
+    todos os hosts, incluindo clientes do portal que extraiam o token de
+    /api/v1/session/token. Agora:
+      - admin_session cookie valido -> recebe broadcast de todos hostnames
+      - client_session cookie valido -> recebe apenas hostnames associados
+      - nenhum cookie valido -> 4401 Unauthorized
+    """
+    cookies = websocket.cookies
+
+    admin_user = _verify_admin_cookie(cookies.get("admin_session", ""))
+    if admin_user:
+        await ws_manager.connect(websocket, allowed_hostnames=None)
+        logger.info("WS connected: admin=%s (all hosts)", admin_user)
+    else:
+        client_user = _verify_client_cookie(cookies.get("client_session", ""))
+        if not client_user:
+            await websocket.close(code=4401, reason="Unauthorized")
+            return
+        user = await db.get_client(client_user)
+        if not user or not user.get("active"):
+            await websocket.close(code=4403, reason="Inactive client")
+            return
+        hostnames = user.get("hostnames") or []
+        await ws_manager.connect(websocket, allowed_hostnames=hostnames)
+        logger.info("WS connected: client=%s (hosts=%s)", client_user, hostnames)
+
     try:
         while True:
             await websocket.receive_text()  # keepalive
