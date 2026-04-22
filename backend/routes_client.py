@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 import db
 from auth import (
     AGENT_TOKEN,
-    require_token,
+    require_token, require_admin,
     _check_rate_limit, _record_failed_login, _clear_login_attempts,
     _check_cooldown, _record_action,
     _hash_password, _verify_password,
@@ -38,7 +38,7 @@ client_v1 = APIRouter()
 @client_v1.get("/clients", dependencies=[])
 async def list_clients_endpoint(request: Request):
     """Lista todos os clientes (admin)."""
-    await require_token(request)
+    await require_admin(request)
     from main import _SafeJSONResponse
     return _SafeJSONResponse(await db.list_clients())
 
@@ -46,7 +46,7 @@ async def list_clients_endpoint(request: Request):
 @client_v1.post("/clients", dependencies=[])
 async def create_client_endpoint(request: Request) -> JSONResponse:
     """Cria um cliente (admin)."""
-    await require_token(request)
+    await require_admin(request)
     body = await request.json()
     username = body.get("username", "").strip()
     password = body.get("password", "").strip()
@@ -69,7 +69,7 @@ async def create_client_endpoint(request: Request) -> JSONResponse:
 @client_v1.patch("/clients/{client_id}", dependencies=[])
 async def update_client_endpoint(client_id: int, request: Request) -> JSONResponse:
     """Atualiza um cliente (admin)."""
-    await require_token(request)
+    await require_admin(request)
     body = await request.json()
     fields = {}
     if "hostnames" in body:
@@ -93,7 +93,7 @@ async def update_client_endpoint(client_id: int, request: Request) -> JSONRespon
 @client_v1.delete("/clients/{client_id}", dependencies=[])
 async def delete_client_endpoint(client_id: int, request: Request) -> JSONResponse:
     """Remove um cliente (admin)."""
-    await require_token(request)
+    await require_admin(request)
     ok = await db.delete_client(client_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Cliente nao encontrado")
@@ -392,13 +392,14 @@ def _build_report_pdf(data: dict, client_user: str) -> bytes:
 
 @client_v1.get("/client/data")
 async def client_data(request: Request, period: str = "24h"):
-    """Dados filtrados por hostnames do cliente logado. Auth via cookie."""
+    """Dados filtrados por hostnames do cliente logado. Auth via cookie ONLY.
+
+    SEC: removido fallback legado que aceitava Bearer + X-Client-User — permitia
+    impersonificar qualquer cliente com o AGENT_TOKEN.
+    """
     from main import _SafeJSONResponse
     cookie = request.cookies.get("client_session", "")
     client_user = _verify_client_cookie(cookie)
-    if not client_user:
-        await require_token(request)
-        client_user = request.headers.get("X-Client-User", "")
     if not client_user:
         raise HTTPException(status_code=403, detail="Acesso negado")
     user = await db.get_client(client_user)
@@ -464,7 +465,7 @@ async def download_client_report(date: str, request: Request):
 @client_v1.get("/reports")
 async def list_all_reports(request: Request):
     """Admin: lista todos os relatorios diarios."""
-    await require_token(request)
+    await require_admin(request)
     from main import _SafeJSONResponse
     reports = await db.list_all_daily_reports()
     return _SafeJSONResponse(reports)
@@ -473,7 +474,7 @@ async def list_all_reports(request: Request):
 @client_v1.get("/reports/{date}/{client_id}")
 async def download_report_admin(date: str, client_id: int, request: Request):
     """Admin: download PDF de qualquer cliente por data."""
-    await require_token(request)
+    await require_admin(request)
     from datetime import date as _date_type
     try:
         report_date = _date_type.fromisoformat(date)

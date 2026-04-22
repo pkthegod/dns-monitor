@@ -30,11 +30,69 @@ async def require_token(request: Request) -> None:
             detail="Servico indisponivel",
         )
     auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer ") or auth[7:] != AGENT_TOKEN:
+    if not auth.startswith("Bearer "):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token invalido ou ausente",
         )
+    # SEC: timing-safe comparison — previne enumeração do token via timing diff
+    if not hmac.compare_digest(auth[7:].encode(), AGENT_TOKEN.encode()):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token invalido ou ausente",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Authn dedicada — admin (cookie OU Bearer) e cliente (cookie ONLY)
+# ---------------------------------------------------------------------------
+# SEC: separa autenticação de agentes (Bearer) de admin (cookie + Bearer
+# fallback para curl/tooling) e de clientes (cookie ONLY). Antes, qualquer
+# sessão — admin ou cliente — recebia o AGENT_TOKEN via /session/token e
+# podia chamar qualquer rota Bearer, quebrando isolamento multi-tenant.
+
+async def require_admin(request: Request) -> str:
+    """Aceita admin_session cookie OU Bearer AGENT_TOKEN (curl/tooling externo).
+    Retorna identidade do admin para audit log."""
+    cookie = request.cookies.get("admin_session", "")
+    user = _verify_admin_cookie(cookie)
+    if user:
+        return user
+
+    # Fallback Bearer — apenas para tooling/curl administrativo.
+    # Frontend nunca deve enviar Bearer (usa cookie via credentials=same-origin).
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer ") and AGENT_TOKEN and \
+       hmac.compare_digest(auth[7:].encode(), AGENT_TOKEN.encode()):
+        return "admin:bearer"
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Acesso negado: requer sessao admin",
+    )
+
+
+async def require_client(request: Request) -> dict:
+    """Exige client_session cookie + cliente ativo. Retorna dict do cliente
+    (com 'username', 'hostnames', 'active', etc.) para o handler usar no filtro.
+
+    NUNCA aceita Bearer — clientes não devem ter acesso a token de agente."""
+    cookie = request.cookies.get("client_session", "")
+    username = _verify_client_cookie(cookie)
+    if not username:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Sessao de cliente invalida",
+        )
+    # Lazy import para evitar ciclo (db importa nada de auth, mas defensivo)
+    import db
+    user = await db.get_client(username)
+    if not user or not user.get("active"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cliente inativo",
+        )
+    return user
 
 
 # ---------------------------------------------------------------------------
