@@ -444,6 +444,22 @@ ALTER TABLE client_users ADD COLUMN IF NOT EXISTS webhook_url TEXT;
 
 
 -- =============================================================================
+-- ADMIN USERS — multi-user RBAC (admin / viewer)
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS admin_users (
+    id            SERIAL       PRIMARY KEY,
+    username      TEXT         NOT NULL UNIQUE,
+    password_hash TEXT         NOT NULL,
+    role          TEXT         NOT NULL DEFAULT 'viewer'
+                               CHECK (role IN ('admin', 'viewer')),
+    active        BOOLEAN      NOT NULL DEFAULT TRUE,
+    created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    created_by    TEXT,
+    notes         TEXT
+);
+
+
+-- =============================================================================
 -- DAILY REPORTS — relatorios diarios gerados automaticamente
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS daily_reports (

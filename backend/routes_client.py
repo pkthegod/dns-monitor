@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 import db
 from auth import (
     AGENT_TOKEN,
-    require_token, require_admin,
+    require_token, require_admin, require_admin_role,
     _check_rate_limit, _record_failed_login, _clear_login_attempts,
     _check_cooldown, _record_action,
     _hash_password, _verify_password,
@@ -46,7 +46,7 @@ async def list_clients_endpoint(request: Request):
 @client_v1.post("/clients", dependencies=[])
 async def create_client_endpoint(request: Request) -> JSONResponse:
     """Cria um cliente (admin)."""
-    await require_admin(request)
+    await require_admin_role(request)
     body = await request.json()
     username = body.get("username", "").strip()
     password = body.get("password", "").strip()
@@ -69,7 +69,7 @@ async def create_client_endpoint(request: Request) -> JSONResponse:
 @client_v1.patch("/clients/{client_id}", dependencies=[])
 async def update_client_endpoint(client_id: int, request: Request) -> JSONResponse:
     """Atualiza um cliente (admin)."""
-    await require_admin(request)
+    await require_admin_role(request)
     body = await request.json()
     fields = {}
     if "hostnames" in body:
@@ -93,7 +93,7 @@ async def update_client_endpoint(client_id: int, request: Request) -> JSONRespon
 @client_v1.delete("/clients/{client_id}", dependencies=[])
 async def delete_client_endpoint(client_id: int, request: Request) -> JSONResponse:
     """Remove um cliente (admin)."""
-    await require_admin(request)
+    await require_admin_role(request)
     ok = await db.delete_client(client_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Cliente nao encontrado")

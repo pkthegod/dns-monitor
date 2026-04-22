@@ -39,7 +39,7 @@ from models import (  # noqa: F401
     SpeedtestDomainModel, SpeedtestPayload,
 )
 from auth import (  # noqa: F401
-    AGENT_TOKEN, require_token, require_admin, require_client,
+    AGENT_TOKEN, require_token, require_admin, require_admin_role, require_client,
     ADMIN_USER, ADMIN_PASSWORD,
     _check_rate_limit, _record_failed_login, _clear_login_attempts,
     _check_cooldown, _record_action,
@@ -871,7 +871,7 @@ async def _dispatch_webhooks_for_host(hostname: str, payload: AgentPayload) -> N
             webhooks.send_webhook(client["webhook_url"], alert_type, severity, hostname, message)
 
 
-@v1.patch("/agents/{hostname}", dependencies=[Depends(require_admin)], tags=["agents"])
+@v1.patch("/agents/{hostname}", dependencies=[Depends(require_admin_role)], tags=["agents"])
 async def update_agent(hostname: str, body: AgentMetaUpdate) -> JSONResponse:
     """Atualiza display_name, location e notes de um agente."""
     found = await db.update_agent_meta(
@@ -882,7 +882,7 @@ async def update_agent(hostname: str, body: AgentMetaUpdate) -> JSONResponse:
     return JSONResponse({"status": "ok", "hostname": hostname})
 
 
-@v1.delete("/agents/{hostname}", dependencies=[Depends(require_admin)], tags=["agents"])
+@v1.delete("/agents/{hostname}", dependencies=[Depends(require_admin_role)], tags=["agents"])
 async def delete_agent(hostname: str) -> JSONResponse:
     """Remove o agente e todo o historico de dados do banco."""
     found = await db.delete_agent(hostname)
@@ -945,11 +945,11 @@ async def create_command(request: Request) -> JSONResponse:
     """
     Cria um comando para um agente executar no proximo poll.
     """
-    await require_admin(request)
+    info = await require_admin_role(request)
     body = await request.json()
     hostname = body.get("hostname", "").strip()
     command  = body.get("command",  "").strip()
-    issued_by = body.get("issued_by", "admin")
+    issued_by = body.get("issued_by", info["username"])
     expires_hours = body.get("expires_hours")
     params = body.get("params")
 
@@ -1007,29 +1007,42 @@ async def admin_login_page(request: Request) -> HTMLResponse:
 
 @app.post("/admin/login", include_in_schema=False)
 async def admin_login_post(request: Request):
-    """Valida credenciais e seta cookie de sessao."""
+    """Valida credenciais contra DB primeiro, depois fallback para env vars."""
     ip = request.client.host if request.client else "unknown"
     if _check_rate_limit(ip):
         return RedirectResponse("/admin/login?error=locked", status_code=303)
-
-    if not ADMIN_USER or not ADMIN_PASSWORD:
-        return RedirectResponse("/admin/login?error=config", status_code=303)
 
     form = await request.form()
     username = form.get("username", "")
     password = form.get("password", "")
 
-    if not secrets.compare_digest(username, ADMIN_USER) or \
-       not secrets.compare_digest(password, ADMIN_PASSWORD):
+    role = None
+    _dummy_hash = "$2b$12$000000000000000000000uGPOaHLkG6VgbGG7ZtBCRqGz4eXxWfS"
+
+    # 1. Tenta DB admin_users primeiro
+    db_user = await db.authenticate_admin_user(username)
+    if db_user and _verify_password(password, db_user["password_hash"]):
+        role = db_user["role"]
+    # 2. Fallback env var superadmin
+    elif ADMIN_USER and ADMIN_PASSWORD:
+        if secrets.compare_digest(username, ADMIN_USER) and \
+           secrets.compare_digest(password, ADMIN_PASSWORD):
+            role = "admin"
+        else:
+            _verify_password(password, _dummy_hash)  # equaliza timing
+    else:
+        _verify_password(password, _dummy_hash)  # equaliza timing
+
+    if role is None:
         _record_failed_login(ip)
         logger.warning("Login admin falhado de %s (user=%s)", ip, username)
         await db.audit("admin", "login_failed", username, ip=ip)
         return RedirectResponse("/admin/login?error=1", status_code=303)
 
     _clear_login_attempts(ip)
-    await db.audit("admin", "login_ok", username, ip=ip)
+    await db.audit("admin", "login_ok", username, ip=ip, detail=f"role={role}")
     resp = RedirectResponse("/admin", status_code=303)
-    cookie_val = _sign_admin_cookie(username)
+    cookie_val = _sign_admin_cookie(username, role)
     _secure = os.environ.get("COOKIE_SECURE", "true").lower() in ("true", "1", "yes")
     resp.set_cookie("admin_session", cookie_val, httponly=True, secure=_secure, samesite="strict", max_age=_ADMIN_SESSION_TTL)
     return resp
@@ -1052,9 +1065,9 @@ async def session_whoami(request: Request) -> JSONResponse:
     um cliente do portal chamasse rotas administrativas como /commands.
     Agora frontend (admin/cliente) usa cookies via credentials=same-origin.
     """
-    admin = _verify_admin_cookie(request.cookies.get("admin_session", ""))
-    if admin:
-        return JSONResponse({"kind": "admin", "username": admin})
+    info = _verify_admin_cookie(request.cookies.get("admin_session", ""))
+    if info:
+        return JSONResponse({"kind": "admin", "username": info["username"], "role": info["role"]})
     client_user = _verify_client_cookie(request.cookies.get("client_session", ""))
     if client_user:
         user = await db.get_client(client_user)
@@ -1136,7 +1149,7 @@ async def agent_latest_download(request: Request):
     )
 
 
-@v1.post("/tools/geolocate", dependencies=[Depends(require_admin)], tags=["tools"])
+@v1.post("/tools/geolocate", dependencies=[Depends(require_admin_role)], tags=["tools"])
 async def geolocate_ips(request: Request) -> JSONResponse:
     import asyncio
     import urllib.request as _urllib
@@ -1182,9 +1195,9 @@ async def get_command_status(command_id: int, request: Request) -> _SafeJSONResp
         raise HTTPException(status_code=404, detail="Comando nao encontrado")
 
     # Admin: acesso irrestrito
-    admin = _verify_admin_cookie(request.cookies.get("admin_session", ""))
+    admin_info = _verify_admin_cookie(request.cookies.get("admin_session", ""))
     auth = request.headers.get("Authorization", "")
-    if admin or (auth.startswith("Bearer ") and AGENT_TOKEN and
+    if admin_info or (auth.startswith("Bearer ") and AGENT_TOKEN and
                  secrets.compare_digest(auth[7:], AGENT_TOKEN)):
         return _SafeJSONResponse(cmd)
 
@@ -1269,10 +1282,10 @@ async def ws_live(websocket: WebSocket):
     """
     cookies = websocket.cookies
 
-    admin_user = _verify_admin_cookie(cookies.get("admin_session", ""))
-    if admin_user:
+    admin_info = _verify_admin_cookie(cookies.get("admin_session", ""))
+    if admin_info:
         await ws_manager.connect(websocket, allowed_hostnames=None)
-        logger.info("WS connected: admin=%s (all hosts)", admin_user)
+        logger.info("WS connected: admin=%s role=%s (all hosts)", admin_info["username"], admin_info["role"])
     else:
         client_user = _verify_client_cookie(cookies.get("client_session", ""))
         if not client_user:
@@ -1311,6 +1324,96 @@ async def health() -> JSONResponse:
     except Exception as exc:
         logger.error("Health check falhou: %s", exc)
         return JSONResponse({"status": "error", "db": "unavailable"}, status_code=503)
+
+
+# ---------------------------------------------------------------------------
+# Admin user management (RBAC)
+# ---------------------------------------------------------------------------
+
+@v1.get("/admin-users", tags=["admin-users"])
+async def list_admin_users_endpoint(request: Request) -> _SafeJSONResponse:
+    """Lista todos os admin users (requer role=admin)."""
+    await require_admin_role(request)
+    users = await db.list_admin_users()
+    return _SafeJSONResponse(users)
+
+
+@v1.post("/admin-users", tags=["admin-users"])
+async def create_admin_user_endpoint(request: Request) -> JSONResponse:
+    """Cria um admin user (requer role=admin)."""
+    caller = await require_admin_role(request)
+    body = await request.json()
+    username = body.get("username", "").strip()
+    password = body.get("password", "").strip()
+    role = body.get("role", "viewer").strip()
+    notes = body.get("notes", "").strip() or None
+
+    if not username or not password:
+        return JSONResponse({"error": "username e password obrigatorios"}, status_code=422)
+    if role not in ("admin", "viewer"):
+        return JSONResponse({"error": "role deve ser 'admin' ou 'viewer'"}, status_code=422)
+    if len(password) < 8:
+        return JSONResponse({"error": "senha deve ter no minimo 8 caracteres"}, status_code=422)
+    if ADMIN_USER and secrets.compare_digest(username, ADMIN_USER):
+        return JSONResponse({"error": "username reservado (superadmin env var)"}, status_code=409)
+
+    existing = await db.get_admin_user(username)
+    if existing:
+        return JSONResponse({"error": "username ja existe"}, status_code=409)
+
+    pw_hash = _hash_password(password)
+    user_id = await db.create_admin_user(username, pw_hash, role, caller["username"], notes)
+    await db.audit(caller["username"], "admin_user_created", username, detail=f"role={role}")
+    return JSONResponse({"id": user_id, "username": username, "role": role}, status_code=201)
+
+
+@v1.patch("/admin-users/{user_id}", tags=["admin-users"])
+async def update_admin_user_endpoint(user_id: int, request: Request) -> JSONResponse:
+    """Atualiza um admin user (requer role=admin)."""
+    caller = await require_admin_role(request)
+    body = await request.json()
+    fields = {}
+
+    if "role" in body:
+        if body["role"] not in ("admin", "viewer"):
+            return JSONResponse({"error": "role deve ser 'admin' ou 'viewer'"}, status_code=422)
+        fields["role"] = body["role"]
+    if "active" in body:
+        fields["active"] = body["active"]
+    if "password" in body and body["password"]:
+        if len(body["password"]) < 8:
+            return JSONResponse({"error": "senha deve ter no minimo 8 caracteres"}, status_code=422)
+        fields["password_hash"] = _hash_password(body["password"])
+    if "notes" in body:
+        fields["notes"] = body["notes"]
+
+    if not fields:
+        return JSONResponse({"error": "nenhum campo para atualizar"}, status_code=422)
+
+    ok = await db.update_admin_user(user_id, **fields)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Admin user nao encontrado")
+    await db.audit(caller["username"], "admin_user_updated", str(user_id),
+                   detail=str(list(fields.keys())))
+    return JSONResponse({"status": "ok"})
+
+
+@v1.delete("/admin-users/{user_id}", tags=["admin-users"])
+async def delete_admin_user_endpoint(user_id: int, request: Request) -> JSONResponse:
+    """Remove um admin user (requer role=admin). Nao pode deletar a si mesmo."""
+    caller = await require_admin_role(request)
+
+    target = await db.get_admin_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Admin user nao encontrado")
+    if target["username"] == caller["username"]:
+        return JSONResponse({"error": "Nao e possivel deletar o proprio usuario"}, status_code=422)
+
+    ok = await db.delete_admin_user(user_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Admin user nao encontrado")
+    await db.audit(caller["username"], "admin_user_deleted", target["username"])
+    return JSONResponse({"status": "ok"})
 
 
 # ---------------------------------------------------------------------------

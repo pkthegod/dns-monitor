@@ -671,6 +671,84 @@ async def authenticate_client(username: str) -> Optional[dict]:
 
 
 # ===========================================================================
+# Admin users — multi-user RBAC
+# ===========================================================================
+
+async def create_admin_user(username: str, password_hash: str, role: str = "viewer",
+                            created_by: str = None, notes: str = None) -> int:
+    async with get_conn() as conn:
+        row = await conn.fetchrow(
+            """INSERT INTO admin_users (username, password_hash, role, created_by, notes)
+               VALUES ($1, $2, $3, $4, $5) RETURNING id""",
+            username, password_hash, role, created_by, notes,
+        )
+        return row["id"]
+
+
+async def get_admin_user(username: str) -> Optional[dict]:
+    async with get_conn() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM admin_users WHERE username = $1", username)
+        return dict(row) if row else None
+
+
+async def get_admin_user_by_id(user_id: int) -> Optional[dict]:
+    async with get_conn() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM admin_users WHERE id = $1", user_id)
+        return dict(row) if row else None
+
+
+async def authenticate_admin_user(username: str) -> Optional[dict]:
+    """Retorna admin user ativo com password_hash para verificacao. None se nao existe ou inativo."""
+    async with get_conn() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM admin_users WHERE username = $1 AND active = TRUE",
+            username,
+        )
+        return dict(row) if row else None
+
+
+async def list_admin_users() -> list[dict]:
+    async with get_conn() as conn:
+        rows = await conn.fetch(
+            "SELECT id, username, role, active, created_at, created_by, notes "
+            "FROM admin_users ORDER BY username")
+        return [dict(r) for r in rows]
+
+
+_ADMIN_USER_ALLOWED_FIELDS = {"role", "active", "password_hash", "notes"}
+
+
+async def update_admin_user(user_id: int, **fields) -> bool:
+    invalid = set(fields.keys()) - _ADMIN_USER_ALLOWED_FIELDS
+    if invalid:
+        raise ValueError(f"Campos nao permitidos: {invalid}")
+    sets, vals, i = [], [], 1
+    for k, v in fields.items():
+        if v is not None:
+            sets.append(f"{k} = ${i}")
+            vals.append(v)
+            i += 1
+    if not sets:
+        return False
+    vals.append(user_id)
+    async with get_conn() as conn:
+        result = await conn.execute(
+            f"UPDATE admin_users SET {', '.join(sets)} WHERE id = ${i}",
+            *vals,
+        )
+        return "UPDATE 1" in result
+
+
+async def delete_admin_user(user_id: int) -> bool:
+    async with get_conn() as conn:
+        result = await conn.execute(
+            "DELETE FROM admin_users WHERE id = $1", user_id)
+        return "DELETE 1" in result
+
+
+# ===========================================================================
 # Audit log
 # ===========================================================================
 
