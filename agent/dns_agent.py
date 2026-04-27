@@ -51,7 +51,7 @@ CONFIG_PATHS = [
 ]
 
 
-AGENT_VERSION = "1.3.0"
+AGENT_VERSION = "1.4.0"
 
 
 # ---------------------------------------------------------------------------
@@ -881,9 +881,101 @@ done
 echo "SUMMARY errors=$ERROR_COUNT"
 """
 
+_UNBOUND_VALIDATE_SCRIPT = r"""#!/bin/bash
+ERROR_COUNT=0
+check_status() {
+    if [ $? -eq 0 ]; then
+        echo "CHECK_OK $1"
+    else
+        echo "CHECK_FAIL $1"
+        ERROR_COUNT=$((ERROR_COUNT + 1))
+    fi
+}
+
+systemctl is-active --quiet unbound
+check_status "Serviço unbound está rodando"
+
+ss -lntu | grep -q ":53 "
+check_status "Porta 53 em escuta"
+
+if command -v unbound-checkconf > /dev/null; then
+    unbound-checkconf > /dev/null 2>&1
+    check_status "Sintaxe unbound.conf válida"
+else
+    echo "CHECK_SKIP Comando unbound-checkconf não encontrado"
+fi
+
+dig @127.0.0.1 google.com +short +time=2 | grep -q .
+check_status "Resolução externa google.com"
+
+DNSSEC_AD=$(dig @127.0.0.1 internetsociety.org A +dnssec +time=5 +tries=1 2>/dev/null)
+if echo "$DNSSEC_AD" | grep -q "flags:.*ad"; then
+    echo "CHECK_OK Validação DNSSEC ativa (flag AD presente)"
+else
+    FAIL_STATUS=$(dig @127.0.0.1 dnssec-failed.org A +time=5 +tries=1 2>/dev/null | grep -i "status:")
+    if echo "$FAIL_STATUS" | grep -qi "SERVFAIL"; then
+        echo "CHECK_OK Validação DNSSEC ativa (dnssec-failed.org retornou SERVFAIL)"
+    else
+        echo "CHECK_FAIL DNSSEC pode não estar validando corretamente"
+        ERROR_COUNT=$((ERROR_COUNT + 1))
+    fi
+fi
+
+# Trust anchor (root.key) — Unbound exige pra DNSSEC
+TA_FILE=""
+for candidate in /var/lib/unbound/root.key /etc/unbound/root.key /usr/share/dnssec-keys/root.key; do
+    if [ -f "$candidate" ]; then TA_FILE="$candidate"; break; fi
+done
+if [ -n "$TA_FILE" ]; then
+    AGE_DAYS=$(( ($(date +%s) - $(stat -c %Y "$TA_FILE" 2>/dev/null || echo 0)) / 86400 ))
+    if [ "$AGE_DAYS" -lt 90 ]; then
+        echo "CHECK_OK Trust anchor presente em $TA_FILE (atualizado ha ${AGE_DAYS}d)"
+    else
+        echo "CHECK_WARN Trust anchor $TA_FILE desatualizado (${AGE_DAYS}d) — rodar: unbound-anchor -a $TA_FILE"
+    fi
+else
+    echo "CHECK_INFO Trust anchor root.key nao encontrado (OK se DNSSEC desabilitado)"
+fi
+
+# unbound-control — quando habilitado, traz versao + uptime + queries
+if command -v unbound-control > /dev/null; then
+    UC_OUT=$(unbound-control status 2>/dev/null)
+    if [ -n "$UC_OUT" ]; then
+        VERSION=$(echo "$UC_OUT" | grep -i "^version:" | awk '{print $2}')
+        UPTIME=$(echo "$UC_OUT" | grep -i "uptime:" | awk '{print $2}')
+        echo "CHECK_OK unbound-control responde (versao ${VERSION:-?}, uptime ${UPTIME:-?}s)"
+    else
+        echo "CHECK_INFO unbound-control nao configurado (control-interface ausente)"
+    fi
+fi
+
+MEM_MAX=$(systemctl show unbound -p MemoryMax 2>/dev/null | cut -d= -f2)
+if [ -z "$MEM_MAX" ] || [ "$MEM_MAX" = "infinity" ] || [ "$MEM_MAX" = "18446744073709551615" ]; then
+    echo "CHECK_INFO MemoryMax nao definido (ilimitado)"
+else
+    echo "CHECK_OK MemoryMax configurado: $MEM_MAX bytes"
+fi
+
+UNBOUND_CACHE="/var/cache/unbound"
+if [ -d "$UNBOUND_CACHE" ]; then
+    PERMS=$(stat -c "%U:%G" "$UNBOUND_CACHE")
+    if [ "$PERMS" = "unbound:unbound" ] || [ "$PERMS" = "root:unbound" ]; then
+        echo "CHECK_OK Permissoes $UNBOUND_CACHE corretas ($PERMS)"
+    else
+        echo "CHECK_WARN Permissoes $UNBOUND_CACHE incomuns: $PERMS"
+    fi
+else
+    echo "CHECK_INFO Diretorio $UNBOUND_CACHE nao encontrado"
+fi
+
+echo "SUMMARY errors=$ERROR_COUNT"
+"""
+
+
 DIAGNOSTIC_SCRIPTS: dict[str, str] = {
-    "bind9_validate": _BIND9_VALIDATE_SCRIPT,
-    "dig_test":       _DIG_TEST_SCRIPT,
+    "bind9_validate":   _BIND9_VALIDATE_SCRIPT,
+    "unbound_validate": _UNBOUND_VALIDATE_SCRIPT,
+    "dig_test":         _DIG_TEST_SCRIPT,
 }
 
 
@@ -1466,6 +1558,26 @@ def _execute_command(command: str, confirm_token: str, cfg: Config,
             domain   = params_obj.get("domain",   "google.com").strip()
             resolver = params_obj.get("resolver", "127.0.0.1").strip()
             return _run_dig_trace(domain, resolver, logger)
+
+        # dns_validate: auto-detecta o servico DNS instalado (named/bind9 ou unbound)
+        # e despacha pra script de validacao correspondente. Permite que o admin clique
+        # "DNS - Validacao Completa" sem se preocupar com qual servidor o host roda.
+        if script_id == "dns_validate":
+            detected = detect_dns_service()
+            svc_name = (detected.get("name") or "").lower()
+            if svc_name in ("named", "bind9"):
+                script_id = "bind9_validate"
+            elif svc_name == "unbound":
+                script_id = "unbound_validate"
+            else:
+                return "failed", json.dumps({
+                    "script": "dns_validate",
+                    "checks": [{"status": "fail",
+                                "message": f"Servico DNS nao reconhecido (detectado: '{svc_name or 'nenhum'}'). Suportados: named, bind9, unbound."}],
+                    "error_count": 1,
+                    "summary": "Nenhum servidor DNS detectado",
+                }, ensure_ascii=False)
+            logger.info("dns_validate: servico detectado='%s' → executando '%s'", svc_name, script_id)
 
         script_content = DIAGNOSTIC_SCRIPTS.get(script_id)
         if script_content is None:

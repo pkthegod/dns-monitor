@@ -283,7 +283,9 @@
     <div class="diag-hostname" id="diag-hostname-label">— hostname —</div>
     <div class="diag-script-select">
       <select id="diag-script-select">
-        <option value="bind9_validate">Bind9 — Validação completa</option>
+        <option value="dns_validate">DNS — Validação Completa (auto Bind9/Unbound)</option>
+        <option value="bind9_validate">Bind9 — Validação específica</option>
+        <option value="unbound_validate">Unbound — Validação específica</option>
         <option value="dig_test">DIG — Teste de resolução DNS</option>
       </select>
       <button class="btn btn-run" id="diag-run-btn" onclick="runDiagnostic()">▶ EXECUTAR</button>
