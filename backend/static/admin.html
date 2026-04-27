@@ -10,7 +10,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;600;700&display=swap" rel="stylesheet">
 <script src="/static/theme.js?v=091"></script>
 <link rel="stylesheet" href="/static/base.css?v=091">
-<link rel="stylesheet" href="/static/admin.css?v=092">
+<link rel="stylesheet" href="/static/admin.css?v=101">
 <style>
   /* RBAC: esconde elementos mutativos para viewers */
   .role-viewer .admin-only { display: none !important; }
@@ -48,10 +48,15 @@
       <span id="bulk-bar" style="display:none;gap:6px;align-items:center;font-size:.7rem">
         <span id="bulk-count" class="dim">0 selecionados</span>
         <button class="btn btn-ghost" style="font-size:.68rem;padding:2px 8px" onclick="bulkSelectOffline()">Sel. offline</button>
+        <button class="btn btn-ghost" style="font-size:.68rem;padding:2px 8px" onclick="bulkSelectOutdated()">Sel. desatualizados</button>
         <button class="btn btn-ghost" style="font-size:.68rem;padding:2px 8px" onclick="bulkAction('restart')">Restart</button>
         <button class="btn btn-ghost" style="font-size:.68rem;padding:2px 8px" onclick="bulkAction('update_agent')">Update</button>
         <button class="btn btn-ghost" style="font-size:.68rem;padding:2px 8px;color:var(--red)" onclick="bulkAction('decommission')">Decommission</button>
       </span>
+      <span id="outdated-badge" class="version-badge version-old-minor"
+            style="margin-left:6px;cursor:pointer;display:none;font-size:.7rem"
+            title="Clique pra selecionar todos os agentes desatualizados"
+            onclick="bulkSelectOutdated()"></span>
     </div>
   </div>
   <div class="table-wrap">
@@ -385,12 +390,50 @@
     return agentVer !== serverVersion;
   }
 
+  // Compara duas versoes semver. Retorna 'equal' | 'patch' | 'minor' | 'major' | 'ahead' | 'unknown'
+  // 'patch'/'minor'/'major' significa LOCAL atras do REMOTO; 'ahead' = local na frente.
+  function _semverDiff(local, remote) {
+    if (!local || !remote) return 'unknown';
+    if (local === remote) return 'equal';
+    const lp = local.split('.').map(Number);
+    const rp = remote.split('.').map(Number);
+    while (lp.length < 3) lp.push(0);
+    while (rp.length < 3) rp.push(0);
+    if (lp.some(isNaN) || rp.some(isNaN)) return 'unknown';
+    if (lp[0] !== rp[0]) return lp[0] < rp[0] ? 'major' : 'ahead';
+    if (lp[1] !== rp[1]) return lp[1] < rp[1] ? 'minor' : 'ahead';
+    if (lp[2] !== rp[2]) return lp[2] < rp[2] ? 'patch' : 'ahead';
+    return 'equal';
+  }
+
+  function _isOutdated(agentVer) {
+    if (!agentVer || !serverVersion) return false;
+    const d = _semverDiff(agentVer, serverVersion);
+    return d === 'patch' || d === 'minor' || d === 'major';
+  }
+
   function versionCell(agentVer) {
     if (!agentVer) return '<span class="dim">—</span>';
     if (!serverVersion) return `<span class="version-badge version-unknown">${esc(agentVer)}</span>`;
-    if (agentVer === serverVersion)
-      return `<span class="version-badge version-ok">${esc(agentVer)}</span>`;
-    return `<span class="version-badge version-old" title="Servidor: ${esc(serverVersion)}">${esc(agentVer)} ↑${esc(serverVersion)}</span>`;
+    const diff = _semverDiff(agentVer, serverVersion);
+    if (diff === 'equal') return `<span class="version-badge version-ok">${esc(agentVer)}</span>`;
+    if (diff === 'ahead') return `<span class="version-badge version-ahead" title="Agente esta a frente do servidor (server: ${esc(serverVersion)})">${esc(agentVer)} ↑dev</span>`;
+    if (diff === 'unknown') return `<span class="version-badge version-unknown">${esc(agentVer)}</span>`;
+    const cls = diff === 'major' ? 'version-old-major' : diff === 'minor' ? 'version-old-minor' : 'version-old-patch';
+    const label = diff === 'major' ? 'BREAKING' : diff.toUpperCase();
+    return `<span class="version-badge ${cls}" title="${label} atras. Servidor: ${esc(serverVersion)}">${esc(agentVer)} → ${esc(serverVersion)}</span>`;
+  }
+
+  function refreshOutdatedBadge() {
+    const badge = document.getElementById('outdated-badge');
+    if (!badge) return;
+    if (!serverVersion || !agentsCache.length) { badge.style.display = 'none'; return; }
+    const outdated = agentsCache.filter(a => _isOutdated(a.agent_version));
+    if (!outdated.length) { badge.style.display = 'none'; return; }
+    const breaking = outdated.filter(a => _semverDiff(a.agent_version, serverVersion) === 'major').length;
+    badge.style.display = 'inline-flex';
+    badge.textContent = `${outdated.length} de ${agentsCache.length} desatualizado(s)` + (breaking ? ` · ${breaking} breaking` : '');
+    badge.className = 'version-badge ' + (breaking > 0 ? 'version-old-major' : 'version-old-minor');
   }
 
   // ── Send command ───────────────────────────────────────────────────────────
@@ -728,6 +771,7 @@
       const data = await apiFetch('/agent/version');
       serverVersion = data.version || null;
     } catch (_) { serverVersion = null; }
+    refreshOutdatedBadge();
   }
 
   async function sendUpdate(hostname, btn) {
@@ -838,6 +882,7 @@
           </td>
         </tr>`;
       }).join('');
+    refreshOutdatedBadge();
   }
 
   // ── Load history ───────────────────────────────────────────────────────────
@@ -1209,6 +1254,18 @@
     });
     bulkUpdateCount();
     if (!getSelectedHostnames().length) toast.info('Nenhum agente offline encontrado.');
+  }
+
+  function bulkSelectOutdated() {
+    document.querySelectorAll('.bulk-cb').forEach(cb => { cb.checked = false; });
+    if (!serverVersion) { toast.warn('Versao do servidor nao carregada ainda — recarregue a pagina.'); return; }
+    const outdatedHosts = agentsCache.filter(a => _isOutdated(a.agent_version)).map(a => a.hostname);
+    document.querySelectorAll('.bulk-cb').forEach(cb => {
+      if (outdatedHosts.includes(cb.dataset.hostname)) cb.checked = true;
+    });
+    bulkUpdateCount();
+    if (!getSelectedHostnames().length) toast.info('Todos os agentes estao na versao atual.');
+    else toast.ok(`${outdatedHosts.length} agente(s) desatualizado(s) selecionado(s). Clique "Update" pra disparar.`);
   }
 
   async function bulkAction(command) {
