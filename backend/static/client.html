@@ -155,6 +155,26 @@
   .trace-dim { color: var(--text-dim); font-size: 11px; }
   .mono { font-family: var(--font-mono); }
 
+  /* Friendly DNS test result */
+  .dns-summary-banner { border: 1px solid; border-radius: 10px; padding: 14px 18px; margin-bottom: 18px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .dns-summary-icon { font-size: 24px; line-height: 1; }
+  .dns-summary-text { flex: 1; min-width: 0; }
+  .dns-summary-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; opacity: .75; margin-bottom: 2px; }
+  .dns-summary-value { font-size: 18px; font-weight: 700; }
+  .dns-summary-errors { font-size: 12px; opacity: .8; font-family: var(--font-mono); }
+  .dns-test-section { margin-bottom: 14px; }
+  .dns-test-section-title { font-size: 12px; font-weight: 600; color: var(--text-mid); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px; }
+  .dns-test-items { display: flex; flex-direction: column; gap: 4px; }
+  .dns-test-row { display: flex; align-items: center; gap: 10px; background: var(--bg); border: 1px solid var(--border-lo); border-radius: 6px; padding: 8px 12px; font-size: 13px; }
+  .dns-test-row .icon { display: inline-flex; flex-shrink: 0; }
+  .dns-test-row .domain { font-weight: 600; color: var(--text); min-width: 130px; }
+  .dns-test-row .arrow { color: var(--text-dim); font-size: 11px; }
+  .dns-test-row .ip { color: var(--text-mid); }
+  .dns-test-row .latency { font-family: var(--font-mono); font-size: 12px; font-weight: 700; margin-left: auto; flex-shrink: 0; }
+  .dns-test-row .label { font-size: 11px; color: var(--text-dim); }
+  .dns-test-row .text { flex: 1; color: var(--text); }
+  .result-friendly { padding: 0 !important; background: transparent !important; border: none !important; }
+
   @media (max-width: 960px) { .charts, .gauges { grid-template-columns: 1fr; } }
   @media (max-width: 768px) {
     .page { padding: 16px 14px 32px; }
@@ -507,6 +527,146 @@ async function loadPortal() {
 function openDnsResult() { document.getElementById('dnsResultModal').classList.add('open'); }
 function closeDnsResult() { document.getElementById('dnsResultModal').classList.remove('open'); }
 
+// ── Friendly DNS test parsing ──
+const _DNS_SECTION_TITLES = [
+  ['Resolução via resolver local',    'Servidor DNS local'],
+  ['Resolução via Google DNS',         'Comparativo: Google DNS'],
+  ['Resolução via Cloudflare',         'Comparativo: Cloudflare DNS'],
+  ['DNSSEC',                           'Validação DNSSEC'],
+  ['Reverso (PTR)',                    'DNS reverso'],
+  ['Tempo de resposta comparativo',    'Latência comparativa'],
+];
+
+function _friendlyDnsSection(rawTitle) {
+  const m = (rawTitle || '').match(/^===\s*(.+?)\s*===$/);
+  const inner = m ? m[1] : (rawTitle || '');
+  for (const [pattern, friendly] of _DNS_SECTION_TITLES) {
+    if (inner.includes(pattern)) return friendly;
+  }
+  return inner;
+}
+
+function _parseDnsCheck(check) {
+  const msg = (check.message || '').trim();
+  const status = check.status;
+
+  // Resolution OK: "@resolver → domain (Xms) → IP"
+  let m = msg.match(/^@(\S+)\s+→\s+(\S+)\s+\((\d+|\?)ms\)\s+→\s+(\S+)/);
+  if (m) {
+    return {type: 'resolution', resolver: m[1], domain: m[2], latency: m[3], ip: m[4], status};
+  }
+  // Resolution FAIL: "@resolver → domain (...) FAIL" or similar
+  m = msg.match(/^@(\S+)\s+→\s+(\S+)/);
+  if (m && status !== 'ok') {
+    return {type: 'resolution', resolver: m[1], domain: m[2], latency: null, ip: '—', status};
+  }
+  // Latency: "@resolver latência: Xms (label)"
+  m = msg.match(/^@(\S+)\s+latência:\s+(\d+)ms(?:\s*\((.+?)\))?/);
+  if (m) {
+    return {type: 'latency', resolver: m[1], latency_ms: parseInt(m[2]), label: m[3] || '', status};
+  }
+  // Generic message (DNSSEC, PTR text, summary, etc.)
+  return {type: 'message', text: msg, status};
+}
+
+function _groupDnsChecks(checks) {
+  const sections = [];
+  let current = null;
+  for (const c of checks || []) {
+    if (c.status === 'info' && /===/.test(c.message || '')) {
+      current = {title: _friendlyDnsSection(c.message), items: []};
+      sections.push(current);
+    } else {
+      if (!current) {
+        current = {title: '', items: []};
+        sections.push(current);
+      }
+      current.items.push(_parseDnsCheck(c));
+    }
+  }
+  return sections;
+}
+
+function _statusIcon(status) {
+  if (status === 'ok') return ICONS.success;
+  if (status === 'fail' || status === 'error') return ICONS.error;
+  if (status === 'warning') return ICONS.warning;
+  return ICONS.info;
+}
+function _statusColor(status) {
+  if (status === 'ok') return 'var(--green)';
+  if (status === 'fail' || status === 'error') return 'var(--red)';
+  if (status === 'warning') return 'var(--yellow)';
+  return 'var(--text-dim)';
+}
+function _latencyColor(ms) {
+  if (ms == null) return 'var(--text-dim)';
+  if (ms < 50) return 'var(--green)';
+  if (ms < 200) return 'var(--yellow)';
+  return 'var(--red)';
+}
+
+function _renderDnsTestSummary(data) {
+  const errCount = data.error_count || 0;
+  let bannerColor, bannerLabel;
+  if (errCount === 0) {
+    bannerColor = 'var(--green)';
+    bannerLabel = 'Tudo certo com seu DNS';
+  } else if (errCount <= 2) {
+    bannerColor = 'var(--yellow)';
+    bannerLabel = 'Atenção — alguns avisos';
+  } else {
+    bannerColor = 'var(--red)';
+    bannerLabel = 'Problemas detectados';
+  }
+
+  let html = `<div class="dns-summary-banner" style="border-color:${bannerColor};background:color-mix(in srgb, ${bannerColor} 8%, transparent);color:${bannerColor}">
+    <div class="dns-summary-text">
+      <div class="dns-summary-label">Resultado</div>
+      <div class="dns-summary-value">${esc(bannerLabel)}</div>
+    </div>
+    <div class="dns-summary-errors">${errCount} ${errCount === 1 ? 'aviso' : 'avisos'}</div>
+  </div>`;
+
+  for (const s of _groupDnsChecks(data.checks)) {
+    if (!s.items.length) continue;
+    html += `<div class="dns-test-section">`;
+    if (s.title) html += `<div class="dns-test-section-title">${esc(s.title)}</div>`;
+    html += `<div class="dns-test-items">`;
+    for (const item of s.items) {
+      const sIcon = _statusIcon(item.status);
+      const sColor = _statusColor(item.status);
+
+      if (item.type === 'resolution') {
+        const latMs = item.latency === '?' || item.latency == null ? null : parseInt(item.latency);
+        const latColor = _latencyColor(latMs);
+        html += `<div class="dns-test-row">
+          <span class="icon" style="color:${sColor}">${sIcon}</span>
+          <span class="domain">${esc(item.domain)}</span>
+          <span class="arrow">→</span>
+          <span class="ip mono">${esc(item.ip)}</span>
+          ${latMs != null ? `<span class="latency" style="color:${latColor}">${latMs}ms</span>` : ''}
+        </div>`;
+      } else if (item.type === 'latency') {
+        const latColor = _latencyColor(item.latency_ms);
+        html += `<div class="dns-test-row">
+          <span class="icon" style="color:${sColor}">${sIcon}</span>
+          <span class="domain mono">${esc(item.resolver)}</span>
+          ${item.label ? `<span class="label">${esc(item.label)}</span>` : ''}
+          <span class="latency" style="color:${latColor}">${item.latency_ms}ms</span>
+        </div>`;
+      } else {
+        html += `<div class="dns-test-row">
+          <span class="icon" style="color:${sColor}">${sIcon}</span>
+          <span class="text">${esc(item.text)}</span>
+        </div>`;
+      }
+    }
+    html += `</div></div>`;
+  }
+  return html;
+}
+
 function renderDnsResult(cmd) {
   _currentDnsCmd = cmd;
   const statusEl = document.getElementById('dnsResultStatus');
@@ -528,7 +688,24 @@ function renderDnsResult(cmd) {
     statusEl.innerHTML = ICONS.loading + ' Aguardando resultado do agente...';
   }
 
-  outputEl.textContent = cmd.result || (cmd.status === 'pending' ? 'Aguardando resposta do agente...' : 'Sem output');
+  // Tenta render estruturado a partir do JSON do agente; cai pra texto se não for JSON.
+  let structured = null;
+  if (cmd.result && typeof cmd.result === 'string') {
+    try {
+      const data = JSON.parse(cmd.result);
+      if (data && Array.isArray(data.checks)) {
+        structured = _renderDnsTestSummary(data);
+      }
+    } catch(_) { /* não é JSON do dig_test */ }
+  }
+
+  if (structured) {
+    outputEl.innerHTML = structured;
+    outputEl.className = 'result-friendly';
+  } else {
+    outputEl.textContent = cmd.result || (cmd.status === 'pending' ? 'Aguardando resposta do agente...' : 'Sem output');
+    outputEl.className = 'result-output';
+  }
 
   const parts = [];
   if (cmd.hostname) parts.push('<span>Host: ' + esc(cmd.hostname) + '</span>');
@@ -539,86 +716,158 @@ function renderDnsResult(cmd) {
   if (dlBtn) dlBtn.style.display = (cmd.status === 'done' || cmd.status === 'failed') ? 'inline-flex' : 'none';
 }
 
+function _pdfStatusColor(status) {
+  if (status === 'ok') return [40, 130, 70];
+  if (status === 'fail' || status === 'error') return [185, 50, 70];
+  if (status === 'warning') return [200, 145, 30];
+  return [110, 110, 130];
+}
+
 function downloadDnsResultPdf() {
   if (!_currentDnsCmd || !window.jspdf) return;
   const cmd = _currentDnsCmd;
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
 
+  // Tenta parsear o JSON do agente pra render estruturado.
+  let data = null;
+  if (cmd.result && typeof cmd.result === 'string') {
+    try {
+      const parsed = JSON.parse(cmd.result);
+      if (parsed && Array.isArray(parsed.checks)) data = parsed;
+    } catch(_) {}
+  }
+
+  const PAGE_BOTTOM = 270;
   let y = 20;
 
-  // Title
-  doc.setFontSize(18);
-  doc.setFont(undefined, 'bold');
-  doc.setTextColor(30, 30, 50);
+  const ensureSpace = (needed) => {
+    if (y + needed > PAGE_BOTTOM) {
+      doc.addPage();
+      y = 20;
+    }
+  };
+
+  // ── Header ───────────────────────────────────────────────
+  doc.setFontSize(18).setFont(undefined, 'bold').setTextColor(30, 30, 50);
   doc.text('Infra-Vision', 14, y);
-  doc.setFontSize(11);
-  doc.setFont(undefined, 'normal');
-  doc.setTextColor(80, 80, 110);
+  doc.setFontSize(11).setFont(undefined, 'normal').setTextColor(80, 80, 110);
   doc.text('Relatorio de Teste DNS', 14, y + 7);
-  doc.setFontSize(9);
-  doc.setTextColor(130, 130, 150);
+  doc.setFontSize(9).setTextColor(130, 130, 150);
   doc.text(new Date().toLocaleString('pt-BR'), 196, y + 7, { align: 'right' });
   y += 18;
+  doc.setDrawColor(200, 200, 210).line(14, y, 196, y);
+  y += 8;
 
-  // Separator
-  doc.setDrawColor(200, 200, 210);
-  doc.line(14, y, 196, y);
-  y += 10;
-
-  // Status
-  const statusLabel = cmd.status === 'done' ? 'SUCESSO' : cmd.status === 'failed' ? 'FALHOU' : 'PENDENTE';
-  const statusColor = cmd.status === 'done' ? [40, 120, 60] : cmd.status === 'failed' ? [180, 40, 60] : [60, 80, 160];
-  doc.setFontSize(12);
-  doc.setFont(undefined, 'bold');
-  doc.setTextColor(...statusColor);
-  doc.text('Status: ' + statusLabel, 14, y);
-  y += 10;
-
-  // Meta
-  doc.setFontSize(10);
-  doc.setFont(undefined, 'normal');
-  doc.setTextColor(50, 50, 70);
-  if (cmd.hostname) { doc.text('Servidor: ' + cmd.hostname, 14, y); y += 6; }
-  if (cmd.issued_at) { doc.text('Enviado: ' + new Date(cmd.issued_at).toLocaleString('pt-BR'), 14, y); y += 6; }
-  if (cmd.executed_at) { doc.text('Executado: ' + new Date(cmd.executed_at).toLocaleString('pt-BR'), 14, y); y += 6; }
+  // ── Meta ─────────────────────────────────────────────────
+  doc.setFontSize(10).setFont(undefined, 'normal').setTextColor(50, 50, 70);
+  if (cmd.hostname)    { doc.text('Servidor: ' + cmd.hostname, 14, y); y += 6; }
+  if (cmd.executed_at) { doc.text('Executado em: ' + new Date(cmd.executed_at).toLocaleString('pt-BR'), 14, y); y += 6; }
   y += 4;
 
-  // Output header
-  doc.setFontSize(10);
-  doc.setFont(undefined, 'bold');
-  doc.setTextColor(30, 30, 50);
-  doc.text('Saida do teste:', 14, y);
-  y += 7;
+  // ── Banner de resumo (se temos JSON) ─────────────────────
+  if (data) {
+    const errCount = data.error_count || 0;
+    let bannerColor, bannerLabel;
+    if (errCount === 0)      { bannerColor = [40, 130, 70];   bannerLabel = 'Tudo certo com seu DNS'; }
+    else if (errCount <= 2)  { bannerColor = [200, 145, 30];  bannerLabel = 'Atencao — alguns avisos'; }
+    else                     { bannerColor = [185, 50, 70];   bannerLabel = 'Problemas detectados'; }
 
-  // Output box
-  const output = cmd.result || 'Sem output';
-  doc.setFillColor(245, 245, 250);
-  const lines = doc.setFont('courier', 'normal').setFontSize(8).splitTextToSize(output, 176);
-  const boxH = Math.min(lines.length * 4.5 + 8, 220);
-  doc.roundedRect(14, y, 182, boxH, 2, 2, 'F');
-  doc.setTextColor(30, 30, 60);
+    ensureSpace(20);
+    doc.setFillColor(...bannerColor);
+    doc.setDrawColor(...bannerColor);
+    doc.roundedRect(14, y, 182, 16, 2, 2, 'FD');
+    doc.setTextColor(255, 255, 255).setFontSize(13).setFont(undefined, 'bold');
+    doc.text(bannerLabel, 18, y + 7);
+    doc.setFontSize(10).setFont(undefined, 'normal');
+    doc.text(errCount + (errCount === 1 ? ' aviso' : ' avisos'), 192, y + 7, { align: 'right' });
+    if (data.summary) {
+      doc.setFontSize(9);
+      doc.text('Diagnostico: ' + data.summary, 18, y + 12);
+    }
+    y += 22;
 
-  let ty = y + 5;
-  for (const line of lines) {
-    if (ty > y + boxH - 4) break;
-    doc.text(line, 17, ty);
-    ty += 4.5;
+    // ── Secoes ─────────────────────────────────────────────
+    const sections = _groupDnsChecks(data.checks);
+    for (const s of sections) {
+      if (!s.items.length) continue;
+      ensureSpace(12 + s.items.length * 6);
+
+      if (s.title) {
+        doc.setFontSize(10).setFont(undefined, 'bold').setTextColor(30, 30, 50);
+        doc.text(s.title, 14, y);
+        y += 5;
+      }
+
+      for (const item of s.items) {
+        ensureSpace(7);
+        const color = _pdfStatusColor(item.status);
+        const dot = item.status === 'ok' ? 'OK' : item.status === 'warning' ? '!' : item.status === 'fail' || item.status === 'error' ? 'X' : 'i';
+
+        // Status pill (3 chars max)
+        doc.setFillColor(...color);
+        doc.roundedRect(14, y - 3.5, 8, 5, 1, 1, 'F');
+        doc.setTextColor(255, 255, 255).setFontSize(7).setFont(undefined, 'bold');
+        doc.text(dot, 18, y, { align: 'center' });
+
+        // Item content
+        doc.setFontSize(9).setFont(undefined, 'normal').setTextColor(40, 40, 60);
+        if (item.type === 'resolution') {
+          const latStr = item.latency != null && item.latency !== '?' ? `  ${item.latency}ms` : '';
+          doc.text(`${item.domain}  ->  ${item.ip}${latStr}`, 26, y);
+          doc.setTextColor(140, 140, 160).setFontSize(8);
+          doc.text(`via ${item.resolver}`, 192, y, { align: 'right' });
+        } else if (item.type === 'latency') {
+          const labelStr = item.label ? `  (${item.label})` : '';
+          doc.text(`${item.resolver}${labelStr}`, 26, y);
+          doc.setTextColor(60, 60, 80).setFont(undefined, 'bold');
+          doc.text(`${item.latency_ms}ms`, 192, y, { align: 'right' });
+        } else {
+          const wrapped = doc.splitTextToSize(item.text, 162);
+          doc.text(wrapped[0] || item.text, 26, y);
+          if (wrapped.length > 1) {
+            for (let i = 1; i < wrapped.length; i++) {
+              y += 4;
+              ensureSpace(5);
+              doc.text(wrapped[i], 26, y);
+            }
+          }
+        }
+        y += 6;
+      }
+      y += 3;
+    }
+  } else {
+    // ── Fallback: dump em monospace se não conseguimos parsear ──
+    doc.setFontSize(10).setFont(undefined, 'bold').setTextColor(30, 30, 50);
+    doc.text('Saida do teste:', 14, y);
+    y += 7;
+
+    const output = cmd.result || 'Sem output';
+    const lines = doc.setFont('courier', 'normal').setFontSize(8).splitTextToSize(output, 176);
+    doc.setFillColor(245, 245, 250);
+    const boxH = Math.min(lines.length * 4.5 + 8, 220);
+    doc.roundedRect(14, y, 182, boxH, 2, 2, 'F');
+    doc.setTextColor(30, 30, 60);
+
+    let ty = y + 5;
+    for (const line of lines) {
+      if (ty > y + boxH - 4) break;
+      doc.text(line, 17, ty);
+      ty += 4.5;
+    }
+    y += boxH + 10;
   }
-  y += boxH + 10;
 
-  // If output was truncated, note it
-  if (ty >= y - 10 && lines.length * 4.5 + 8 > 220) {
-    doc.setFont(undefined, 'italic').setFontSize(8).setTextColor(130, 130, 150);
-    doc.text('(saida truncada — veja o output completo no portal)', 14, y);
-    y += 8;
+  // ── Footer (em todas as paginas) ─────────────────────────
+  const pageCount = doc.internal.getNumberOfPages();
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i);
+    doc.setFont(undefined, 'normal').setFontSize(8).setTextColor(150, 150, 160);
+    doc.line(14, 284, 196, 284);
+    doc.text('Infra-Vision — gerado em ' + new Date().toLocaleString('pt-BR'), 14, 289);
+    doc.text(`Pagina ${i}/${pageCount}`, 196, 289, { align: 'right' });
   }
-
-  // Footer
-  doc.setFont(undefined, 'normal').setFontSize(8).setTextColor(150, 150, 160);
-  doc.line(14, 284, 196, 284);
-  doc.text('Infra-Vision — gerado em ' + new Date().toLocaleString('pt-BR'), 14, 289);
-  doc.text('nsmonitor.procyontecnologia.net', 196, 289, { align: 'right' });
 
   const fname = 'dns-test-' + (cmd.hostname || 'result').replace(/[^a-z0-9]/gi, '_') + '-' + new Date().toISOString().slice(0, 10) + '.pdf';
   doc.save(fname);
