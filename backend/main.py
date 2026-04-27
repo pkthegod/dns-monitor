@@ -367,32 +367,7 @@ def setup_scheduler() -> None:
 # Lifecycle FastAPI
 # ---------------------------------------------------------------------------
 
-async def _handle_command_ack(msg):
-    """Recebe resultado de comando via NATS (dns.commands.{hostname}.ack)."""
-    try:
-        data = json.loads(msg.data.decode())
-        cmd_id = data.get("command_id")
-        cmd_status = data.get("status", "done")
-        result = data.get("result", "")
-        if cmd_id:
-            await db.mark_command_done(cmd_id, cmd_status, result)
-            cmd = await db.get_command_by_id(cmd_id)
-            if cmd:
-                await tg.send_command_result(
-                    hostname=cmd["hostname"], command=cmd["command"],
-                    status=cmd_status, result=result,
-                    issued_by=cmd["issued_by"] or "admin",
-                )
-            logger.info("NATS ACK: comando #%s -> %s", cmd_id, cmd_status)
-        await msg.ack()
-    except Exception as exc:
-        logger.error("NATS ACK handler erro: %s", exc)
-
-
-async def _setup_nats_subscriptions():
-    """Registra subscriptions NATS no backend."""
-    if nc:
-        await nc.js_subscribe("dns.commands.*.ack", _handle_command_ack, durable="backend-cmd-ack")
+from nats_handlers import setup_nats_subscriptions as _setup_nats_subscriptions  # noqa: F401
 
 
 @asynccontextmanager

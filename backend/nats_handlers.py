@@ -1,0 +1,48 @@
+"""
+nats_handlers.py — Handlers e subscriptions NATS do backend.
+
+Hoje cobre apenas a confirmacao de execucao de comandos remotos
+(dns.commands.*.ack). Quando novos topicos surgirem, adicionar aqui
+e registrar em setup_nats_subscriptions().
+"""
+
+import json
+import logging
+
+import db
+import telegram_bot as tg
+
+try:
+    import nats_client as nc
+except ImportError:
+    nc = None  # nats-py nao instalado — NATS desabilitado
+
+logger = logging.getLogger("infra-vision.api")
+
+
+async def handle_command_ack(msg):
+    """Recebe resultado de comando via NATS (dns.commands.{hostname}.ack)."""
+    try:
+        data = json.loads(msg.data.decode())
+        cmd_id = data.get("command_id")
+        cmd_status = data.get("status", "done")
+        result = data.get("result", "")
+        if cmd_id:
+            await db.mark_command_done(cmd_id, cmd_status, result)
+            cmd = await db.get_command_by_id(cmd_id)
+            if cmd:
+                await tg.send_command_result(
+                    hostname=cmd["hostname"], command=cmd["command"],
+                    status=cmd_status, result=result,
+                    issued_by=cmd["issued_by"] or "admin",
+                )
+            logger.info("NATS ACK: comando #%s -> %s", cmd_id, cmd_status)
+        await msg.ack()
+    except Exception as exc:
+        logger.error("NATS ACK handler erro: %s", exc)
+
+
+async def setup_nats_subscriptions():
+    """Registra subscriptions NATS no backend."""
+    if nc:
+        await nc.js_subscribe("dns.commands.*.ack", handle_command_ack, durable="backend-cmd-ack")
