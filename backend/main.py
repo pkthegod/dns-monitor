@@ -525,137 +525,19 @@ async def get_command_history(hostname: str, request: Request) -> _SafeJSONRespo
 
 
 # ---------------------------------------------------------------------------
-# Admin pages
+# Admin / dashboard / security / admin-users — extraidos para routes_admin.py
 # ---------------------------------------------------------------------------
 
-@app.get("/admin/login", response_class=HTMLResponse, include_in_schema=False)
-async def admin_login_page(request: Request) -> HTMLResponse:
-    """Formulario de login do painel admin."""
-    html_path = pathlib.Path(__file__).parent / "static" / "login.html"
-    html = html_path.read_text(encoding="utf-8")
-    nonce = getattr(request.state, "csp_nonce", "")
-    return HTMLResponse(_html_with_nonce(html, nonce))
-
-
-@app.post("/admin/login", include_in_schema=False)
-async def admin_login_post(request: Request):
-    """Valida credenciais contra DB primeiro, depois fallback para env vars."""
-    ip = request.client.host if request.client else "unknown"
-    if _check_rate_limit(ip):
-        return RedirectResponse("/admin/login?error=locked", status_code=303)
-
-    form = await request.form()
-    username = form.get("username", "")
-    password = form.get("password", "")
-
-    role = None
-    _dummy_hash = "$2b$12$000000000000000000000uGPOaHLkG6VgbGG7ZtBCRqGz4eXxWfS"
-
-    # 1. Tenta DB admin_users primeiro
-    db_user = await db.authenticate_admin_user(username)
-    if db_user and _verify_password(password, db_user["password_hash"]):
-        role = db_user["role"]
-    # 2. Fallback env var superadmin
-    elif ADMIN_USER and ADMIN_PASSWORD:
-        if secrets.compare_digest(username, ADMIN_USER) and \
-           secrets.compare_digest(password, ADMIN_PASSWORD):
-            role = "admin"
-        else:
-            _verify_password(password, _dummy_hash)  # equaliza timing
-    else:
-        _verify_password(password, _dummy_hash)  # equaliza timing
-
-    if role is None:
-        _record_failed_login(ip)
-        logger.warning("Login admin falhado de %s (user=%s)", ip, username)
-        await db.audit("admin", "login_failed", username, ip=ip)
-        return RedirectResponse("/admin/login?error=1", status_code=303)
-
-    _clear_login_attempts(ip)
-    await db.audit("admin", "login_ok", username, ip=ip, detail=f"role={role}")
-    resp = RedirectResponse("/admin", status_code=303)
-    cookie_val = _sign_admin_cookie(username, role)
-    _secure = os.environ.get("COOKIE_SECURE", "true").lower() in ("true", "1", "yes")
-    resp.set_cookie("admin_session", cookie_val, httponly=True, secure=_secure, samesite="strict", max_age=_ADMIN_SESSION_TTL)
-    return resp
-
-
-@app.get("/admin/logout", include_in_schema=False)
-async def admin_logout():
-    """Limpa cookie de sessao e redireciona para login."""
-    resp = RedirectResponse("/admin/login", status_code=303)
-    resp.delete_cookie("admin_session")
-    return resp
-
-
-@app.get("/api/v1/session/whoami", include_in_schema=False)
-async def session_whoami(request: Request) -> JSONResponse:
-    """Retorna identidade da sessão SEM expor o AGENT_TOKEN.
-
-    SEC: substitui o antigo /session/token. Antes, este endpoint entregava
-    o AGENT_TOKEN para qualquer sessão (admin OU cliente), permitindo que
-    um cliente do portal chamasse rotas administrativas como /commands.
-    Agora frontend (admin/cliente) usa cookies via credentials=same-origin.
-    """
-    info = _verify_admin_cookie(request.cookies.get("admin_session", ""))
-    if info:
-        return JSONResponse({"kind": "admin", "username": info["username"], "role": info["role"]})
-    client_user = _verify_client_cookie(request.cookies.get("client_session", ""))
-    if client_user:
-        user = await db.get_client(client_user)
-        if user and user.get("active"):
-            return JSONResponse({
-                "kind": "client",
-                "username": client_user,
-                "hostnames": user.get("hostnames", []),
-            })
-    raise HTTPException(status_code=401, detail="Sessao invalida")
-
-
-# Rota legada: mantida APENAS para detectar uso indevido e quebrar com erro claro.
-# Frontends antigos que ainda chamem /session/token recebem 410 e log de warning.
-@app.get("/api/v1/session/token", include_in_schema=False)
-async def session_token_deprecated(request: Request) -> JSONResponse:
-    ip = request.client.host if request.client else "?"
-    logger.warning("DEPRECATED: /session/token chamado de %s — atualizar frontend para /session/whoami", ip)
-    raise HTTPException(
-        status_code=410,  # Gone
-        detail="Endpoint removido por motivos de seguranca. Use /api/v1/session/whoami.",
-    )
-
-
-@app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
-async def admin_panel(request: Request) -> HTMLResponse:
-    """Painel de administracao — protegido por cookie de sessao."""
-    cookie = request.cookies.get("admin_session", "")
-    if not _verify_admin_cookie(cookie):
-        return RedirectResponse("/admin/login", status_code=303)
-    html_path = pathlib.Path(__file__).parent / "static" / "admin.html"
-    nonce = getattr(request.state, "csp_nonce", "")
-    return HTMLResponse(_html_with_nonce(html_path.read_text(encoding="utf-8"), nonce))
-
-
-@v1.get("/security/blocked", tags=["tools"], dependencies=[Depends(require_admin)])
-async def list_blocked_ips() -> JSONResponse:
-    """Lista IPs bloqueados pelo security monitor."""
-    import security
-    return JSONResponse(security.get_blocked_ips())
-
-
-@v1.delete("/security/blocked", tags=["tools"], dependencies=[Depends(require_admin)])
-async def unblock_all_ips() -> JSONResponse:
-    """Desbloqueia todos os IPs."""
-    import security
-    count = security.unblock_all()
-    return JSONResponse({"unblocked": count})
-
-
-@v1.delete("/security/blocked/{ip}", tags=["tools"], dependencies=[Depends(require_admin)])
-async def unblock_ip(ip: str) -> JSONResponse:
-    """Desbloqueia um IP especifico."""
-    import security
-    found = security.unblock_ip(ip)
-    return JSONResponse({"ip": ip, "was_blocked": found})
+from routes_admin import (  # noqa: F401
+    admin_v1,
+    admin_login_page, admin_login_post, admin_logout,
+    session_whoami, session_token_deprecated,
+    admin_panel, admin_help_page,
+    dashboard_page, dashboard_data,
+    list_blocked_ips, unblock_all_ips, unblock_ip,
+    list_admin_users_endpoint, create_admin_user_endpoint,
+    update_admin_user_endpoint, delete_admin_user_endpoint,
+)
 
 
 @v1.get("/commands/history", tags=["commands"])
@@ -759,26 +641,6 @@ async def get_command_status(command_id: int, request: Request) -> _SafeJSONResp
     raise HTTPException(status_code=403, detail="Acesso negado")
 
 
-@app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
-async def dashboard_page(request: Request) -> HTMLResponse:
-    """Dashboard de metricas."""
-    html_path = pathlib.Path(__file__).parent / "static" / "dashboard.html"
-    if not html_path.exists():
-        raise HTTPException(status_code=404, detail="Dashboard nao encontrado")
-    nonce = getattr(request.state, "csp_nonce", "")
-    return HTMLResponse(_html_with_nonce(html_path.read_text(encoding="utf-8"), nonce))
-
-
-@v1.get("/dashboard/data", dependencies=[Depends(require_admin)], tags=["dashboard"])
-async def dashboard_data(period: str = "24h", host: str = "") -> _SafeJSONResponse:
-    """Dados agregados para o dashboard. Aceita ?period=1h|6h|24h|7d&host=hostname."""
-    hostnames = None
-    if host and _re.match(r'^[a-zA-Z0-9._-]+$', host):
-        hostnames = [host]
-    data = await db.get_aggregated_metrics(period, hostnames)
-    return _SafeJSONResponse(data)
-
-
 # ---------------------------------------------------------------------------
 # Speedtest — Domain SSL/Port checker (medidores)
 # ---------------------------------------------------------------------------
@@ -834,96 +696,6 @@ async def health() -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
-# Admin user management (RBAC)
-# ---------------------------------------------------------------------------
-
-@v1.get("/admin-users", tags=["admin-users"])
-async def list_admin_users_endpoint(request: Request) -> _SafeJSONResponse:
-    """Lista todos os admin users (requer role=admin)."""
-    await require_admin_role(request)
-    users = await db.list_admin_users()
-    return _SafeJSONResponse(users)
-
-
-@v1.post("/admin-users", tags=["admin-users"])
-async def create_admin_user_endpoint(request: Request) -> JSONResponse:
-    """Cria um admin user (requer role=admin)."""
-    caller = await require_admin_role(request)
-    body = await request.json()
-    username = body.get("username", "").strip()
-    password = body.get("password", "").strip()
-    role = body.get("role", "viewer").strip()
-    notes = body.get("notes", "").strip() or None
-
-    if not username or not password:
-        return JSONResponse({"error": "username e password obrigatorios"}, status_code=422)
-    if role not in ("admin", "viewer"):
-        return JSONResponse({"error": "role deve ser 'admin' ou 'viewer'"}, status_code=422)
-    if len(password) < 8:
-        return JSONResponse({"error": "senha deve ter no minimo 8 caracteres"}, status_code=422)
-    if ADMIN_USER and secrets.compare_digest(username, ADMIN_USER):
-        return JSONResponse({"error": "username reservado (superadmin env var)"}, status_code=409)
-
-    existing = await db.get_admin_user(username)
-    if existing:
-        return JSONResponse({"error": "username ja existe"}, status_code=409)
-
-    pw_hash = _hash_password(password)
-    user_id = await db.create_admin_user(username, pw_hash, role, caller["username"], notes)
-    await db.audit(caller["username"], "admin_user_created", username, detail=f"role={role}")
-    return JSONResponse({"id": user_id, "username": username, "role": role}, status_code=201)
-
-
-@v1.patch("/admin-users/{user_id}", tags=["admin-users"])
-async def update_admin_user_endpoint(user_id: int, request: Request) -> JSONResponse:
-    """Atualiza um admin user (requer role=admin)."""
-    caller = await require_admin_role(request)
-    body = await request.json()
-    fields = {}
-
-    if "role" in body:
-        if body["role"] not in ("admin", "viewer"):
-            return JSONResponse({"error": "role deve ser 'admin' ou 'viewer'"}, status_code=422)
-        fields["role"] = body["role"]
-    if "active" in body:
-        fields["active"] = body["active"]
-    if "password" in body and body["password"]:
-        if len(body["password"]) < 8:
-            return JSONResponse({"error": "senha deve ter no minimo 8 caracteres"}, status_code=422)
-        fields["password_hash"] = _hash_password(body["password"])
-    if "notes" in body:
-        fields["notes"] = body["notes"]
-
-    if not fields:
-        return JSONResponse({"error": "nenhum campo para atualizar"}, status_code=422)
-
-    ok = await db.update_admin_user(user_id, **fields)
-    if not ok:
-        raise HTTPException(status_code=404, detail="Admin user nao encontrado")
-    await db.audit(caller["username"], "admin_user_updated", str(user_id),
-                   detail=str(list(fields.keys())))
-    return JSONResponse({"status": "ok"})
-
-
-@v1.delete("/admin-users/{user_id}", tags=["admin-users"])
-async def delete_admin_user_endpoint(user_id: int, request: Request) -> JSONResponse:
-    """Remove um admin user (requer role=admin). Nao pode deletar a si mesmo."""
-    caller = await require_admin_role(request)
-
-    target = await db.get_admin_user_by_id(user_id)
-    if not target:
-        raise HTTPException(status_code=404, detail="Admin user nao encontrado")
-    if target["username"] == caller["username"]:
-        return JSONResponse({"error": "Nao e possivel deletar o proprio usuario"}, status_code=422)
-
-    ok = await db.delete_admin_user(user_id)
-    if not ok:
-        raise HTTPException(status_code=404, detail="Admin user nao encontrado")
-    await db.audit(caller["username"], "admin_user_deleted", target["username"])
-    return JSONResponse({"status": "ok"})
-
-
-# ---------------------------------------------------------------------------
 # Compatibilidade com agentes antigos (v1.0.0) — rotas sem /api/v1 prefix
 # ---------------------------------------------------------------------------
 _legacy = APIRouter(tags=["legacy"], deprecated=True, include_in_schema=False)
@@ -947,6 +719,19 @@ app.include_router(_legacy)
 
 
 # ---------------------------------------------------------------------------
+# Rotas admin (login, logout, sessao, painel, dashboard, help) — montadas no app
+# ---------------------------------------------------------------------------
+app.get("/admin/login", response_class=HTMLResponse, include_in_schema=False)(admin_login_page)
+app.post("/admin/login", include_in_schema=False)(admin_login_post)
+app.get("/admin/logout", include_in_schema=False)(admin_logout)
+app.get("/api/v1/session/whoami", include_in_schema=False)(session_whoami)
+app.get("/api/v1/session/token", include_in_schema=False)(session_token_deprecated)
+app.get("/admin", response_class=HTMLResponse, include_in_schema=False)(admin_panel)
+app.get("/admin/help", response_class=HTMLResponse, include_in_schema=False)(admin_help_page)
+app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)(dashboard_page)
+
+
+# ---------------------------------------------------------------------------
 # Rotas do portal do cliente (montadas no app)
 # ---------------------------------------------------------------------------
 app.get("/client/login", response_class=HTMLResponse, include_in_schema=False)(client_login_page)
@@ -966,17 +751,10 @@ async def client_help_page(request: Request) -> HTMLResponse:
     return HTMLResponse(_html_with_nonce(html_path.read_text(encoding="utf-8"), nonce))
 
 
-@app.get("/admin/help", response_class=HTMLResponse, include_in_schema=False)
-async def admin_help_page(request: Request) -> HTMLResponse:
-    cookie = request.cookies.get("admin_session", "")
-    if not _verify_admin_cookie(cookie):
-        return RedirectResponse("/admin/login", status_code=303)
-    html_path = pathlib.Path(__file__).parent / "static" / "admin-help.html"
-    nonce = getattr(request.state, "csp_nonce", "")
-    return HTMLResponse(_html_with_nonce(html_path.read_text(encoding="utf-8"), nonce))
 
 # ---------------------------------------------------------------------------
 # Registra routers versionados (DEVE ficar depois de todos os endpoints)
 # ---------------------------------------------------------------------------
+v1.include_router(admin_v1)
 v1.include_router(client_v1)
 app.include_router(v1)
