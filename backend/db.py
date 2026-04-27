@@ -1,5 +1,24 @@
 """
 db.py — Camada de acesso ao TimescaleDB via asyncpg.
+
+Indice (use grep para navegar; numeros sao orientativos):
+
+    init_pool / close_pool / get_conn / apply_schema  ──  L27-L73
+    Agents — upsert + heartbeat                        ──  L76-L122
+    Metrics inserts — cpu/ram/disk/io                  ──  L123-L193
+    DNS checks + service status                        ──  L194-L228
+    Alerts — insert / notified / resolve / queries     ──  L230-L416
+    Agent admin — meta update / delete / offline       ──  L268-L390
+    # === Fingerprints ===                             ──  L418
+    # === Commands ===                                 ──  L468
+    # === Client users — portal read-only ===          ──  L602
+    # === Admin users — multi-user RBAC ===            ──  L673
+    # === Audit log ===                                ──  L751
+    # === Daily Reports ===                            ──  L769
+    # === Dashboard / Client — queries agregadas ===   ──  L819
+    # === Speedtest — Domain SSL/Port checker ===      ──  L933
+
+Ao adicionar funcoes em uma secao, atualize o indice acima.
 """
 
 import logging
