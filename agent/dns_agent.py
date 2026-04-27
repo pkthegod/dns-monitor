@@ -1394,10 +1394,12 @@ def _run_dig_trace(domain: str, resolver: str, logger: logging.Logger) -> tuple[
     """
     import re as _re
 
-    # Validacao de inputs — previne command injection
-    if not re.match(r'^[a-zA-Z0-9._-]+$', domain):
+    # Validacao de inputs — previne command injection / dig-flag injection
+    # Primeiro char deve ser alfanumerico (impede `domain="-version"` virar
+    # flag pro dig). Defense in depth: backend ja valida igual em routes_client.
+    if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9._-]*$', domain):
         return "failed", f"Dominio invalido: {domain}"
-    if resolver and not re.match(r'^[a-zA-Z0-9._:-]+$', resolver):
+    if resolver and not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9._:-]*$', resolver):
         return "failed", f"Resolver invalido: {resolver}"
 
     result: dict = {

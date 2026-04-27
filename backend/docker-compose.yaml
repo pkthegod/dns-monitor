@@ -40,6 +40,28 @@ services:
       dockerfile: Dockerfile
     container_name: infra_vision_api
     restart: unless-stopped
+    # SEC: hardening — sem novos privilegios, capabilities reduzidas, FS read-only
+    # com tmpfs onde precisamos escrever (PDFs em memoria, tempfiles do reportlab).
+    # Limites de recurso pra evitar starvation se um endpoint travar.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          cpus: "0.25"
+          memory: 256M
     networks:
       infra_vision_net:
         ipv4_address: 172.20.0.11

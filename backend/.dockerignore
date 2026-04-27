@@ -1,0 +1,96 @@
+# =============================================================================
+# Infra-Vision backend — .dockerignore
+# Evita que segredos, caches e arquivos locais vazem para a imagem Docker.
+# Critico: sem isso, COPY . . no Dockerfile pode levar backend/.env (com
+# tokens, senhas DB, secrets HMAC) pra dentro da imagem.
+# =============================================================================
+
+# ── Segredos absolutos (NUNCA na imagem) ─────────────────────────────────────
+.env
+.env.*
+*.env
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+id_ecdsa*
+id_dsa*
+*.sesskey
+backupdotenv*
+secrets/
+
+# ── Python local ─────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.Python
+*.egg-info/
+*.egg
+
+# ── Virtualenvs ──────────────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+
+# ── Testes / coverage ────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+test_*.py
+*_test.py
+
+# ── Type checkers ────────────────────────────────────────────────────────────
+.mypy_cache/
+.dmypy.json
+.pyre/
+.pytype/
+
+# ── Editor / IDE ─────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.bak
+*.tmp
+
+# ── VCS / metadados ──────────────────────────────────────────────────────────
+.git/
+.gitignore
+.gitattributes
+.github/
+
+# ── Docker meta ──────────────────────────────────────────────────────────────
+Dockerfile
+docker-compose*.yaml
+docker-compose*.yml
+.dockerignore
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Docs / readme (nao precisa runtime) ──────────────────────────────────────
+README*.md
+CHANGELOG*.md
+CONTRIBUTING*.md
+docs/
+
+# ── Volumes locais (nao deve nem entrar no build) ────────────────────────────
+pgdata/
+grafana-data/
+
+# ── DB scripts auxiliares (DBA*.sql sao manuais, nao runtime) ────────────────
+DBA*.sql
+seed_test_data.sql
+
+# ── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini

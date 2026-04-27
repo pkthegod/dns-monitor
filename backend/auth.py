@@ -161,17 +161,38 @@ def _record_action(key: str) -> None:
 ADMIN_USER = os.environ.get("ADMIN_USER", "")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
+_MIN_SECRET_BYTES = 32  # alinhado com o aviso historico ("pelo menos 32 chars")
+
+
 def _load_secret(env_name: str, context: str) -> bytes:
-    """Carrega secret do env. Se vazio, gera aleatorio (warn: sessions invalidam no restart)."""
+    """Carrega secret do env.
+
+    SEC: minimo 32 bytes (256 bits) — abaixo disso o espaço de busca pra brute
+    force fica viavel. Em producao (INFRA_VISION_ENV=production) faz hard-fail
+    se faltando ou abaixo do minimo. Em dev/test, gera aleatorio com warning
+    (sessoes invalidam no restart, comportamento aceitavel pra desenvolvimento).
+    """
     val = os.environ.get(env_name, "").encode()
-    if val and len(val) >= 16:
+    is_prod = os.environ.get("INFRA_VISION_ENV", "").lower() == "production"
+
+    if val and len(val) >= _MIN_SECRET_BYTES:
         return val
+
+    if is_prod:
+        # Falha-fechada em producao — refuse to start sem secret valido
+        raise RuntimeError(
+            f"{env_name} ausente ou menor que {_MIN_SECRET_BYTES} bytes. "
+            f"Em INFRA_VISION_ENV=production, secret valido e obrigatorio. "
+            f"Gere com: `python -c \"import secrets; print(secrets.token_urlsafe(48))\"`"
+        )
+
     import logging as _log
     _log.getLogger("infra-vision.auth").warning(
-        "%s nao configurado ou muito curto — gerando aleatorio (sessions invalidam no restart). "
-        "Configure %s com pelo menos 32 chars para persistencia.", env_name, env_name
+        "%s ausente ou menor que %d bytes — gerando aleatorio (sessions invalidam no restart). "
+        "Em producao, configure INFRA_VISION_ENV=production e %s >= %d bytes.",
+        env_name, _MIN_SECRET_BYTES, env_name, _MIN_SECRET_BYTES,
     )
-    return secrets.token_bytes(32)
+    return secrets.token_bytes(_MIN_SECRET_BYTES)
 
 _ADMIN_SECRET  = _load_secret("ADMIN_SESSION_SECRET", "admin")
 _CLIENT_SECRET = _load_secret("CLIENT_SESSION_SECRET", "client")
@@ -197,7 +218,12 @@ def _sign_admin_cookie(username: str, role: str = "admin") -> str:
 def _verify_admin_cookie(cookie: str) -> Optional[dict]:
     """Verifica cookie admin. Tenta secret atual e anterior (rotacao).
     Retorna {"username": ..., "role": ...} ou None.
-    Backward-compat: cookies antigos (username:nonce) sao tratados como role='admin'."""
+
+    SEC: formato exigido e `username:role:nonce.signature` (3 partes). Cookies
+    legados de 1-2 partes (sem role explicito) sao REJEITADOS — antes eram
+    tratados como role='admin' por compat, o que era surface de privilege
+    escalation se atacante conseguisse forjar payload por outro canal.
+    """
     if not cookie or "." not in cookie:
         return None
     payload, sig = cookie.rsplit(".", 1)
@@ -207,12 +233,10 @@ def _verify_admin_cookie(cookie: str) -> Optional[dict]:
         expected = hmac.new(secret, payload.encode(), hashlib.sha256).hexdigest()
         if hmac.compare_digest(sig, expected):
             parts = payload.split(":")
-            if len(parts) >= 3:
+            # Formato canonico: username:role:nonce
+            if len(parts) >= 3 and parts[1] in ("admin", "viewer"):
                 return {"username": parts[0], "role": parts[1]}
-            elif len(parts) == 2:
-                return {"username": parts[0], "role": "admin"}
-            elif len(parts) == 1:
-                return {"username": parts[0], "role": "admin"}
+            # Formato legado rejeitado — forca re-login com role explicito
             return None
     return None
 

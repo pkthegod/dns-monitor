@@ -84,7 +84,16 @@ async def update_client_endpoint(client_id: int, request: Request) -> JSONRespon
     if "email" in body:
         fields["email"] = body["email"].strip() or None
     if "webhook_url" in body:
-        fields["webhook_url"] = body["webhook_url"].strip() or None
+        wh = (body["webhook_url"] or "").strip() or None
+        if wh:
+            from webhooks import is_safe_webhook_url
+            safe, reason = is_safe_webhook_url(wh)
+            if not safe:
+                return JSONResponse(
+                    {"error": f"webhook_url rejeitada: {reason}"},
+                    status_code=422,
+                )
+        fields["webhook_url"] = wh
     ok = await db.update_client(client_id, **fields)
     if not ok:
         raise HTTPException(status_code=404, detail="Cliente nao encontrado")
@@ -221,7 +230,9 @@ async def client_dns_trace(request: Request) -> JSONResponse:
 
     body = await request.json()
     domain = (body.get("domain") or "google.com").strip().lower().rstrip(".")
-    if not _re.match(r'^[a-zA-Z0-9._-]+$', domain) or len(domain) > 253:
+    # SEC: primeiro char deve ser alfanumerico — impede `domain="-version"` que
+    # interpretaria como flag pro `dig` no agente (defense in depth).
+    if not _re.match(r'^[a-zA-Z0-9][a-zA-Z0-9._-]*$', domain) or len(domain) > 253:
         return JSONResponse({"error": "Dominio invalido"}, status_code=422)
 
     hostnames = user["hostnames"]
