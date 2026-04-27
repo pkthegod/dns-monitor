@@ -51,7 +51,7 @@ from auth import (  # noqa: F401
 from routes_client import (  # noqa: F401
     client_v1,
     client_login_page, client_login_post, client_logout, client_portal,
-    client_data, client_dns_test, client_report,
+    client_data, client_dns_test, client_dns_trace, client_report,
     list_clients_endpoint, create_client_endpoint,
     update_client_endpoint, delete_client_endpoint,
     list_client_reports, download_client_report,
@@ -471,8 +471,9 @@ class APIRateLimitMiddleware(BaseHTTPMiddleware):
     LIMITS = {
         "/api/v1/speedtest": (5, 300),       # 5 req / 5min (scans sao pesados)
         "/api/v1/metrics": (30, 60),          # 30 req/min (agentes enviam a cada 5min)
-        "/api/v1/commands": (30, 60),         # 30 req/min
+        "/api/v1/commands": (90, 60),         # 90 req/min (1 dns-test = 30 polls/min)
         "/api/v1/session/token": (10, 60),    # 10 req/min
+        "/api/v1/client": (180, 60),          # 180 req/min (portal: data + report + tests; cooldown per-user ja protege)
         "/admin/login": (5, 900),             # 5 tentativas / 15min
         "/client/login": (5, 900),            # 5 tentativas / 15min
         "/api/": (120, 60),                   # 120 req/min (default API)
@@ -489,6 +490,12 @@ class APIRateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         ip = request.client.host if request.client else "unknown"
+
+        # Whitelisted IPs skip rate limiting (same list as security module)
+        import security
+        if ip in security._WHITELIST or not security.SECURITY_ENABLED:
+            return await call_next(request)
+
         path = request.url.path
         limit, window = self._get_limit(path)
 
@@ -623,8 +630,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "base-uri 'self'; "
             "form-action 'self'"
         )
-        if request.url.path.startswith("/api/"):
-            response.headers["Cache-Control"] = "no-store, private"
+        if request.url.path.startswith("/api/") or "text/html" in response.headers.get("content-type", ""):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
         return response
 
 def _html_with_nonce(html: str, nonce: str) -> str:
@@ -1108,6 +1115,22 @@ async def list_blocked_ips() -> JSONResponse:
     """Lista IPs bloqueados pelo security monitor."""
     import security
     return JSONResponse(security.get_blocked_ips())
+
+
+@v1.delete("/security/blocked", tags=["tools"], dependencies=[Depends(require_admin)])
+async def unblock_all_ips() -> JSONResponse:
+    """Desbloqueia todos os IPs."""
+    import security
+    count = security.unblock_all()
+    return JSONResponse({"unblocked": count})
+
+
+@v1.delete("/security/blocked/{ip}", tags=["tools"], dependencies=[Depends(require_admin)])
+async def unblock_ip(ip: str) -> JSONResponse:
+    """Desbloqueia um IP especifico."""
+    import security
+    found = security.unblock_ip(ip)
+    return JSONResponse({"ip": ip, "was_blocked": found})
 
 
 @v1.get("/commands/history", tags=["commands"])

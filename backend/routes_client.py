@@ -2,6 +2,7 @@
 routes_client.py — Endpoints do portal do cliente e CRUD de clientes (admin).
 """
 
+import json
 import logging
 import pathlib
 import re as _re
@@ -194,6 +195,48 @@ async def client_dns_test(request: Request) -> JSONResponse:
     _record_action(rate_key)
     await db.audit("client:" + client_user, "dns_test", hostname, ip=ip)
     return JSONResponse({"id": cmd_id, "hostname": hostname, "status": "testing"})
+
+
+@client_v1.post("/client/dns-trace")
+async def client_dns_trace(request: Request) -> JSONResponse:
+    """DNS Trace + DIG sob demanda — cliente fornece dominio. Rate: 1/min."""
+    cookie = request.cookies.get("client_session", "")
+    client_user = _verify_client_cookie(cookie)
+    if not client_user:
+        raise HTTPException(status_code=403, detail="Acesso negado")
+    user = await db.get_client(client_user)
+    if not user or not user["active"]:
+        raise HTTPException(status_code=403)
+
+    ip = request.client.host if request.client else "unknown"
+    rate_key = f"dnstrace:{client_user}"
+    if _check_cooldown(rate_key, 60):
+        return JSONResponse({"error": "Aguarde 1 minuto entre testes"}, status_code=429)
+
+    body = await request.json()
+    domain = (body.get("domain") or "google.com").strip().lower().rstrip(".")
+    if not _re.match(r'^[a-zA-Z0-9._-]+$', domain) or len(domain) > 253:
+        return JSONResponse({"error": "Dominio invalido"}, status_code=422)
+
+    hostnames = user["hostnames"]
+    if not hostnames:
+        return JSONResponse({"error": "Nenhum host associado"}, status_code=404)
+
+    hostname = hostnames[0]
+    params = json.dumps({"script": "dig_trace", "domain": domain, "resolver": "127.0.0.1"})
+    try:
+        cmd_id = await db.insert_command(hostname, "run_script", "client:" + client_user, None, 1, params)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
+
+    if nc and nc.is_connected():
+        await nc.js_publish(f"dns.commands.{hostname}", {
+            "id": cmd_id, "command": "run_script", "params": params,
+        })
+
+    _record_action(rate_key)
+    await db.audit("client:" + client_user, "dns_trace", hostname, ip=ip, detail=domain)
+    return JSONResponse({"id": cmd_id, "hostname": hostname, "domain": domain, "status": "testing"})
 
 
 @client_v1.get("/client/report")

@@ -1,13 +1,24 @@
 """
 security.py — Deteccao de anomalias, rate abuse e alertas de seguranca.
 Monitora padroes suspeitos e alerta via Telegram.
+
+Controle via env:
+  SECURITY_ENABLED=false   -> desabilita toda deteccao (dev)
+  SECURITY_WHITELIST=ip1,ip2 -> IPs que nunca sao bloqueados
 """
 
 import logging
+import os
 import time
 from collections import defaultdict
 
 logger = logging.getLogger("infra-vision.security")
+
+# ---------------------------------------------------------------------------
+# Feature toggle
+# ---------------------------------------------------------------------------
+SECURITY_ENABLED = os.environ.get("SECURITY_ENABLED", "true").lower() in ("true", "1", "yes")
+_WHITELIST = {ip.strip() for ip in os.environ.get("SECURITY_WHITELIST", "").split(",") if ip.strip()}
 
 # ---------------------------------------------------------------------------
 # Contadores de eventos por IP (janela deslizante)
@@ -35,12 +46,26 @@ def record_event(ip: str, event_type: str) -> None:
 
 def is_blocked(ip: str) -> bool:
     """Retorna True se IP esta bloqueado."""
+    if not SECURITY_ENABLED or ip in _WHITELIST:
+        return False
     blocked_until = _blocked_ips.get(ip, 0)
     if time.time() < blocked_until:
         return True
     if blocked_until:
         del _blocked_ips[ip]
     return False
+
+
+def unblock_ip(ip: str) -> bool:
+    """Remove bloqueio de um IP. Retorna True se estava bloqueado."""
+    return _blocked_ips.pop(ip, None) is not None
+
+
+def unblock_all() -> int:
+    """Remove todos os bloqueios. Retorna quantidade desbloqueada."""
+    count = len(_blocked_ips)
+    _blocked_ips.clear()
+    return count
 
 
 def _block_ip(ip: str, reason: str) -> None:
@@ -59,17 +84,25 @@ def _should_alert(key: str) -> bool:
     return True
 
 
+_LOGIN_PATHS = {"/admin/login", "/client/login", "/api/v1/client/login"}
+
+
 async def analyze_request(ip: str, path: str, status_code: int, method: str) -> dict | None:
     """
     Analisa request para detectar anomalias. Retorna dict com detalhes se detectado.
     Chamado pelo middleware apos cada response.
     """
+    if not SECURITY_ENABLED:
+        return None
+
     now = time.time()
 
     # Classifica o evento
     if status_code == 404:
         record_event(ip, "404")
-    elif status_code in (401, 403):
+    elif status_code in (401, 403) and path in _LOGIN_PATHS and method == "POST":
+        # So conta como brute force em tentativas de login real,
+        # nao em API calls com sessao expirada (evita falso positivo)
         record_event(ip, "auth_fail")
     elif status_code == 429:
         record_event(ip, "rate_limited")
@@ -115,6 +148,8 @@ HONEYPOT_PATHS = {
 
 def is_honeypot_hit(path: str) -> bool:
     """Retorna True se path e um honeypot (scanner/bot)."""
+    if not SECURITY_ENABLED:
+        return False
     path_lower = path.lower().split("?")[0]
     return path_lower in HONEYPOT_PATHS
 

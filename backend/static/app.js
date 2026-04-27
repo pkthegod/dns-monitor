@@ -32,6 +32,7 @@ function whoami() { return _whoami; }
 function isAdmin() { return _whoami?.kind === 'admin' && _whoami?.role === 'admin'; }
 function isViewer() { return _whoami?.kind === 'admin' && _whoami?.role === 'viewer'; }
 function canWrite() { return isAdmin(); }
+function token() { return _whoami; }
 
 // ── API fetch ──
 async function apiFetch(path, opts = {}) {
