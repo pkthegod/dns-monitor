@@ -174,8 +174,11 @@ async def client_dns_test(request: Request) -> JSONResponse:
 
     ip = request.client.host if request.client else "unknown"
     rate_key = f"dnstest:{client_user}"
-    if _check_cooldown(rate_key, 60):
-        return JSONResponse({"error": "Aguarde 1 minuto entre testes"}, status_code=429)
+    if _check_cooldown(rate_key, 30):
+        return JSONResponse(
+            {"error": "Aguarde 30 segundos entre testes", "retry_after": 30},
+            status_code=429,
+        )
 
     hostnames = user["hostnames"]
     if not hostnames:
@@ -210,8 +213,11 @@ async def client_dns_trace(request: Request) -> JSONResponse:
 
     ip = request.client.host if request.client else "unknown"
     rate_key = f"dnstrace:{client_user}"
-    if _check_cooldown(rate_key, 60):
-        return JSONResponse({"error": "Aguarde 1 minuto entre testes"}, status_code=429)
+    if _check_cooldown(rate_key, 30):
+        return JSONResponse(
+            {"error": "Aguarde 30 segundos entre testes", "retry_after": 30},
+            status_code=429,
+        )
 
     body = await request.json()
     domain = (body.get("domain") or "google.com").strip().lower().rstrip(".")

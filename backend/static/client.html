@@ -873,6 +873,22 @@ function downloadDnsResultPdf() {
   doc.save(fname);
 }
 
+// Renderiza um countdown amigavel quando o backend devolve 429.
+// element: span onde escrever; secs: segundos iniciais; afterMsg: texto ao zerar.
+function _showCooldown(element, secs, afterMsg) {
+  let remaining = Math.max(1, parseInt(secs) || 30);
+  const tick = () => {
+    if (remaining <= 0) {
+      element.innerHTML = afterMsg ? `<span style="color:var(--text-dim)">${esc(afterMsg)}</span>` : '';
+      return;
+    }
+    element.innerHTML = `<span style="color:var(--yellow)">${ICONS.warning} Aguarde ${remaining}s para testar novamente</span>`;
+    remaining -= 1;
+    setTimeout(tick, 1000);
+  };
+  tick();
+}
+
 async function runDnsTest() {
   const btn = document.getElementById('btnTestDns');
   const res = document.getElementById('testResult');
@@ -883,43 +899,50 @@ async function runDnsTest() {
   renderDnsResult({ status: 'pending', hostname: '...', result: null });
   openDnsResult();
 
+  let r;
   try {
-    const r = await apiFetch('/client/dns-test', {method:'POST'});
-    renderDnsResult({ status: 'pending', hostname: r.hostname, result: 'Comando enviado. Aguardando agente executar...' });
-    res.innerHTML = ICONS.loading + ` Aguardando ${esc(r.hostname)}...`;
-
-    let attempts = 0;
-    const poll = setInterval(async () => {
-      attempts++;
-      try {
-        const cmd = await apiFetch(`/commands/${r.id}/status`);
-        if (cmd.status === 'done') {
-          clearInterval(poll);
-          btnLoading(btn, false);
-          res.innerHTML = '<span style="color:var(--green)">' + ICONS.success + ' Teste concluido</span>';
-          renderDnsResult(cmd);
-          loadPortal();
-        } else if (cmd.status === 'failed') {
-          clearInterval(poll);
-          btnLoading(btn, false);
-          res.innerHTML = '<span style="color:var(--red)">' + ICONS.error + ' Falha</span>';
-          renderDnsResult(cmd);
-        } else {
-          renderDnsResult({ ...cmd, result: cmd.result || 'Aguardando agente executar... (' + attempts * 2 + 's)' });
-        }
-      } catch(_) {}
-      if (attempts > 30) {
-        clearInterval(poll);
-        btnLoading(btn, false);
-        res.textContent = 'Timeout';
-        renderDnsResult({ status: 'failed', hostname: r.hostname, result: 'Timeout — agente nao respondeu em 60s. Verifique se o agente esta online.' });
-      }
-    }, 2000);
+    r = await apiFetch('/client/dns-test', {method:'POST'});
   } catch(e) {
     btnLoading(btn, false);
-    res.innerHTML = '<span style="color:var(--red)">' + esc(e.message) + '</span>';
-    renderDnsResult({ status: 'failed', hostname: '?', result: e.message });
+    closeDnsResult();
+    if (e.status === 429) {
+      _showCooldown(res, e.body?.retry_after || 30, 'Pronto — pode testar novamente.');
+    } else {
+      res.innerHTML = '<span style="color:var(--red)">' + esc(e.message) + '</span>';
+    }
+    return;
   }
+
+  renderDnsResult({ status: 'pending', hostname: r.hostname, result: 'Comando enviado. Aguardando agente executar...' });
+  res.innerHTML = ICONS.loading + ` Aguardando ${esc(r.hostname)}...`;
+
+  let attempts = 0;
+  const poll = setInterval(async () => {
+    attempts++;
+    try {
+      const cmd = await apiFetch(`/commands/${r.id}/status`);
+      if (cmd.status === 'done') {
+        clearInterval(poll);
+        btnLoading(btn, false);
+        res.innerHTML = '<span style="color:var(--green)">' + ICONS.success + ' Teste concluido</span>';
+        renderDnsResult(cmd);
+        loadPortal();
+      } else if (cmd.status === 'failed') {
+        clearInterval(poll);
+        btnLoading(btn, false);
+        res.innerHTML = '<span style="color:var(--red)">' + ICONS.error + ' Falha</span>';
+        renderDnsResult(cmd);
+      } else {
+        renderDnsResult({ ...cmd, result: cmd.result || 'Aguardando agente executar... (' + attempts * 2 + 's)' });
+      }
+    } catch(_) {}
+    if (attempts > 30) {
+      clearInterval(poll);
+      btnLoading(btn, false);
+      res.textContent = 'Timeout';
+      renderDnsResult({ status: 'failed', hostname: r.hostname, result: 'Timeout — agente nao respondeu em 60s. Verifique se o agente esta online.' });
+    }
+  }, 2000);
 }
 
 // Period filter
@@ -991,7 +1014,7 @@ function renderTraceResult(cmd) {
     const qOk = q.status === 'NOERROR';
     const qColor = qOk ? 'var(--green)' : 'var(--red)';
     html += `<div class="trace-section-block">
-      <div class="trace-block-title">Consulta Direta
+      <div class="trace-block-title">DIG — Resposta Direta
         <span class="trace-badge" style="background:${qColor}18;color:${qColor};border-color:${qColor}40">${esc(q.status || '?')}</span>
         ${q.latency_ms != null ? `<span class="trace-badge">${q.latency_ms}ms</span>` : ''}
       </div>`;
@@ -1052,49 +1075,55 @@ async function runDnsTrace() {
 
   document.getElementById('traceDomain').textContent = domain;
   renderTraceResult({ status: 'pending' });
-  openTraceResult();
 
+  let r;
   try {
-    const r = await apiFetch('/client/dns-trace', {
+    r = await apiFetch('/client/dns-trace', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ domain }),
     });
-    if (r.error) throw new Error(r.error);
-
-    res.innerHTML = ICONS.loading + ` Aguardando ${esc(r.hostname)}...`;
-
-    let attempts = 0;
-    const poll = setInterval(async () => {
-      attempts++;
-      try {
-        const cmd = await apiFetch(`/commands/${r.id}/status`);
-        if (cmd.status === 'done') {
-          clearInterval(poll);
-          btnLoading(btn, false);
-          res.innerHTML = '<span style="color:var(--green)">' + ICONS.success + ' Concluido</span>';
-          renderTraceResult(cmd);
-        } else if (cmd.status === 'failed') {
-          clearInterval(poll);
-          btnLoading(btn, false);
-          res.innerHTML = '<span style="color:var(--red)">' + ICONS.error + ' Falha</span>';
-          renderTraceResult(cmd);
-        } else {
-          renderTraceResult({ status: 'pending' });
-        }
-      } catch(_) {}
-      if (attempts > 50) {
-        clearInterval(poll);
-        btnLoading(btn, false);
-        res.textContent = 'Timeout';
-        renderTraceResult({ status: 'failed', result: JSON.stringify({ error_count: 1, summary: 'Timeout — agente nao respondeu em 100s. Verifique se o agente esta online.' }) });
-      }
-    }, 2000);
   } catch(e) {
     btnLoading(btn, false);
+    if (e.status === 429) {
+      _showCooldown(res, e.body?.retry_after || 30, 'Pronto — pode testar novamente.');
+      return;
+    }
     res.innerHTML = '<span style="color:var(--red)">' + esc(e.message) + '</span>';
+    openTraceResult();
     renderTraceResult({ status: 'failed', result: JSON.stringify({ error_count: 1, summary: e.message }) });
+    return;
   }
+
+  openTraceResult();
+  res.innerHTML = ICONS.loading + ` Aguardando ${esc(r.hostname)}...`;
+
+  let attempts = 0;
+  const poll = setInterval(async () => {
+    attempts++;
+    try {
+      const cmd = await apiFetch(`/commands/${r.id}/status`);
+      if (cmd.status === 'done') {
+        clearInterval(poll);
+        btnLoading(btn, false);
+        res.innerHTML = '<span style="color:var(--green)">' + ICONS.success + ' Concluido</span>';
+        renderTraceResult(cmd);
+      } else if (cmd.status === 'failed') {
+        clearInterval(poll);
+        btnLoading(btn, false);
+        res.innerHTML = '<span style="color:var(--red)">' + ICONS.error + ' Falha</span>';
+        renderTraceResult(cmd);
+      } else {
+        renderTraceResult({ status: 'pending' });
+      }
+    } catch(_) {}
+    if (attempts > 50) {
+      clearInterval(poll);
+      btnLoading(btn, false);
+      res.textContent = 'Timeout';
+      renderTraceResult({ status: 'failed', result: JSON.stringify({ error_count: 1, summary: 'Timeout — agente nao respondeu em 100s. Verifique se o agente esta online.' }) });
+    }
+  }, 2000);
 }
 
 // Allow Enter key in trace input

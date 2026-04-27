@@ -40,16 +40,23 @@ async function apiFetch(path, opts = {}) {
   const resp = await fetch(API_BASE + path, { ...opts, headers, credentials: 'same-origin' });
   if (!resp.ok) {
     let detail = resp.status + ' ' + resp.statusText;
-    try { const body = await resp.json(); if (body.detail) detail = body.detail; } catch (_) {}
-    throw new ApiError(detail, resp.status);
+    let extra = {};
+    try {
+      const body = await resp.json();
+      // FastAPI usa 'detail'; nossos endpoints usam 'error'. Aceita ambos.
+      detail = body.detail || body.error || detail;
+      extra = body;
+    } catch (_) {}
+    throw new ApiError(detail, resp.status, extra);
   }
   return resp.json();
 }
 
 class ApiError extends Error {
-  constructor(message, status) {
+  constructor(message, status, body) {
     super(message);
     this.status = status;
+    this.body = body || {};
   }
 }
 
