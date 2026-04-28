@@ -51,7 +51,7 @@ CONFIG_PATHS = [
 ]
 
 
-AGENT_VERSION = "1.5.2"
+AGENT_VERSION = "1.5.3"
 
 
 # ---------------------------------------------------------------------------
@@ -1697,7 +1697,9 @@ def _stats_parse_bind_text(text: str) -> dict:
     last = parts[-1] if len(parts) > 1 else text
 
     def _grep_int(pattern: str) -> int:
-        m = re.search(rf'^\s*(\d+)\s+{pattern}\s*$', last, re.MULTILINE)
+        # SEC: pattern e englobado em (?:...) — sem isso, '|' interno escapava
+        # do contexto e o capture (\d+) so casava na primeira alternativa.
+        m = re.search(rf'^\s*(\d+)\s+(?:{pattern})\s*$', last, re.MULTILINE)
         return int(m.group(1)) if m else 0
 
     rcode_patterns = {
