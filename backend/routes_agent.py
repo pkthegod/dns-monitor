@@ -440,8 +440,15 @@ async def receive_dns_stats(hostname: str, request: Request) -> JSONResponse:
 
 @agent_v1.get("/agent/version", tags=["agents"])
 async def agent_version_info(request: Request) -> JSONResponse:
+    """Versao+checksum do agente servido em /agent/latest.
+
+    SEC: aceita admin cookie OU Bearer (require_admin). Painel admin precisa
+    saber a versao remota pra mostrar badges de "desatualizado" na tabela
+    de agentes; agente usa Bearer pro check de auto-update. Endpoint nao
+    expoe nada sensivel — so version, checksum, tamanho do arquivo.
+    """
     import main as _m
-    await _m.require_token(request)
+    await _m.require_admin(request)
     if not _m.AGENT_FILE_PATH.exists():
         raise HTTPException(status_code=404, detail="Arquivo do agente nao encontrado no servidor")
     content = _m.AGENT_FILE_PATH.read_text(encoding="utf-8")

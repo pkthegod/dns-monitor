@@ -10,7 +10,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;600;700&display=swap" rel="stylesheet">
 <script src="/static/theme.js?v=091"></script>
 <link rel="stylesheet" href="/static/base.css?v=102">
-<link rel="stylesheet" href="/static/admin.css?v=102">
+<link rel="stylesheet" href="/static/admin.css?v=103">
 <style>
   /* RBAC: esconde elementos mutativos para viewers */
   .role-viewer .admin-only { display: none !important; }
@@ -411,14 +411,18 @@
 
   function versionCell(agentVer) {
     if (!agentVer) return '<span class="dim">—</span>';
-    if (!serverVersion) return `<span class="version-badge version-unknown">${esc(agentVer)}</span>`;
+    // serverVersion ainda nao carregou (ou /agent/version falhou): badge amarelo
+    // com "?" pra deixar visivel que falta info — antes ficava cinza silencioso.
+    if (!serverVersion) {
+      return `<span class="version-badge version-old-minor" title="Servidor nao respondeu /agent/version — abra DevTools console pra detalhes">${esc(agentVer)} ?</span>`;
+    }
     const diff = _semverDiff(agentVer, serverVersion);
     if (diff === 'equal') return `<span class="version-badge version-ok">${esc(agentVer)}</span>`;
     if (diff === 'ahead') return `<span class="version-badge version-ahead" title="Agente esta a frente do servidor (server: ${esc(serverVersion)})">${esc(agentVer)} ↑dev</span>`;
     if (diff === 'unknown') return `<span class="version-badge version-unknown">${esc(agentVer)}</span>`;
     const cls = diff === 'major' ? 'version-old-major' : diff === 'minor' ? 'version-old-minor' : 'version-old-patch';
-    const label = diff === 'major' ? 'BREAKING' : diff.toUpperCase();
-    return `<span class="version-badge ${cls}" title="${label} atras. Servidor: ${esc(serverVersion)}">${esc(agentVer)} → ${esc(serverVersion)}</span>`;
+    const label = diff === 'major' ? 'BREAKING' : diff === 'minor' ? 'UPDATE' : 'PATCH';
+    return `<span class="version-badge ${cls}" title="${label} disponivel. Servidor: ${esc(serverVersion)}. Clique Update no menu do agente.">${esc(agentVer)} → ${esc(serverVersion)}</span>`;
   }
 
   function refreshOutdatedBadge() {
@@ -814,7 +818,14 @@
     try {
       const data = await apiFetch('/agent/version');
       serverVersion = data.version || null;
-    } catch (_) { serverVersion = null; }
+      if (!serverVersion) {
+        console.warn('[infra-vision] /agent/version sem campo version no response');
+      }
+    } catch (e) {
+      serverVersion = null;
+      console.warn('[infra-vision] /agent/version falhou:', e?.message || e,
+        '— badges de versao ficarao em modo "?" ate restaurar.');
+    }
     // Race-fix: fetchServerVersion roda em paralelo com loadAgents via Promise.all.
     // Se a tabela ja foi renderizada com serverVersion=null, todos badges ficam
     // 'version-unknown' (cinza) ate o proximo refresh. Forca re-render aqui.

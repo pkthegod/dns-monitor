@@ -1963,7 +1963,7 @@ class TestAgentVersionEndpoint:
 
         async def run():
             req = MagicMock()
-            with patch("main.require_token", AsyncMock(return_value=None)), \
+            with patch("main.require_admin", AsyncMock(return_value={"username": "admin", "role": "admin"})), \
                  patch("main.AGENT_FILE_PATH", self._make_fake_path(True, fake_content)):
                 resp = await m.agent_version_info(req)
             return resp
@@ -1982,7 +1982,7 @@ class TestAgentVersionEndpoint:
 
         async def run():
             req = MagicMock()
-            with patch("main.require_token", AsyncMock(return_value=None)), \
+            with patch("main.require_admin", AsyncMock(return_value={"username": "admin", "role": "admin"})), \
                  patch("main.AGENT_FILE_PATH", self._make_fake_path(True, "# no version here")):
                 resp = await m.agent_version_info(req)
             return resp
@@ -2000,7 +2000,7 @@ class TestAgentVersionEndpoint:
 
         async def run():
             req = MagicMock()
-            with patch("main.require_token", AsyncMock(return_value=None)), \
+            with patch("main.require_admin", AsyncMock(return_value={"username": "admin", "role": "admin"})), \
                  patch("main.AGENT_FILE_PATH", self._make_fake_path(False)):
                 with pytest.raises(HTTPException) as exc:
                     await m.agent_version_info(req)
