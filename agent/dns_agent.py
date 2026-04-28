@@ -51,7 +51,7 @@ CONFIG_PATHS = [
 ]
 
 
-AGENT_VERSION = "1.5.3"
+AGENT_VERSION = "1.5.4"
 
 
 # ---------------------------------------------------------------------------
@@ -2204,16 +2204,77 @@ def _start_nats(cfg: Config, logger: logging.Logger) -> bool:
 # Entrypoint
 # ---------------------------------------------------------------------------
 
+def _self_check_environment(logger: logging.Logger) -> None:
+    """Valida pre-requisitos no startup com mensagens acionaveis.
+
+    Erros NAO crasham o agente — apenas loga ERROR/WARNING claro pra que
+    o operador veja exatamente o que falta sem ter que decifrar mensagens
+    cripticas tipo 'Errno 13' ou 'Errno 30' depois quando o Update falhar.
+
+    Foco em problemas operacionais recorrentes que mordem em deploys novos:
+      - INSTALL_DIR sem write (auto-update falha com EROFS/EACCES)
+      - STATE_DIR sem write (dns_stats nunca publica delta)
+      - LOG_DIR sem write (logs perdidos)
+      - Binarios DNS ausentes (rndc, unbound-control, dig)
+    """
+    import os as _os
+
+    install_dir = "/opt/dns-agent"
+    state_dir = "/var/lib/dns-agent"
+    log_dir = "/var/log/dns-agent"
+
+    # 1. Diretorios writable — sem isso, auto-update + dns_stats falham
+    fail_count = 0
+    for path in (install_dir, state_dir, log_dir):
+        if not _os.path.isdir(path):
+            logger.error(
+                "SELF-CHECK FAIL: diretorio %s nao existe. "
+                "Rode no host: mkdir -p %s && chown dns-agent:dns-agent %s",
+                path, path, path,
+            )
+            fail_count += 1
+            continue
+        if not _os.access(path, _os.W_OK):
+            logger.error(
+                "SELF-CHECK FAIL: %s sem write pro user dns-agent. "
+                "Causa provavel: dono root e systemd ProtectSystem bloqueia. Fix:\n"
+                "  chown -R dns-agent:dns-agent %s\n"
+                "  Garante que ReadWritePaths em /etc/systemd/system/dns_agent.service "
+                "inclua %s; depois: systemctl daemon-reload && systemctl restart dns_agent",
+                path, path, path,
+            )
+            fail_count += 1
+
+    if fail_count == 0:
+        logger.info("SELF-CHECK: diretorios OK (%s, %s, %s)", install_dir, state_dir, log_dir)
+    else:
+        logger.error(
+            "SELF-CHECK: %d problema(s) acima IMPEDEM auto-update e/ou dns_stats. "
+            "Corrija antes de operar produtivamente.", fail_count,
+        )
+
+    # 2. Binarios opcionais — warning so se faltar (alguns hosts podem nao ter)
+    for bin_name, hint in (
+        ("dig", "instale: apt install dnsutils"),
+        ("systemctl", "necessario pra detectar servico DNS"),
+        ("rndc", "necessario pra dns_stats em Bind9 — instale com bind9-utils"),
+        ("unbound-control", "necessario pra dns_stats em Unbound"),
+    ):
+        if not shutil.which(bin_name):
+            logger.warning("SELF-CHECK: binario '%s' ausente — %s", bin_name, hint)
+
+
 def main() -> None:
     cfg    = load_config()
     logger = setup_logging(cfg)
 
     hostname = cfg.get("agent", "hostname", fallback=socket.gethostname())
-    logger.info("DNS Agent iniciando — host=%s", hostname)
+    logger.info("DNS Agent iniciando — host=%s versao=%s", hostname, AGENT_VERSION)
 
-    # Verifica dependências de sistema
-    if not shutil.which("systemctl"):
-        logger.warning("systemctl não encontrado — detecção de serviço DNS limitada")
+    # Self-check de ambiente — diagnostica problemas recorrentes (write em /opt,
+    # /var/lib, etc) com mensagens claras e comandos de fix antes que o
+    # operador descubra via "Update FALHOU [Errno X]" no painel.
+    _self_check_environment(logger)
 
     # Roda um ciclo completo imediatamente na inicialização
     run_full_check(cfg, logger)
