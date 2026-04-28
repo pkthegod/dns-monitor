@@ -25,7 +25,12 @@ RestartSec=10s
 # NoNewPrivileges desabilitado — o agente precisa de sudo para controlar serviços DNS
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/var/log/dns-agent /run/sudo
+# /opt/dns-agent precisa ser writable pra o auto-update funcionar:
+# o agent escreve dns_agent.py.update_tmp ao lado do binário antes do rename atômico.
+# Sem isso, "Update" no painel falha com [Errno 30] Read-only file system.
+# Trade-off aceitável: backend autentica via Bearer + checksum SHA-256 validado +
+# py_compile antes de gravar. Atacante com root local já tem acesso de qualquer jeito.
+ReadWritePaths=/var/log/dns-agent /run/sudo /opt/dns-agent
 
 # Logs vão para journald automaticamente
 StandardOutput=journal
