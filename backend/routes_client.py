@@ -325,6 +325,14 @@ async def client_report(request: Request, month: str = "", format: str = "json")
     downtime_min = round(total_minutes * (1 - uptime_pct / 100))
     latency = dict(lat_stats) if lat_stats else {}
 
+    # DNS query stats agregadas no periodo (pode ser vazio se cliente em
+    # agente <1.5.0 ou se ainda nao passou o primeiro ciclo de coleta)
+    try:
+        dns_stats_summary = await db.get_dns_query_stats_summary(hostnames, start, end)
+    except Exception as exc:
+        logger.warning("get_dns_query_stats_summary erro pra %s: %s", client_user, exc)
+        dns_stats_summary = {}
+
     report_data = {
         "period": {"start": start.isoformat(), "end": end.isoformat()},
         "hostnames": hostnames,
@@ -335,6 +343,7 @@ async def client_report(request: Request, month: str = "", format: str = "json")
         "alerts_critical": critical,
         "heartbeats": hb_count,
         "expected_heartbeats": expected_hb,
+        "dns_stats": dns_stats_summary,
     }
 
     if format == "pdf":
@@ -422,6 +431,67 @@ def _build_report_pdf(data: dict, client_user: str) -> bytes:
             ("GRID", (0, 0), (-1, -1), 0.5, HexColor("#3b4261")),
         ]))
         elements.append(t2)
+        elements.append(Spacer(1, 6*mm))
+
+    # DNS Query Stats — RCODEs / QPS / cache (so se ha samples no periodo)
+    dns_stats = data.get("dns_stats") or {}
+    if dns_stats.get("samples", 0) > 0 and dns_stats.get("queries_total", 0) > 0:
+        elements.append(Paragraph("Movimento DNS (queries)", heading_style))
+        qt = int(dns_stats.get("queries_total") or 0)
+
+        def _pct(n):
+            return f"{(int(n or 0) / qt * 100):.2f}%" if qt > 0 else "0%"
+
+        ds_data = [
+            ["Total de queries", f"{qt:,}".replace(",", ".")],
+            ["QPS medio", f"{dns_stats.get('qps_avg', '—')} q/s"],
+            ["NOERROR (sucesso)", f"{int(dns_stats.get('noerror') or 0):,}".replace(",", ".") + f" ({_pct(dns_stats.get('noerror'))})"],
+            ["NXDOMAIN", f"{int(dns_stats.get('nxdomain') or 0):,}".replace(",", ".") + f" ({_pct(dns_stats.get('nxdomain'))})"],
+            ["SERVFAIL (falha)", f"{int(dns_stats.get('servfail') or 0):,}".replace(",", ".") + f" ({_pct(dns_stats.get('servfail'))})"],
+            ["REFUSED", f"{int(dns_stats.get('refused') or 0):,}".replace(",", ".") + f" ({_pct(dns_stats.get('refused'))})"],
+        ]
+        if dns_stats.get("cache_hit_pct") is not None:
+            ds_data.append(["Cache hit (Unbound)", f"{dns_stats.get('cache_hit_pct')}%"])
+
+        t_ds = Table(ds_data, colWidths=[55*mm, 80*mm])
+        t_ds.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (0, -1), HexColor("#1a1b26")),
+            ("TEXTCOLOR", (0, 0), (-1, -1), HexColor("#a9b1d6")),
+            ("FONTSIZE", (0, 0), (-1, -1), 10),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("GRID", (0, 0), (-1, -1), 0.5, HexColor("#3b4261")),
+        ]))
+        elements.append(t_ds)
+        elements.append(Spacer(1, 4*mm))
+
+        # Distribuicao de tipos
+        types_total = sum(int(dns_stats.get(k) or 0) for k in
+                          ("queries_a", "queries_aaaa", "queries_mx", "queries_ptr", "queries_other"))
+        if types_total > 0:
+            def _type_row(name, key):
+                n = int(dns_stats.get(key) or 0)
+                p = f"{(n / types_total * 100):.1f}%"
+                return [name, f"{n:,}".replace(",", "."), p]
+            type_data = [
+                ["Tipo", "Total", "%"],
+                _type_row("A",      "queries_a"),
+                _type_row("AAAA",   "queries_aaaa"),
+                _type_row("MX",     "queries_mx"),
+                _type_row("PTR",    "queries_ptr"),
+                _type_row("Outros", "queries_other"),
+            ]
+            t_types = Table(type_data, colWidths=[40*mm, 50*mm, 45*mm])
+            t_types.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), HexColor("#1a1b26")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), HexColor("#7aa2f7")),
+                ("TEXTCOLOR", (0, 1), (-1, -1), HexColor("#a9b1d6")),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("GRID", (0, 0), (-1, -1), 0.5, HexColor("#3b4261")),
+            ]))
+            elements.append(t_types)
         elements.append(Spacer(1, 6*mm))
 
     # Alertas
