@@ -7,7 +7,8 @@ Indice (use grep para navegar; numeros sao orientativos):
     Agents — upsert + heartbeat                        ──  L76-L122
     Metrics inserts — cpu/ram/disk/io                  ──  L123-L193
     DNS checks + service status                        ──  L194-L228
-    Alerts — insert / notified / resolve / queries     ──  L230-L416
+    DNS query stats — RCODEs/QPS via rndc/unbound      ──  L237-L390
+    Alerts — insert / notified / resolve / queries     ──  L391-L580
     Agent admin — meta update / delete / offline       ──  L268-L390
     # === Fingerprints ===                             ──  L418
     # === Commands ===                                 ──  L468
@@ -232,6 +233,173 @@ async def insert_dns_checks(hostname: str, ts: str, checks: list) -> None:
                 for c in checks
             ],
         )
+
+
+# ===========================================================================
+# DNS Query Stats — RCODEs/tipos/QPS/cache via rndc-stats e unbound-control
+# ===========================================================================
+
+async def insert_dns_query_stats(hostname: str, data: dict) -> None:
+    """Persiste 1 amostra de stats DNS. data vem do agente via NATS.
+
+    Chaves esperadas (todos os contadores sao deltas sobre period_seconds):
+      ts, period_seconds, source ('bind9'|'unbound'),
+      noerror, nxdomain, servfail, refused, notimpl, formerr, other_rcode,
+      queries_a, queries_aaaa, queries_mx, queries_ptr, queries_other,
+      queries_total, qps_avg,
+      cache_hits, cache_misses, cache_hit_pct  (NULL pra Bind)
+    """
+    ts = data.get("ts")
+    ts_dt = _parse_ts(ts) if ts else datetime.now(timezone.utc)
+    async with get_conn() as conn:
+        await conn.execute(
+            """
+            INSERT INTO dns_query_stats (
+                ts, hostname, period_seconds, source,
+                noerror, nxdomain, servfail, refused, notimpl, formerr, other_rcode,
+                queries_a, queries_aaaa, queries_mx, queries_ptr, queries_other,
+                queries_total, qps_avg,
+                cache_hits, cache_misses, cache_hit_pct
+            ) VALUES (
+                $1, $2, $3, $4,
+                $5, $6, $7, $8, $9, $10, $11,
+                $12, $13, $14, $15, $16,
+                $17, $18,
+                $19, $20, $21
+            )
+            """,
+            ts_dt, hostname,
+            int(data.get("period_seconds", 600)),
+            str(data.get("source", "unknown")),
+            int(data.get("noerror", 0)),
+            int(data.get("nxdomain", 0)),
+            int(data.get("servfail", 0)),
+            int(data.get("refused", 0)),
+            int(data.get("notimpl", 0)),
+            int(data.get("formerr", 0)),
+            int(data.get("other_rcode", 0)),
+            int(data.get("queries_a", 0)),
+            int(data.get("queries_aaaa", 0)),
+            int(data.get("queries_mx", 0)),
+            int(data.get("queries_ptr", 0)),
+            int(data.get("queries_other", 0)),
+            int(data.get("queries_total", 0)),
+            data.get("qps_avg"),
+            data.get("cache_hits"),
+            data.get("cache_misses"),
+            data.get("cache_hit_pct"),
+        )
+
+
+async def get_dns_query_stats(
+    hostname: Optional[str] = None,
+    hostnames: Optional[list[str]] = None,
+    period: str = "24h",
+) -> list[dict]:
+    """Retorna serie temporal de stats DNS.
+
+    Decide entre tabela raw (periodos curtos) e continuous aggregate
+    dns_stats_hourly (periodos longos) automaticamente. hostnames filtra
+    multi-tenant; hostname filtra um so. Sem nenhum dos dois = todos.
+    """
+    period_intervals = {
+        "1h": ("1 hour", "raw"),
+        "6h": ("6 hours", "raw"),
+        "24h": ("24 hours", "raw"),
+        "7d": ("7 days", "hourly"),
+        "30d": ("30 days", "hourly"),
+        "90d": ("90 days", "hourly"),
+    }
+    interval, source_tbl = period_intervals.get(period, ("24 hours", "raw"))
+
+    where_clauses = []
+    params: list = []
+    if hostname:
+        params.append(hostname)
+        where_clauses.append(f"hostname = ${len(params)}")
+    elif hostnames:
+        params.append(hostnames)
+        where_clauses.append(f"hostname = ANY(${len(params)})")
+    where_sql = (" AND " + " AND ".join(where_clauses)) if where_clauses else ""
+
+    if source_tbl == "raw":
+        sql = f"""
+            SELECT ts, hostname, source,
+                   noerror, nxdomain, servfail, refused, notimpl, formerr,
+                   queries_a, queries_aaaa, queries_mx, queries_ptr, queries_other,
+                   queries_total, qps_avg, cache_hit_pct
+            FROM dns_query_stats
+            WHERE ts > NOW() - INTERVAL '{interval}' {where_sql}
+            ORDER BY ts ASC
+        """
+    else:
+        sql = f"""
+            SELECT hour AS ts, hostname,
+                   noerror, nxdomain, servfail, refused, notimpl, formerr,
+                   queries_a, queries_aaaa, queries_mx, queries_ptr, queries_other,
+                   queries_total, qps_avg, cache_hit_pct
+            FROM dns_stats_hourly
+            WHERE hour > NOW() - INTERVAL '{interval}' {where_sql}
+            ORDER BY hour ASC
+        """
+    async with get_conn() as conn:
+        rows = await conn.fetch(sql, *params)
+    return [dict(r) for r in rows]
+
+
+async def get_dns_query_stats_summary(
+    hostnames: list[str], start, end,
+) -> dict:
+    """Agregados pro relatorio mensal: totais e percentuais por RCODE no periodo."""
+    placeholders = ", ".join(f"${i+1}" for i in range(len(hostnames)))
+    p_start = f"${len(hostnames)+1}"
+    p_end = f"${len(hostnames)+2}"
+    sql = f"""
+        SELECT
+            COALESCE(SUM(queries_total), 0) AS queries_total,
+            COALESCE(SUM(noerror), 0)  AS noerror,
+            COALESCE(SUM(nxdomain), 0) AS nxdomain,
+            COALESCE(SUM(servfail), 0) AS servfail,
+            COALESCE(SUM(refused), 0)  AS refused,
+            COALESCE(SUM(notimpl), 0)  AS notimpl,
+            COALESCE(SUM(formerr), 0)  AS formerr,
+            COALESCE(SUM(queries_a), 0)     AS queries_a,
+            COALESCE(SUM(queries_aaaa), 0)  AS queries_aaaa,
+            COALESCE(SUM(queries_mx), 0)    AS queries_mx,
+            COALESCE(SUM(queries_ptr), 0)   AS queries_ptr,
+            COALESCE(SUM(queries_other), 0) AS queries_other,
+            ROUND(AVG(qps_avg)::numeric, 1)       AS qps_avg,
+            ROUND(AVG(cache_hit_pct)::numeric, 1) AS cache_hit_pct,
+            COUNT(*) AS samples
+        FROM dns_query_stats
+        WHERE hostname IN ({placeholders})
+          AND ts BETWEEN {p_start} AND {p_end}
+    """
+    async with get_conn() as conn:
+        row = await conn.fetchrow(sql, *hostnames, start, end)
+    return dict(row) if row else {}
+
+
+async def update_agent_stats_interval(hostname: str, interval_seconds: int) -> bool:
+    """Atualiza intervalo de coleta de stats DNS pra um agente. Retorna False se inexistente."""
+    if interval_seconds < 60 or interval_seconds > 3600:
+        raise ValueError("dns_stats_interval_seconds deve estar entre 60 e 3600")
+    async with get_conn() as conn:
+        result = await conn.execute(
+            "UPDATE agents SET dns_stats_interval_seconds = $1 WHERE hostname = $2",
+            interval_seconds, hostname,
+        )
+        return result != "UPDATE 0"
+
+
+async def get_agent_stats_interval(hostname: str) -> int:
+    """Retorna intervalo configurado pra agente. Default 600 se nao existe."""
+    async with get_conn() as conn:
+        row = await conn.fetchval(
+            "SELECT dns_stats_interval_seconds FROM agents WHERE hostname = $1",
+            hostname,
+        )
+    return int(row) if row else 600
 
 
 async def insert_dns_service_status(hostname: str, ts: str, svc: dict) -> None:

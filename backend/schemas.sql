@@ -244,6 +244,9 @@ ALTER TABLE agents ADD COLUMN IF NOT EXISTS fingerprint           TEXT;
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS fingerprint_first_seen TIMESTAMPTZ;
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS fingerprint_last_seen  TIMESTAMPTZ;
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS agent_version         TEXT;
+-- Intervalo de coleta de stats DNS (rndc-stats / unbound-control). Default 600s (10min).
+-- Configuravel no painel admin per-agente. Agente le no startup e a cada heartbeat.
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS dns_stats_interval_seconds INTEGER NOT NULL DEFAULT 600;
 
 CREATE INDEX IF NOT EXISTS idx_agents_fingerprint ON agents (fingerprint);
 
@@ -531,3 +534,84 @@ SELECT add_retention_policy('speedtest_domains', INTERVAL '1 year', if_not_exist
 
 ALTER TABLE speedtest_domains SET (timescaledb.compress, timescaledb.compress_segmentby = 'domain');
 SELECT add_compression_policy('speedtest_domains', INTERVAL '7 days', if_not_exists => TRUE);
+
+
+-- ============================================================================
+-- DNS Query Stats — coleta periodica de RCODEs/tipos/QPS via rndc-stats
+-- (Bind9) e unbound-control stats (Unbound). Agente computa delta sobre
+-- counters cumulativos e publica via NATS subject dns.stats.<hostname>.
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS dns_query_stats (
+    ts             TIMESTAMPTZ  NOT NULL,
+    hostname       TEXT         NOT NULL,
+    period_seconds INTEGER      NOT NULL,
+    source         TEXT         NOT NULL,            -- 'bind9' | 'unbound'
+
+    -- RCODEs (delta sobre o periodo)
+    noerror        BIGINT       NOT NULL DEFAULT 0,
+    nxdomain       BIGINT       NOT NULL DEFAULT 0,
+    servfail       BIGINT       NOT NULL DEFAULT 0,
+    refused        BIGINT       NOT NULL DEFAULT 0,
+    notimpl        BIGINT       NOT NULL DEFAULT 0,
+    formerr        BIGINT       NOT NULL DEFAULT 0,
+    other_rcode    BIGINT       NOT NULL DEFAULT 0,
+
+    -- Query types (delta)
+    queries_a      BIGINT       NOT NULL DEFAULT 0,
+    queries_aaaa   BIGINT       NOT NULL DEFAULT 0,
+    queries_mx     BIGINT       NOT NULL DEFAULT 0,
+    queries_ptr    BIGINT       NOT NULL DEFAULT 0,
+    queries_other  BIGINT       NOT NULL DEFAULT 0,
+
+    queries_total  BIGINT       NOT NULL DEFAULT 0,
+    qps_avg        NUMERIC(10,2),
+
+    -- Unbound only (NULL pra Bind9)
+    cache_hits     BIGINT,
+    cache_misses   BIGINT,
+    cache_hit_pct  NUMERIC(5,2)
+);
+
+SELECT create_hypertable('dns_query_stats', 'ts',
+    chunk_time_interval => INTERVAL '7 days', if_not_exists => TRUE);
+
+CREATE INDEX IF NOT EXISTS idx_dns_stats_host_ts ON dns_query_stats (hostname, ts DESC);
+
+ALTER TABLE dns_query_stats SET (
+    timescaledb.compress,
+    timescaledb.compress_segmentby = 'hostname',
+    timescaledb.compress_orderby   = 'ts DESC'
+);
+SELECT add_compression_policy('dns_query_stats', INTERVAL '30 days', if_not_exists => TRUE);
+SELECT add_retention_policy('dns_query_stats', INTERVAL '365 days', if_not_exists => TRUE);
+
+-- Continuous aggregate por hora — usado em dashboards de periodo longo
+CREATE MATERIALIZED VIEW IF NOT EXISTS dns_stats_hourly
+WITH (timescaledb.continuous) AS
+SELECT
+    time_bucket('1 hour', ts) AS hour,
+    hostname,
+    SUM(noerror)  AS noerror,
+    SUM(nxdomain) AS nxdomain,
+    SUM(servfail) AS servfail,
+    SUM(refused)  AS refused,
+    SUM(notimpl)  AS notimpl,
+    SUM(formerr)  AS formerr,
+    SUM(queries_a)     AS queries_a,
+    SUM(queries_aaaa)  AS queries_aaaa,
+    SUM(queries_mx)    AS queries_mx,
+    SUM(queries_ptr)   AS queries_ptr,
+    SUM(queries_other) AS queries_other,
+    SUM(queries_total) AS queries_total,
+    AVG(qps_avg)       AS qps_avg,
+    AVG(cache_hit_pct) AS cache_hit_pct
+FROM dns_query_stats
+GROUP BY hour, hostname
+WITH NO DATA;
+
+SELECT add_continuous_aggregate_policy('dns_stats_hourly',
+    start_offset      => INTERVAL '3 days',
+    end_offset        => INTERVAL '1 hour',
+    schedule_interval => INTERVAL '30 minutes',
+    if_not_exists     => TRUE);
