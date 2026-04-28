@@ -471,6 +471,9 @@ html[data-theme="light"] .toast { border: 1px solid var(--border); border-left: 
 .inline-error { background: color-mix(in srgb, var(--red) 6%, var(--bg)); border: 1px solid color-mix(in srgb, var(--red) 15%, transparent); color: var(--red); }
 .inline-error p { color: var(--text-mid); }
 .inline-error strong { color: var(--red); }
+.inline-warn  { background: color-mix(in srgb, var(--yellow) 6%, var(--bg)); border: 1px solid color-mix(in srgb, var(--yellow) 18%, transparent); color: var(--yellow); }
+.inline-warn p { color: var(--text-mid); }
+.inline-warn strong { color: var(--yellow); }
 .inline-empty { background: var(--bg-subtle); border: 1px solid var(--border); color: var(--text-dim); }
 .inline-loading { background: var(--bg-subtle); border: 1px solid var(--border); color: var(--text-mid); }
 

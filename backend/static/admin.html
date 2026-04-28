@@ -9,8 +9,8 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;600;700&display=swap" rel="stylesheet">
 <script src="/static/theme.js?v=091"></script>
-<link rel="stylesheet" href="/static/base.css?v=091">
-<link rel="stylesheet" href="/static/admin.css?v=101">
+<link rel="stylesheet" href="/static/base.css?v=102">
+<link rel="stylesheet" href="/static/admin.css?v=102">
 <style>
   /* RBAC: esconde elementos mutativos para viewers */
   .role-viewer .admin-only { display: none !important; }
@@ -385,11 +385,6 @@
     return `<span class="metric ${cls}">${n}%</span>`;
   }
 
-  function isOutdated(agentVer) {
-    if (!serverVersion || !agentVer) return false;
-    return agentVer !== serverVersion;
-  }
-
   // Compara duas versoes semver. Retorna 'equal' | 'patch' | 'minor' | 'major' | 'ahead' | 'unknown'
   // 'patch'/'minor'/'major' significa LOCAL atras do REMOTO; 'ahead' = local na frente.
   function _semverDiff(local, remote) {
@@ -406,11 +401,13 @@
     return 'equal';
   }
 
-  function _isOutdated(agentVer) {
+  function isOutdated(agentVer) {
     if (!agentVer || !serverVersion) return false;
     const d = _semverDiff(agentVer, serverVersion);
     return d === 'patch' || d === 'minor' || d === 'major';
   }
+  // Alias mantido pra retrocompat com chamadas internas que usavam underscore.
+  const _isOutdated = isOutdated;
 
   function versionCell(agentVer) {
     if (!agentVer) return '<span class="dim">—</span>';
@@ -622,7 +619,54 @@
   function renderDiagResult(cmd) {
     const area = document.getElementById('diag-result-area');
     if (cmd.status === 'failed') {
-      area.innerHTML = `<div class="diag-result"><div class="inline-msg inline-error"><span class="inline-msg-icon">${ICONS.error}</span><p>${esc(cmd.result || 'Erro desconhecido')}</p></div></div>`;
+      const raw = cmd.result || 'Erro desconhecido';
+      // Caso comum: agente em versao antiga nao conhece script novo.
+      // O agente retorna "Script desconhecido: X. Disponíveis: ['...', '...']"
+      // — converter em hint actionable em vez de mensagem tecnica solta.
+      const unknownMatch = raw.match(/Script desconhecido:\s*(\S+)/);
+      if (unknownMatch) {
+        const requested = unknownMatch[1];
+        const available = (raw.match(/Disponíveis:\s*(\[.+?\])/) || [])[1] || '?';
+        area.innerHTML = `
+          <div class="diag-result">
+            <div class="inline-msg inline-warn">
+              <span class="inline-msg-icon">${ICONS.warning}</span>
+              <div>
+                <strong>Script "${esc(requested)}" nao disponivel neste agente</strong>
+                <p style="margin:6px 0 0;font-size:.78rem">
+                  O agente esta numa versao antiga que nao conhece este script.<br>
+                  <strong>Atualize o agente primeiro</strong> (botao Update no menu ⋯ da linha do agente, ou bulk Update).<br>
+                  Apos restart, o teste deve funcionar.
+                </p>
+                <p class="dim" style="margin:8px 0 0;font-size:.7rem;font-family:var(--font-mono)">
+                  Scripts disponiveis no agente: ${esc(available)}
+                </p>
+              </div>
+            </div>
+          </div>`;
+        return;
+      }
+      // dns_validate quando nao detecta servico DNS — retorna JSON estruturado.
+      // Tentar parse pra renderizar bonito; fallback texto bruto.
+      try {
+        const failedData = JSON.parse(raw);
+        if (Array.isArray(failedData.checks) && failedData.checks.length) {
+          const checksHtml = failedData.checks.map(c => {
+            const iconClass = { ok:'icon-ok', fail:'icon-fail', skip:'icon-skip', info:'icon-info', warn:'icon-warn' }[c.status] || 'icon-fail';
+            return `<div class="diag-check"><span class="diag-check-icon ${iconClass}">${c.status}</span><span>${esc(c.message)}</span></div>`;
+          }).join('');
+          area.innerHTML = `
+            <div class="diag-result">
+              <div class="diag-header">
+                <span class="pill pill-failed">FALHOU</span>
+                <span class="diag-summary-text diag-summary-fail">${esc(failedData.summary || 'Diagnostico falhou')}</span>
+              </div>
+              <div class="diag-checks">${checksHtml}</div>
+            </div>`;
+          return;
+        }
+      } catch(_) { /* nao e JSON estruturado, segue pro fallback */ }
+      area.innerHTML = `<div class="diag-result"><div class="inline-msg inline-error"><span class="inline-msg-icon">${ICONS.error}</span><p>${esc(raw)}</p></div></div>`;
       return;
     }
     let data;
@@ -771,7 +815,14 @@
       const data = await apiFetch('/agent/version');
       serverVersion = data.version || null;
     } catch (_) { serverVersion = null; }
-    refreshOutdatedBadge();
+    // Race-fix: fetchServerVersion roda em paralelo com loadAgents via Promise.all.
+    // Se a tabela ja foi renderizada com serverVersion=null, todos badges ficam
+    // 'version-unknown' (cinza) ate o proximo refresh. Forca re-render aqui.
+    if (Array.isArray(agentsCache) && agentsCache.length > 0) {
+      renderAgentRows(agentsCache);
+    } else {
+      refreshOutdatedBadge();
+    }
   }
 
   async function sendUpdate(hostname, btn) {
