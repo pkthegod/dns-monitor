@@ -337,6 +337,11 @@ CREATE TABLE IF NOT EXISTS agent_commands (
 );
 
 ALTER TABLE agent_commands ADD COLUMN IF NOT EXISTS params TEXT;
+-- Anti-dup notificacao Telegram: marca quando comando foi notificado.
+-- post_command_result (HTTP) e handle_command_ack (NATS) checam essa coluna
+-- via UPDATE...WHERE notified_at IS NULL RETURNING id. So o primeiro caller
+-- envia telegram; segundo (redundante) e silenciado.
+ALTER TABLE agent_commands ADD COLUMN IF NOT EXISTS notified_at TIMESTAMPTZ;
 
 CREATE INDEX IF NOT EXISTS idx_cmd_hostname_status
     ON agent_commands (hostname, status)

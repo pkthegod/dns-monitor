@@ -885,9 +885,10 @@ class TestCommandEndpoints:
             with patch.dict("os.environ", {"AGENT_TOKEN": "tok"}):
                 with patch("main.require_token", AsyncMock(return_value=None)):
                     with patch("main.db.mark_command_done", AsyncMock()):
-                        with patch("main.db.get_command_by_id", AsyncMock(return_value=cmd_data)):
-                            with patch("main.tg.send_command_result", AsyncMock(return_value=True)):
-                                resp = await m_module.post_command_result(42, req)
+                        with patch("main.db.mark_command_notified", AsyncMock(return_value=True)):
+                            with patch("main.db.get_command_by_id", AsyncMock(return_value=cmd_data)):
+                                with patch("main.tg.send_command_result", AsyncMock(return_value=True)):
+                                    resp = await m_module.post_command_result(42, req)
             import json
             assert json.loads(resp.body)["status"] == "ok"
 
@@ -1116,7 +1117,7 @@ class TestCommandResultEndpointWithAlert:
             req = MagicMock()
             req.headers = {"authorization": "Bearer tok"}
             req.json = AsyncMock(return_value={"status": "done", "result": "enable named: OK"})
-            with patch.dict("os.environ", {"AGENT_TOKEN": "tok"}),                  patch("main.require_token", AsyncMock(return_value=None)),                  patch("main.db.mark_command_done", AsyncMock()),                  patch("main.db.get_command_by_id", AsyncMock(return_value=cmd_data)),                  patch("main.tg.send_command_result", AsyncMock(return_value=True)) as mock_tg:
+            with patch.dict("os.environ", {"AGENT_TOKEN": "tok"}),                  patch("main.require_token", AsyncMock(return_value=None)),                  patch("main.db.mark_command_done", AsyncMock()), patch("main.db.mark_command_notified", AsyncMock(return_value=True)),                  patch("main.db.get_command_by_id", AsyncMock(return_value=cmd_data)),                  patch("main.tg.send_command_result", AsyncMock(return_value=True)) as mock_tg:
                 resp = await m_module.post_command_result(1, req)
             mock_tg.assert_called_once()
             call_kwargs = mock_tg.call_args[1]
@@ -1139,7 +1140,7 @@ class TestCommandResultEndpointWithAlert:
             req = MagicMock()
             req.headers = {"authorization": "Bearer tok"}
             req.json = AsyncMock(return_value={"status": "failed", "result": "Access denied"})
-            with patch.dict("os.environ", {"AGENT_TOKEN": "tok"}),                  patch("main.require_token", AsyncMock(return_value=None)),                  patch("main.db.mark_command_done", AsyncMock()),                  patch("main.db.get_command_by_id", AsyncMock(return_value=cmd_data)),                  patch("main.tg.send_command_result", AsyncMock(return_value=True)) as mock_tg:
+            with patch.dict("os.environ", {"AGENT_TOKEN": "tok"}),                  patch("main.require_token", AsyncMock(return_value=None)),                  patch("main.db.mark_command_done", AsyncMock()), patch("main.db.mark_command_notified", AsyncMock(return_value=True)),                  patch("main.db.get_command_by_id", AsyncMock(return_value=cmd_data)),                  patch("main.tg.send_command_result", AsyncMock(return_value=True)) as mock_tg:
                 resp = await m_module.post_command_result(2, req)
             mock_tg.assert_called_once()
             call_kwargs = mock_tg.call_args[1]
@@ -1156,7 +1157,7 @@ class TestCommandResultEndpointWithAlert:
             req = MagicMock()
             req.headers = {"authorization": "Bearer tok"}
             req.json = AsyncMock(return_value={"status": "done", "result": "OK"})
-            with patch.dict("os.environ", {"AGENT_TOKEN": "tok"}),                  patch("main.require_token", AsyncMock(return_value=None)),                  patch("main.db.mark_command_done", AsyncMock()),                  patch("main.db.get_command_by_id", AsyncMock(return_value=None)),                  patch("main.tg.send_command_result", AsyncMock()) as mock_tg:
+            with patch.dict("os.environ", {"AGENT_TOKEN": "tok"}),                  patch("main.require_token", AsyncMock(return_value=None)),                  patch("main.db.mark_command_done", AsyncMock()), patch("main.db.mark_command_notified", AsyncMock(return_value=True)),                  patch("main.db.get_command_by_id", AsyncMock(return_value=None)),                  patch("main.tg.send_command_result", AsyncMock()) as mock_tg:
                 await m_module.post_command_result(999, req)
             # Se comando não existe no banco, não dispara alerta
             mock_tg.assert_not_called()

@@ -29,14 +29,18 @@ async def handle_command_ack(msg):
         result = data.get("result", "")
         if cmd_id:
             await db.mark_command_done(cmd_id, cmd_status, result)
-            cmd = await db.get_command_by_id(cmd_id)
-            if cmd:
-                await tg.send_command_result(
-                    hostname=cmd["hostname"], command=cmd["command"],
-                    status=cmd_status, result=result,
-                    issued_by=cmd["issued_by"] or "admin",
-                )
-            logger.info("NATS ACK: comando #%s -> %s", cmd_id, cmd_status)
+            # Dedupe Telegram — ver routes_agent.post_command_result pra contexto.
+            if await db.mark_command_notified(cmd_id):
+                cmd = await db.get_command_by_id(cmd_id)
+                if cmd:
+                    await tg.send_command_result(
+                        hostname=cmd["hostname"], command=cmd["command"],
+                        status=cmd_status, result=result,
+                        issued_by=cmd["issued_by"] or "admin",
+                    )
+                logger.info("NATS ACK: comando #%s -> %s (telegram enviado)", cmd_id, cmd_status)
+            else:
+                logger.debug("NATS ACK: comando #%s -> %s (telegram silenciado, ja notificado via outro caminho)", cmd_id, cmd_status)
         await msg.ack()
     except Exception as exc:
         logger.error("NATS ACK handler erro: %s", exc)

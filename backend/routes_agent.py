@@ -303,15 +303,18 @@ async def post_command_result(command_id: int, request: Request) -> JSONResponse
 
     await _m.db.mark_command_done(command_id, cmd_status, result)
 
-    cmd = await _m.db.get_command_by_id(command_id)
-    if cmd:
-        await _m.tg.send_command_result(
-            hostname  = cmd["hostname"],
-            command   = cmd["command"],
-            status    = cmd_status,
-            result    = result,
-            issued_by = cmd["issued_by"] or "admin",
-        )
+    # Dedupe Telegram: agente reporta ack via NATS + HTTP redundante.
+    # Primeiro caller a vencer mark_command_notified atomico envia; segundo silencia.
+    if await _m.db.mark_command_notified(command_id):
+        cmd = await _m.db.get_command_by_id(command_id)
+        if cmd:
+            await _m.tg.send_command_result(
+                hostname  = cmd["hostname"],
+                command   = cmd["command"],
+                status    = cmd_status,
+                result    = result,
+                issued_by = cmd["issued_by"] or "admin",
+            )
 
     return JSONResponse({"status": "ok"})
 

@@ -709,6 +709,29 @@ async def mark_command_done(
         )
 
 
+async def mark_command_notified(command_id: int) -> bool:
+    """Marca command como notificado (idempotente, atomico).
+
+    Retorna True se foi a primeira marcacao (caller deve enviar Telegram).
+    Retorna False se ja estava notificado (caller deve silenciar — duplicata).
+
+    Usado pra dedupe quando agente publica ack em 2 caminhos (NATS + HTTP
+    fallback). Ambos endpoints chamam isso antes de tg.send_command_result;
+    so o primeiro a vencer a UPDATE atomica envia.
+    """
+    async with get_conn() as conn:
+        row = await conn.fetchval(
+            """
+            UPDATE agent_commands
+            SET notified_at = NOW()
+            WHERE id = $1 AND notified_at IS NULL
+            RETURNING id
+            """,
+            command_id,
+        )
+    return row is not None
+
+
 async def insert_command(
     hostname: str,
     command: str,
