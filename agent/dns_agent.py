@@ -51,7 +51,7 @@ CONFIG_PATHS = [
 ]
 
 
-AGENT_VERSION = "1.5.1"
+AGENT_VERSION = "1.5.2"
 
 
 # ---------------------------------------------------------------------------
@@ -849,16 +849,40 @@ else
 fi
 
 echo "CHECK_INFO === Reverso (PTR) do resolver local ==="
-LOCAL_IP=$(dig @8.8.8.8 myip.opendns.com +short 2>/dev/null | head -1)
+
+# Tenta detectar IP publico em cascata (cada metodo cobre cenarios diferentes):
+#   1. dig @OpenDNS myip.opendns.com  — DNS-pure, mas SO funciona via OpenDNS
+#      (bug anterior: tentava com @8.8.8.8 e nunca funcionava)
+#   2. dig @8.8.8.8 o-o.myaddr.l.google.com TXT — fallback DNS (qualquer resolver)
+#   3. curl ifconfig.me — fallback HTTP, robusto se DNS local estiver instavel
+LOCAL_IP=$(dig @208.67.222.222 myip.opendns.com +short +time=3 +tries=1 2>/dev/null | head -1)
+[ -z "$LOCAL_IP" ] && LOCAL_IP=$(dig @8.8.8.8 o-o.myaddr.l.google.com TXT +short +time=3 +tries=1 2>/dev/null | tr -d '"' | head -1)
+if [ -z "$LOCAL_IP" ] && command -v curl > /dev/null; then
+    LOCAL_IP=$(curl -s -4 --max-time 5 ifconfig.me 2>/dev/null)
+fi
+
 if [ -n "$LOCAL_IP" ]; then
     PTR=$(dig @127.0.0.1 -x "$LOCAL_IP" +short +time=3 2>/dev/null | head -1)
     if [ -n "$PTR" ]; then
-        echo "CHECK_OK PTR de $LOCAL_IP → $PTR"
+        echo "CHECK_OK PTR de $LOCAL_IP -> $PTR"
     else
-        echo "CHECK_INFO PTR de $LOCAL_IP → sem registro reverso"
+        echo "CHECK_INFO IP publico $LOCAL_IP sem PTR (normal pra cliente final; em DNS autoritativo, configure no upstream)"
+    fi
+
+    # IPv6 — exibe so se o host realmente tem v6 publico
+    if command -v curl > /dev/null; then
+        LOCAL_IP6=$(curl -s -6 --max-time 5 ifconfig.me 2>/dev/null)
+        if [ -n "$LOCAL_IP6" ] && [ "$LOCAL_IP6" != "$LOCAL_IP" ]; then
+            PTR6=$(dig @127.0.0.1 -x "$LOCAL_IP6" +short +time=3 2>/dev/null | head -1)
+            if [ -n "$PTR6" ]; then
+                echo "CHECK_OK PTR de $LOCAL_IP6 (IPv6) -> $PTR6"
+            else
+                echo "CHECK_INFO IPv6 $LOCAL_IP6 sem PTR"
+            fi
+        fi
     fi
 else
-    echo "CHECK_INFO IP público não detectado"
+    echo "CHECK_INFO IP publico nao detectado (host atras de NAT, rede privada ou sem rota saida)"
 fi
 
 echo "CHECK_INFO === Tempo de resposta comparativo (google.com) ==="
