@@ -51,7 +51,7 @@ CONFIG_PATHS = [
 ]
 
 
-AGENT_VERSION = "1.5.0"
+AGENT_VERSION = "1.5.1"
 
 
 # ---------------------------------------------------------------------------
@@ -1571,6 +1571,252 @@ def _run_dig_trace(domain: str, resolver: str, logger: logging.Logger) -> tuple[
     return "done", json.dumps(result, ensure_ascii=False)
 
 
+# ---------------------------------------------------------------------------
+# DNS Query Stats — coleta periodica de RCODEs/tipos/QPS/cache
+# Inlinado aqui (era agent/dns_stats.py) pra que self-update via
+# /agent/latest funcione — auto-update so baixa este unico arquivo.
+# ---------------------------------------------------------------------------
+
+_STATS_SNAPSHOT_FILE = Path("/var/lib/dns-agent/last_dns_stats.json")
+
+
+def _stats_collect_unbound() -> Optional[dict]:
+    """unbound-control stats_noreset → dict de counters cumulativos."""
+    out = None
+    for cmd in (["unbound-control", "stats_noreset"],
+                ["sudo", "-n", "unbound-control", "stats_noreset"]):
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            if result.returncode == 0 and result.stdout:
+                out = result.stdout
+                break
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            continue
+    if not out:
+        return None
+
+    kv: dict = {}
+    for line in out.splitlines():
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        try:
+            kv[k.strip()] = int(v.strip())
+        except ValueError:
+            pass
+
+    main_types = {"A", "AAAA", "MX", "PTR"}
+    queries_other = sum(
+        v for k, v in kv.items()
+        if k.startswith("num.queries.type.")
+        and k.split(".")[-1] not in main_types
+    )
+
+    return {
+        "source": "unbound",
+        "noerror":  kv.get("num.answer.rcode.NOERROR", 0),
+        "nxdomain": kv.get("num.answer.rcode.NXDOMAIN", 0),
+        "servfail": kv.get("num.answer.rcode.SERVFAIL", 0),
+        "refused":  kv.get("num.answer.rcode.REFUSED", 0),
+        "notimpl":  kv.get("num.answer.rcode.NOTIMPL", 0),
+        "formerr":  kv.get("num.answer.rcode.FORMERR", 0),
+        "queries_a":     kv.get("num.queries.type.A", 0),
+        "queries_aaaa":  kv.get("num.queries.type.AAAA", 0),
+        "queries_mx":    kv.get("num.queries.type.MX", 0),
+        "queries_ptr":   kv.get("num.queries.type.PTR", 0),
+        "queries_other": queries_other,
+        "queries_total": kv.get("total.num.queries", 0),
+        "cache_hits":    kv.get("total.num.cachehits", 0),
+        "cache_misses":  kv.get("total.num.cachemiss", 0),
+    }
+
+
+def _stats_collect_bind9() -> Optional[dict]:
+    """rndc stats → dump em /var/cache/bind/named.stats. Parse o ultimo dump."""
+    stats_file = Path("/var/cache/bind/named.stats")
+    triggered = False
+    for cmd in (["rndc", "stats"], ["sudo", "-n", "rndc", "stats"]):
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                triggered = True
+                break
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            continue
+    if not triggered:
+        return None
+
+    time.sleep(0.5)
+    if not stats_file.exists():
+        return None
+
+    try:
+        text = stats_file.read_text(encoding="utf-8", errors="ignore")
+    except PermissionError:
+        try:
+            text = subprocess.check_output(
+                ["sudo", "-n", "cat", str(stats_file)], text=True, timeout=5
+            )
+        except Exception:
+            return None
+
+    return _stats_parse_bind_text(text)
+
+
+def _stats_parse_bind_text(text: str) -> dict:
+    """Extrai counters do texto do named.stats (Bind9 9.18+).
+
+    O arquivo acumula multiplos dumps separados por '+++ Statistics Dump +++'.
+    Pegamos sempre o mais recente.
+    """
+    parts = text.split("+++ Statistics Dump +++")
+    last = parts[-1] if len(parts) > 1 else text
+
+    def _grep_int(pattern: str) -> int:
+        m = re.search(rf'^\s*(\d+)\s+{pattern}\s*$', last, re.MULTILINE)
+        return int(m.group(1)) if m else 0
+
+    rcode_patterns = {
+        "noerror":  r"queries resulted in successful answer|NOERROR",
+        "nxdomain": r"queries resulted in NXDOMAIN|NXDOMAIN",
+        "servfail": r"queries resulted in SERVFAIL|SERVFAIL",
+        "refused":  r"queries resulted in REFUSED|REFUSED",
+        "notimpl":  r"queries resulted in NOTIMP|NOTIMPL",
+        "formerr":  r"queries resulted in FORMERR|FORMERR",
+    }
+
+    result: dict = {"source": "bind9"}
+    for k, pat in rcode_patterns.items():
+        result[k] = _grep_int(pat)
+
+    result["queries_a"]    = _grep_int(r"^A$")
+    result["queries_aaaa"] = _grep_int(r"^AAAA$")
+    result["queries_mx"]   = _grep_int(r"^MX$")
+    result["queries_ptr"]  = _grep_int(r"^PTR$")
+    result["queries_other"] = 0
+    result["queries_total"] = _grep_int(
+        r"queries received|IPv4 queries received|IPv6 queries received"
+    )
+    return result
+
+
+def _stats_compute_delta(current: dict, previous: dict) -> dict:
+    """Subtrai snapshots. Counter negativo (resolver reiniciado) → assume current."""
+    delta: dict = {}
+    for k, v in current.items():
+        if k == "source":
+            delta[k] = v
+            continue
+        if not isinstance(v, (int, float)):
+            continue
+        prev = previous.get(k, 0)
+        d = v - prev
+        if d < 0:
+            d = v
+        delta[k] = d
+    return delta
+
+
+def _stats_persist_snapshot(snapshot: dict) -> None:
+    try:
+        _STATS_SNAPSHOT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _STATS_SNAPSHOT_FILE.write_text(json.dumps(snapshot))
+    except Exception:
+        pass
+
+
+def _stats_load_snapshot() -> dict:
+    if not _STATS_SNAPSHOT_FILE.exists():
+        return {}
+    try:
+        return json.loads(_STATS_SNAPSHOT_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def collect_dns_stats_and_publish(cfg: "Config", logger: logging.Logger) -> None:
+    """Coleta stats DNS, calcula delta, publica no backend via HTTP POST.
+
+    Chamado pelo scheduler do agente a cada [dns_stats].interval segundos.
+    Primeira execucao salva baseline e nao publica (sem delta).
+    """
+    detected = detect_dns_service()
+    svc_name = (detected.get("name") or "").lower()
+
+    if svc_name == "unbound":
+        current = _stats_collect_unbound()
+    elif svc_name in ("named", "bind9"):
+        current = _stats_collect_bind9()
+    else:
+        logger.debug("dns_stats: nenhum servico DNS detectado, skip")
+        return
+
+    if not current:
+        logger.warning("dns_stats: coleta retornou vazio (servico=%s)", svc_name)
+        return
+
+    previous = _stats_load_snapshot()
+    prev_ts = previous.pop("__ts__", None)
+    now = datetime.now(timezone.utc)
+
+    if not previous or not prev_ts:
+        _stats_persist_snapshot({**current, "__ts__": now.isoformat()})
+        logger.info("dns_stats: baseline salvo (%s, %d counters)",
+                    svc_name, len(current))
+        return
+
+    try:
+        prev_dt = datetime.fromisoformat(prev_ts)
+    except ValueError:
+        prev_dt = now
+    period_seconds = max(1, int((now - prev_dt).total_seconds()))
+
+    delta = _stats_compute_delta(current, previous)
+    delta["ts"] = now.isoformat()
+    delta["period_seconds"] = period_seconds
+
+    if not delta.get("queries_total"):
+        delta["queries_total"] = sum(
+            delta.get(k, 0) for k in
+            ("noerror", "nxdomain", "servfail", "refused", "notimpl", "formerr")
+        )
+
+    delta["qps_avg"] = round(delta["queries_total"] / period_seconds, 2)
+
+    if delta.get("cache_hits") is not None and delta.get("cache_misses") is not None:
+        total_cache = delta["cache_hits"] + delta["cache_misses"]
+        delta["cache_hit_pct"] = (
+            round(100 * delta["cache_hits"] / total_cache, 2)
+            if total_cache > 0 else None
+        )
+
+    try:
+        backend_url = cfg.get("backend", "url").rstrip("/")
+        token = cfg.get("agent", "auth_token")
+        hostname = cfg.get("agent", "hostname", fallback="unknown")
+        timeout = cfg.getint("backend", "timeout_seconds", fallback=15)
+
+        resp = requests.post(
+            f"{backend_url}/api/v1/agents/{hostname}/dns-stats",
+            json=delta,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=timeout,
+        )
+        if resp.status_code in (200, 201, 202):
+            logger.info(
+                "dns_stats publicado: %d queries em %ds (qps=%.2f, NXD=%d, SVF=%d)",
+                delta["queries_total"], period_seconds, delta["qps_avg"],
+                delta.get("nxdomain", 0), delta.get("servfail", 0),
+            )
+        else:
+            logger.warning("dns_stats POST falhou: HTTP %d %s",
+                           resp.status_code, resp.text[:200])
+    except Exception as exc:
+        logger.warning("dns_stats POST erro: %s", exc)
+
+    _stats_persist_snapshot({**current, "__ts__": now.isoformat()})
+
+
 def _execute_command(command: str, confirm_token: str, cfg: Config,
                      logger: logging.Logger, params: str = None) -> tuple[str, str]:
     """
@@ -1820,14 +2066,13 @@ def setup_schedule(cfg: Config, logger: logging.Logger) -> None:
     # set_stats_interval (futuro) ou via [dns_stats] interval no agent.toml.
     if cfg.getboolean("dns_stats", "enabled", fallback=True):
         stats_interval = max(60, cfg.getint("dns_stats", "interval", fallback=600))
-        try:
-            from dns_stats import collect_and_publish as _collect_dns_stats
-            schedule.every(stats_interval).seconds.do(
-                _collect_dns_stats, cfg=cfg, logger=logger
-            )
-            logger.info("Stats DNS agendado a cada %ds", stats_interval)
-        except ImportError as exc:
-            logger.warning("dns_stats nao carregou: %s", exc)
+        # Usa a funcao inline collect_dns_stats_and_publish (definida acima neste
+        # mesmo arquivo) — antes era import do modulo separado dns_stats, mas
+        # auto-update via /agent/latest so baixa este unico arquivo.
+        schedule.every(stats_interval).seconds.do(
+            collect_dns_stats_and_publish, cfg=cfg, logger=logger
+        )
+        logger.info("Stats DNS agendado a cada %ds", stats_interval)
 
 
 # ---------------------------------------------------------------------------
