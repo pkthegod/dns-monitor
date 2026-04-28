@@ -158,7 +158,27 @@ remote-control:
         echo "      o drop-in zz-dns-monitor.conf carrega por ULTIMO (alfabetico),"
         echo "      mas se houver include explicito apos os conf.d no arquivo principal,"
         echo "      esse 'no' pode vencer. Revise manualmente se o teste no final falhar."
-    else
+    fi
+
+    # Duplicacao de control-port: unbound-checkconf nao pega isso, mas o bind() falha.
+    # So contamos arquivos OUTROS alem do nosso drop-in zz-.
+    local DROPIN_NAME
+    DROPIN_NAME=$(basename "$DROPIN")
+    local dup_port
+    dup_port=$(grep -rln "control-port:" /etc/unbound/ 2>/dev/null \
+                 | grep -v "/$DROPIN_NAME$" || true)
+    if [ -n "$dup_port" ]; then
+        echo "  [!] AVISO — 'control-port:' tambem declarado em:"
+        echo "$dup_port" | sed 's/^/        /'
+        echo "      duas secoes remote-control com a mesma porta = bind() falha."
+        echo "      remova o(s) outro(s) ou tire o bloco remote-control: deles."
+        if [ "$MODE" = "apply" ]; then
+            echo "      --apply abortado para evitar quebra do unbound."
+            exit 1
+        fi
+    fi
+
+    if [ -z "$conflict" ] && [ -z "$dup_port" ]; then
         echo "  [=] sem conflitos detectados"
     fi
 
