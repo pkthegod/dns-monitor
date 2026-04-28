@@ -132,6 +132,23 @@ remote-control:
     control-cert-file: "/etc/unbound/unbound_control.pem"
 '
 
+    echo "0) Validando config atual (pre-flight)..."
+    local preflight
+    preflight=$(unbound-checkconf 2>&1) || true
+    if ! unbound-checkconf >/dev/null 2>&1; then
+        echo "  [!] unbound-checkconf JA esta falhando antes de qualquer alteracao:"
+        echo "$preflight" | sed 's/^/        /'
+        echo ""
+        echo "      Resolva o erro acima ANTES de prosseguir (geralmente um drop-in"
+        echo "      em /etc/unbound/unbound.conf.d/ com typo). Modo --apply vai abortar."
+        if [ "$MODE" = "apply" ]; then
+            exit 1
+        fi
+    else
+        echo "  [=] config atual valida"
+    fi
+
+    echo ""
     echo "1) Verificando conflitos de config..."
     local conflict
     conflict=$(grep -rln "control-enable:[[:space:]]*no" /etc/unbound/ 2>/dev/null || true)
@@ -181,9 +198,37 @@ remote-control:
         return 0
     fi
 
-    # ---- APPLY ----
+    # ---- APPLY (transacional: snapshot + rollback se checkconf falhar) ----
     echo ""
     echo "Aplicando alteracoes..."
+
+    # Snapshots para rollback
+    local DROPIN_EXISTED=false
+    [ -f "$DROPIN" ] && DROPIN_EXISTED=true
+    local CONF_SNAPSHOT=""
+    if [ -f "$CONF_MAIN" ]; then
+        CONF_SNAPSHOT="${CONF_MAIN}.tx.$$"
+        cp "$CONF_MAIN" "$CONF_SNAPSHOT"
+    fi
+
+    rollback_unbound() {
+        echo "  [rollback] revertendo alteracoes..."
+        if ! $DROPIN_EXISTED && [ -f "$DROPIN" ]; then
+            rm -f "$DROPIN"
+            echo "  [rollback] $DROPIN removido"
+        elif $DROPIN_EXISTED; then
+            local last_bak
+            last_bak=$(ls -t "${DROPIN}.bak."* 2>/dev/null | head -1 || true)
+            if [ -n "$last_bak" ]; then
+                mv "$last_bak" "$DROPIN"
+                echo "  [rollback] $DROPIN restaurado de $last_bak"
+            fi
+        fi
+        if [ -n "$CONF_SNAPSHOT" ] && [ -f "$CONF_SNAPSHOT" ]; then
+            mv "$CONF_SNAPSHOT" "$CONF_MAIN"
+            echo "  [rollback] $CONF_MAIN restaurado"
+        fi
+    }
 
     if $needs_setup; then
         unbound-control-setup -d /etc/unbound >/dev/null
@@ -201,17 +246,16 @@ remote-control:
     fi
 
     echo ""
-    echo "5) Validando config..."
-    if ! unbound-checkconf >/dev/null; then
-        echo "ERRO: unbound-checkconf falhou — config invalida. Restaurando backup..."
-        if [ -f "${DROPIN}.bak."* ] 2>/dev/null; then
-            local last_bak
-            last_bak=$(ls -t "${DROPIN}.bak."* 2>/dev/null | head -1 || true)
-            [ -n "$last_bak" ] && cp "$last_bak" "$DROPIN"
-        fi
-        unbound-checkconf
+    echo "5) Validando config apos modificacoes..."
+    local postflight
+    postflight=$(unbound-checkconf 2>&1) || true
+    if ! unbound-checkconf >/dev/null 2>&1; then
+        echo "ERRO: unbound-checkconf falhou:"
+        echo "$postflight" | sed 's/^/        /'
+        rollback_unbound
         exit 1
     fi
+    [ -n "$CONF_SNAPSHOT" ] && rm -f "$CONF_SNAPSHOT"
     echo "  [OK]"
 
     echo ""
