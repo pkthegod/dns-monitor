@@ -51,7 +51,7 @@ CONFIG_PATHS = [
 ]
 
 
-AGENT_VERSION = "1.4.0"
+AGENT_VERSION = "1.4.1"
 
 
 # ---------------------------------------------------------------------------
@@ -898,11 +898,33 @@ check_status "Serviço unbound está rodando"
 ss -lntu | grep -q ":53 "
 check_status "Porta 53 em escuta"
 
+# Sintaxe — captura mensagem real (antes era $? perdido em /dev/null,
+# falsos negativos por permissao eram opacos). Tenta sudo se primeira tentativa
+# falhou por falta de acesso a /etc/unbound (config geralmente 600 root:root).
 if command -v unbound-checkconf > /dev/null; then
-    unbound-checkconf > /dev/null 2>&1
-    check_status "Sintaxe unbound.conf válida"
+    UC_OUT=$(unbound-checkconf 2>&1)
+    UC_RC=$?
+    if [ $UC_RC -ne 0 ] && command -v sudo > /dev/null; then
+        UC_OUT_SUDO=$(sudo -n unbound-checkconf 2>&1)
+        UC_RC_SUDO=$?
+        if [ $UC_RC_SUDO -eq 0 ]; then
+            UC_OUT="$UC_OUT_SUDO"
+            UC_RC=0
+        fi
+    fi
+    if [ $UC_RC -eq 0 ]; then
+        echo "CHECK_OK Sintaxe unbound.conf valida"
+    else
+        UC_MSG=$(echo "$UC_OUT" | tail -3 | tr '\n' ' ' | sed 's/  */ /g' | sed 's/^ *//' | sed 's/ *$//')
+        if echo "$UC_OUT" | grep -qiE "permission denied|cannot open|cannot read|unable to open"; then
+            echo "CHECK_WARN unbound-checkconf bloqueado por permissao (agente sem acesso /etc/unbound). Rode no host: unbound-checkconf"
+        else
+            echo "CHECK_FAIL Sintaxe unbound.conf invalida: ${UC_MSG:-erro desconhecido}"
+            ERROR_COUNT=$((ERROR_COUNT + 1))
+        fi
+    fi
 else
-    echo "CHECK_SKIP Comando unbound-checkconf não encontrado"
+    echo "CHECK_SKIP Comando unbound-checkconf nao encontrado"
 fi
 
 dig @127.0.0.1 google.com +short +time=2 | grep -q .
@@ -929,9 +951,21 @@ done
 if [ -n "$TA_FILE" ]; then
     AGE_DAYS=$(( ($(date +%s) - $(stat -c %Y "$TA_FILE" 2>/dev/null || echo 0)) / 86400 ))
     if [ "$AGE_DAYS" -lt 90 ]; then
-        echo "CHECK_OK Trust anchor presente em $TA_FILE (atualizado ha ${AGE_DAYS}d)"
+        echo "CHECK_OK Trust anchor $TA_FILE atualizado (${AGE_DAYS}d)"
     else
-        echo "CHECK_WARN Trust anchor $TA_FILE desatualizado (${AGE_DAYS}d) — rodar: unbound-anchor -a $TA_FILE"
+        # Sugere o melhor caminho de auto-update disponivel no SO
+        if systemctl list-timers --all 2>/dev/null | grep -q "unbound-anchor"; then
+            TIMER_STATE=$(systemctl is-enabled unbound-anchor.timer 2>/dev/null)
+            if [ "$TIMER_STATE" = "enabled" ]; then
+                echo "CHECK_WARN Trust anchor com ${AGE_DAYS}d mas unbound-anchor.timer enabled — verifique: journalctl -u unbound-anchor"
+            else
+                echo "CHECK_WARN Trust anchor velho (${AGE_DAYS}d). Habilite auto-update: systemctl enable --now unbound-anchor.timer"
+            fi
+        elif command -v dpkg > /dev/null && dpkg -l dns-root-data 2>/dev/null | grep -q "^ii"; then
+            echo "CHECK_WARN Trust anchor velho (${AGE_DAYS}d) mesmo com dns-root-data instalado. Force: unbound-anchor -a $TA_FILE && systemctl restart unbound"
+        else
+            echo "CHECK_WARN Trust anchor velho (${AGE_DAYS}d) e sem auto-update. Instale dns-root-data OU rode no cron: unbound-anchor -a $TA_FILE"
+        fi
     fi
 else
     echo "CHECK_INFO Trust anchor root.key nao encontrado (OK se DNSSEC desabilitado)"
@@ -956,16 +990,27 @@ else
     echo "CHECK_OK MemoryMax configurado: $MEM_MAX bytes"
 fi
 
-UNBOUND_CACHE="/var/cache/unbound"
-if [ -d "$UNBOUND_CACHE" ]; then
-    PERMS=$(stat -c "%U:%G" "$UNBOUND_CACHE")
+# Cache dir — detecta o configurado em vez de assumir /var/cache/unbound.
+# Unbound moderno usa cache so em RAM por default; o diretorio so existe se
+# `directory:` foi setado explicitamente em unbound.conf.
+CACHE_DIR=""
+if command -v unbound-checkconf > /dev/null; then
+    CACHE_DIR=$(unbound-checkconf -o directory 2>/dev/null | tr -d '"' | tr -d ' ')
+    if [ -z "$CACHE_DIR" ] && command -v sudo > /dev/null; then
+        CACHE_DIR=$(sudo -n unbound-checkconf -o directory 2>/dev/null | tr -d '"' | tr -d ' ')
+    fi
+fi
+if [ -z "$CACHE_DIR" ]; then
+    echo "CHECK_INFO Cache dir nao configurado em unbound.conf (cache em RAM apenas — normal)"
+elif [ -d "$CACHE_DIR" ]; then
+    PERMS=$(stat -c "%U:%G" "$CACHE_DIR" 2>/dev/null || echo "?")
     if [ "$PERMS" = "unbound:unbound" ] || [ "$PERMS" = "root:unbound" ]; then
-        echo "CHECK_OK Permissoes $UNBOUND_CACHE corretas ($PERMS)"
+        echo "CHECK_OK Cache dir $CACHE_DIR com permissoes corretas ($PERMS)"
     else
-        echo "CHECK_WARN Permissoes $UNBOUND_CACHE incomuns: $PERMS"
+        echo "CHECK_WARN Cache dir $CACHE_DIR com permissoes incomuns: $PERMS"
     fi
 else
-    echo "CHECK_INFO Diretorio $UNBOUND_CACHE nao encontrado"
+    echo "CHECK_INFO Cache dir $CACHE_DIR configurado mas nao existe (OK se Unbound tem write em parent)"
 fi
 
 echo "SUMMARY errors=$ERROR_COUNT"
