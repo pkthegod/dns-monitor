@@ -418,8 +418,9 @@ async def get_command_status(command_id: int, request: Request):
 async def receive_dns_stats(hostname: str, request: Request) -> JSONResponse:
     """Agente publica stats DNS aqui via Bearer token.
 
-    Mesmo handler que NATS dns.stats.* — converge em db.insert_dns_query_stats.
-    Usa HTTP por default (mais simples; NATS e otimizacao opcional v1.1).
+    Mesmo handler que NATS dns.stats.* — converge em db.insert_dns_query_stats
+    e _evaluate_dns_stats_alerts. Usa HTTP por default (mais simples; NATS e
+    otimizacao opcional v1.1).
     """
     import main as _m
     await _m.require_token(request)
@@ -431,10 +432,84 @@ async def receive_dns_stats(hostname: str, request: Request) -> JSONResponse:
         return JSONResponse({"error": f"JSON invalido: {exc}"}, status_code=422)
     try:
         await _m.db.insert_dns_query_stats(hostname, data)
+        await _evaluate_dns_stats_alerts(hostname, data)
     except Exception as exc:
         logger.error("receive_dns_stats erro pra %s: %s", hostname, exc)
         return JSONResponse({"error": "Falha ao gravar stats"}, status_code=500)
     return JSONResponse({"status": "ok"}, status_code=202)
+
+
+async def _evaluate_dns_stats_alerts(hostname: str, data: dict) -> None:
+    """Avalia alertas DNS pos-ingestao de stats. Chamado por receive_dns_stats
+    (HTTP) e handle_dns_stats (NATS).
+
+    Alertas implementados:
+      - dns_servfail_high (critical, >5% SERVFAIL com volume >=100)
+      - dns_silence       (critical, queries=0 mas histórico tinha tráfego)
+      - dns_nxdomain_high (warning, >50% NXDOMAIN — possivel scan/config errada)
+
+    Auto-resolve quando metrica volta ao normal (resolve_alert apaga o open).
+    Has_open_alert evita spam de Telegram pra mesmo problema persistente.
+
+    db/tg via main pra preservar monkey-patching de testes.
+    """
+    import main as _m
+    qt = int(data.get("queries_total") or 0)
+
+    # 1. SERVFAIL alto — critical, dispara Telegram
+    if qt >= 100:
+        sf = int(data.get("servfail") or 0)
+        sf_pct = (sf / qt) * 100
+        if sf_pct > 5.0:
+            if not await _m.db.has_open_alert(hostname, "dns_servfail_high"):
+                aid = await _m.db.insert_alert(
+                    hostname, "dns_servfail_high", "critical",
+                    f"SERVFAIL alto: {sf_pct:.1f}% das queries ({sf} de {qt})",
+                    "servfail_pct", sf_pct, 5.0,
+                )
+                if await _m.tg.alert_dns_failure(
+                    hostname, "SERVFAIL spike",
+                    f"{sf_pct:.1f}% das queries falharam ({sf} de {qt})", 0,
+                ):
+                    await _m.db.mark_alert_notified(aid)
+        else:
+            # Voltou ao normal — fecha o alerta aberto se houver
+            await _m.db.resolve_alert(hostname, "dns_servfail_high")
+
+    # 2. NXDOMAIN absurdo — warning, sem Telegram (apenas no painel)
+    if qt >= 100:
+        nxd = int(data.get("nxdomain") or 0)
+        nxd_pct = (nxd / qt) * 100
+        if nxd_pct > 50.0:
+            if not await _m.db.has_open_alert(hostname, "dns_nxdomain_high"):
+                await _m.db.insert_alert(
+                    hostname, "dns_nxdomain_high", "warning",
+                    f"NXDOMAIN alto: {nxd_pct:.0f}% das queries ({nxd} de {qt}) — possivel scan ou config errada",
+                    "nxdomain_pct", nxd_pct, 50.0,
+                )
+        else:
+            await _m.db.resolve_alert(hostname, "dns_nxdomain_high")
+
+    # 3. DNS silence — queries=0 quando deveria ter trafego
+    if qt == 0:
+        # Se ultima 1h teve >=2 amostras com >100 queries, agora zero e suspeito
+        try:
+            recent = await _m.db.get_dns_query_stats(hostname=hostname, period="1h")
+        except Exception:
+            recent = []
+        had_traffic = sum(
+            1 for s in recent if int(s.get("queries_total") or 0) > 100
+        ) >= 2
+        if had_traffic and not await _m.db.has_open_alert(hostname, "dns_silence"):
+            aid = await _m.db.insert_alert(
+                hostname, "dns_silence", "critical",
+                "DNS sem trafego — resolver pode estar parado ou desconectado da rede",
+            )
+            if await _m.tg.alert_dns_service_down(hostname, "DNS resolver (sem trafego)"):
+                await _m.db.mark_alert_notified(aid)
+    elif qt >= 100:
+        # Voltou a ter trafego — fecha alerta de silence
+        await _m.db.resolve_alert(hostname, "dns_silence")
 
 
 # ---------------------------------------------------------------------------

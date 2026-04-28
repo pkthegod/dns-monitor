@@ -63,6 +63,10 @@ async def handle_dns_stats(msg):
             await msg.ack()
             return
         await db.insert_dns_query_stats(hostname, data)
+        # Avalia alertas (lazy import — routes_agent ainda nao foi carregado quando
+        # nats_handlers e importado). Helper unico pros 2 caminhos (HTTP + NATS).
+        from routes_agent import _evaluate_dns_stats_alerts
+        await _evaluate_dns_stats_alerts(hostname, data)
         logger.debug("NATS dns.stats: %s recebido (queries_total=%s)",
                      hostname, data.get("queries_total"))
         await msg.ack()
