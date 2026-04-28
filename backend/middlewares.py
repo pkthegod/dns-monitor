@@ -154,19 +154,28 @@ class SecurityMonitorMiddleware(BaseHTTPMiddleware):
 
 
 async def _security_alert(alert: dict) -> None:
-    """Envia alerta de seguranca via Telegram."""
+    """Envia alerta de seguranca via Telegram (HTML escapado).
+
+    SEC (LL3): antes usava parse_mode="Markdown" interpolando path/IP/type
+    direto entre backticks. Atacante podia injetar formatacao via path
+    (`*` `_` `[`). Agora HTML com html.escape em todos campos vindos da
+    request (untrusted), consistente com restante do telegram_bot.
+    """
+    import html as _html
+    def _esc(v):
+        return _html.escape(str(v) if v is not None else "")
     try:
         msg = (
-            f"🚨 *SECURITY ALERT*\n"
-            f"Type: `{alert.get('type', 'unknown')}`\n"
-            f"IP: `{alert.get('ip', '?')}`\n"
+            f"🚨 <b>SECURITY ALERT</b>\n"
+            f"Type: <code>{_esc(alert.get('type', 'unknown'))}</code>\n"
+            f"IP: <code>{_esc(alert.get('ip', '?'))}</code>\n"
         )
         if alert.get("count"):
-            msg += f"Count: {alert['count']} in {alert.get('window', '?')}\n"
+            msg += f"Count: {int(alert['count'])} in {_esc(alert.get('window', '?'))}\n"
         if alert.get("path"):
-            msg += f"Path: `{alert['path']}`\n"
+            msg += f"Path: <code>{_esc(alert['path'])}</code>\n"
         msg += "Action: IP blocked 30min"
-        await tg.send_message(msg, parse_mode="Markdown")
+        await tg.send_message(msg)  # default parse_mode=HTML
     except Exception as exc:
         logger.warning("Security alert telegram failed: %s", exc)
 

@@ -8,6 +8,7 @@ importlib.reload(main) + patch.dict(os.environ).
 
 import hashlib
 import hmac
+import ipaddress
 import os
 import secrets
 import time
@@ -21,6 +22,52 @@ from fastapi import HTTPException, Request, status
 # ---------------------------------------------------------------------------
 
 AGENT_TOKEN = os.environ.get("AGENT_TOKEN", "")
+
+
+# SEC (M8): whitelist de IPs autorizados a usar o fallback Bearer no endpoint
+# require_admin. Mitigacao parcial enquanto AGENT_TOKEN ainda e compartilhado:
+# mesmo com o token vazado, atacante so age como admin se vier de um IP
+# pre-aprovado (rede do operador).
+#
+# Formatos aceitos (vingula-separados): "10.0.0.0/8,192.168.1.5,2001:db8::/32"
+# Vazio (default) = sem whitelist = mantem comportamento legado (todos IPs).
+_ADMIN_BEARER_RAW = os.environ.get("ADMIN_BEARER_ALLOWED_IPS", "").strip()
+
+
+def _parse_ip_whitelist(raw: str) -> list:
+    out = []
+    for entry in (e.strip() for e in raw.split(",")):
+        if not entry:
+            continue
+        try:
+            if "/" in entry:
+                out.append(ipaddress.ip_network(entry, strict=False))
+            else:
+                out.append(ipaddress.ip_address(entry))
+        except ValueError:
+            # entry invalida — pulamos silenciosamente (log no startup do main)
+            continue
+    return out
+
+
+_ADMIN_BEARER_ALLOWED = _parse_ip_whitelist(_ADMIN_BEARER_RAW)
+
+
+def _ip_in_admin_bearer_whitelist(ip_str: str) -> bool:
+    """Retorna True se a whitelist esta vazia (legado) OU se o IP bate."""
+    if not _ADMIN_BEARER_ALLOWED:
+        return True
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    for entry in _ADMIN_BEARER_ALLOWED:
+        if isinstance(entry, (ipaddress.IPv4Network, ipaddress.IPv6Network)):
+            if ip in entry:
+                return True
+        elif ip == entry:
+            return True
+    return False
 
 
 async def require_token(request: Request) -> None:
@@ -61,9 +108,18 @@ async def require_admin(request: Request) -> dict:
 
     # Fallback Bearer — apenas para tooling/curl administrativo.
     # Frontend nunca deve enviar Bearer (usa cookie via credentials=same-origin).
+    # SEC (M8): se ADMIN_BEARER_ALLOWED_IPS estiver definido, restringe origem
+    # ao range pre-aprovado. Mitiga vazamento de AGENT_TOKEN (que tambem da
+    # acesso de admin neste fallback) — atacante precisa estar tambem na rede.
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer ") and AGENT_TOKEN and \
        hmac.compare_digest(auth[7:].encode(), AGENT_TOKEN.encode()):
+        ip = request.client.host if request.client else "unknown"
+        if not _ip_in_admin_bearer_whitelist(ip):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Bearer fallback admin nao autorizado deste IP",
+            )
         return {"username": "admin:bearer", "role": "admin"}
 
     raise HTTPException(

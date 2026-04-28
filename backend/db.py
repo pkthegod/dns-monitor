@@ -962,9 +962,36 @@ async def delete_admin_user(user_id: int) -> bool:
 # Audit log
 # ===========================================================================
 
+# SEC (M10/LL2): campos de audit aceitam strings controladas por atacante
+# (username em login_failed, hostname em commands, detail em comandos remotos).
+# Sanitizamos antes do INSERT para mitigar prompt-injection caso um LLM seja
+# usado para resumir/analisar audit log no futuro, e para impedir que controle
+# de fluxo (\r\n) crie linhas falsas em logs textuais derivados.
+import re as _re_audit
+_AUDIT_CTRL = _re_audit.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
+_AUDIT_MAX_LEN = 256
+
+def _sanitize_audit_field(value, max_len: int = _AUDIT_MAX_LEN):
+    if value is None:
+        return None
+    s = str(value)
+    # Remove control chars (NUL, BEL, etc.); preserva \n e \t para depois neutralizar
+    s = _AUDIT_CTRL.sub('', s)
+    # Normaliza quebras e tabs (impede injecao de "novas linhas" em logs derivados)
+    s = s.replace('\r\n', ' | ').replace('\n', ' | ').replace('\r', ' | ').replace('\t', ' ')
+    if len(s) > max_len:
+        s = s[: max_len - 1] + '…'
+    return s
+
+
 async def audit(actor: str, action: str, target: str = None,
                 detail: str = None, ip: str = None) -> None:
-    """Registra acao no audit log."""
+    """Registra acao no audit log. Sanitiza campos user-controlled."""
+    actor  = _sanitize_audit_field(actor,  max_len=128)
+    action = _sanitize_audit_field(action, max_len=64)
+    target = _sanitize_audit_field(target, max_len=256)
+    detail = _sanitize_audit_field(detail, max_len=512)
+    ip     = _sanitize_audit_field(ip,     max_len=64)
     try:
         async with get_conn() as conn:
             await conn.execute(

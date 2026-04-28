@@ -22,10 +22,13 @@ monkey-patching dos testes (ex.: patch('main.AGENT_FILE_PATH', ...)).
 
 import asyncio
 import hashlib
+import hmac as _hmac
 import json as _json
 import logging
+import os as _os
 import re as _re
 import secrets
+import time as _time
 import urllib.request as _urllib
 from typing import Optional
 
@@ -33,6 +36,42 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 import db
+
+
+# SEC (M7): purge confirm_token agora e um HMAC stateless valido por 5 min.
+# Antes, backend gerava um token e ja enfileirava o comando — admin recebia
+# o token apenas como "recibo". Agente so checava `if not token` (truthy),
+# entao qualquer string nao-vazia passava. Agora exige fluxo two-step:
+# 1ª chamada (sem token) retorna o token sem enfileirar; 2ª chamada (com
+# token valido) enfileira o comando de fato. Sem DB schema change.
+_PURGE_TOKEN_LEN = 24  # hex chars (12 bytes de entropia)
+_PURGE_WINDOW_MIN = 5  # minutos de validade
+
+
+def _purge_token_secret() -> bytes:
+    """Chave HMAC do purge token. Reusa ADMIN_SESSION_SECRET (gerenciado e
+    rotacionavel pelo operador). Cai pra AGENT_TOKEN se aquele estiver vazio."""
+    s = _os.environ.get("ADMIN_SESSION_SECRET", "")
+    if s:
+        return s.encode()
+    return _os.environ.get("AGENT_TOKEN", "").encode() or b"infra-vision-fallback"
+
+
+def _purge_token_for(hostname: str, bucket: int) -> str:
+    msg = f"purge:{hostname}:{bucket}".encode()
+    return _hmac.new(_purge_token_secret(), msg, hashlib.sha256).hexdigest()[:_PURGE_TOKEN_LEN]
+
+
+def _verify_purge_token(hostname: str, token: str) -> bool:
+    if not token or len(token) != _PURGE_TOKEN_LEN:
+        return False
+    bucket = int(_time.time() // 60)
+    # Aceita bucket atual + os ultimos N (janela de _PURGE_WINDOW_MIN minutos)
+    for delta in range(0, _PURGE_WINDOW_MIN + 1):
+        expected = _purge_token_for(hostname, bucket - delta)
+        if _hmac.compare_digest(token, expected):
+            return True
+    return False
 import telegram_bot as tg
 from auth import (
     AGENT_TOKEN,
@@ -334,9 +373,33 @@ async def create_command(request: Request) -> JSONResponse:
     if not hostname or not command:
         return JSONResponse({"error": "hostname e command sao obrigatorios"}, status_code=422)
 
+    # SEC (M7): purge requer fluxo two-step com confirm_token HMAC.
+    # 1a chamada (sem token) -> retorna token, NAO enfileira o comando.
+    # 2a chamada (com token valido) -> enfileira de fato.
     confirm_token = None
     if command == "purge":
-        confirm_token = secrets.token_hex(8)
+        provided = (body.get("confirm_token") or "").strip()
+        if not provided:
+            issued = _purge_token_for(hostname, int(_time.time() // 60))
+            return JSONResponse({
+                "requires_confirm": True,
+                "confirm_token": issued,
+                "expires_in_seconds": _PURGE_WINDOW_MIN * 60,
+                "message": (
+                    "purge e irreversivel. Reenvie a request com este "
+                    "confirm_token dentro de 5 minutos para confirmar."
+                ),
+            }, status_code=202)
+        if not _verify_purge_token(hostname, provided):
+            await _m.db.audit(
+                issued_by, "purge_confirm_invalid", hostname,
+                detail="token invalido ou expirado",
+            )
+            return JSONResponse(
+                {"error": "confirm_token invalido ou expirado"},
+                status_code=400,
+            )
+        confirm_token = provided
 
     try:
         cmd_id = await _m.db.insert_command(
@@ -347,8 +410,7 @@ async def create_command(request: Request) -> JSONResponse:
 
     response = {"id": cmd_id, "hostname": hostname, "command": command, "status": "pending"}
     if confirm_token:
-        response["confirm_token"] = confirm_token
-        response["warning"] = "purge e irreversivel. Anote o confirm_token."
+        response["confirm_token"] = confirm_token  # ecoa o token validado (ja consumido)
 
     await _m.db.audit(issued_by, "command", hostname, detail=command)
     nats_sent = False

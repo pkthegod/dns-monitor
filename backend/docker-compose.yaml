@@ -101,6 +101,7 @@ services:
       AGENT_FILE_PATH: /app/agent/dns_agent.py
       SECURITY_ENABLED: ${SECURITY_ENABLED:-true}
       SECURITY_WHITELIST: ${SECURITY_WHITELIST:-}
+      ADMIN_BEARER_ALLOWED_IPS: ${ADMIN_BEARER_ALLOWED_IPS:-}
     volumes:
       # SEC/OPS: bind mount de DIRETORIO (nao de arquivo unico).
       # Bind mount de file unico amarra no inode original — quando `cp -a`

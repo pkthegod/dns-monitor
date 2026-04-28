@@ -384,11 +384,23 @@ def _build_report_pdf(data: dict, client_user: str) -> bytes:
 
     elements = []
 
+    # SEC (LL4): client_user e hostnames sao user-controlled (admin define).
+    # reportlab Paragraph interpreta tags XML/HTML-like (<b>, <i>, etc.). Sem
+    # escape, um username/hostname com `<` injeta formatacao ou conteudo extra.
+    from xml.sax.saxutils import escape as _xml_escape
+
     # Header
     period = data["period"]
     elements.append(Paragraph("Infra-Vision — Relatorio Mensal", title_style))
-    elements.append(Paragraph(f"Cliente: {client_user} | Periodo: {period['start'][:10]} a {period['end'][:10]}", subtitle_style))
-    elements.append(Paragraph(f"Hosts: {', '.join(data['hostnames'])}", normal))
+    elements.append(Paragraph(
+        f"Cliente: {_xml_escape(str(client_user))} | "
+        f"Periodo: {_xml_escape(str(period['start'][:10]))} a {_xml_escape(str(period['end'][:10]))}",
+        subtitle_style,
+    ))
+    elements.append(Paragraph(
+        f"Hosts: {_xml_escape(', '.join(str(h) for h in data['hostnames']))}",
+        normal,
+    ))
     elements.append(Spacer(1, 8*mm))
 
     # Disponibilidade
