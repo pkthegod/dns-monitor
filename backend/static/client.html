@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="/static/theme.js?v=101"></script>
-<link rel="stylesheet" href="/static/base.css?v=102">
+<link rel="stylesheet" href="/static/base.css?v=103">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 <style>
@@ -126,6 +126,16 @@
   .result-meta { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 14px; font-size: 11px; color: var(--text-dim); }
   .result-meta span { display: flex; align-items: center; gap: 4px; }
   .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
+
+  /* DNS Query Stats KPIs */
+  .dns-stat-kpi { background: var(--bg); border: 1px solid var(--border-lo); border-radius: 8px; padding: 10px 14px; }
+  .dns-stat-label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
+  .dns-stat-value { font-size: 1.3rem; font-weight: 700; font-family: var(--font-mono); }
+  .ds-type-bar { display: flex; align-items: center; gap: 8px; }
+  .ds-type-name { width: 48px; font-family: var(--font-mono); color: var(--text-mid); }
+  .ds-type-bar-track { flex: 1; height: 14px; background: var(--bg-subtle); border-radius: 3px; overflow: hidden; }
+  .ds-type-bar-fill { height: 100%; background: var(--teal); transition: width .4s ease; }
+  .ds-type-pct { width: 80px; text-align: right; font-family: var(--font-mono); color: var(--text-mid); font-size: 11px; }
 
   /* DNS Trace section */
   .trace-section { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 20px 24px; margin-bottom: 20px; }
@@ -298,6 +308,26 @@
       <canvas id="chartAvail"></canvas>
       <div class="tip">Checks realizados por hora. Falhas aparecem em vermelho.</div>
     </div>
+  </div>
+
+  <!-- DNS Query Stats — visao do trafego de DNS do servidor -->
+  <div class="dns-stats-section" id="dnsStatsSection" style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px 24px;margin-bottom:20px;">
+    <h3 style="font-size:12px;font-weight:500;color:var(--text-mid);text-transform:uppercase;letter-spacing:.06em;margin-bottom:14px;">Movimento DNS no periodo</h3>
+    <div id="dnsStatsKpis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:16px;">
+      <div class="dns-stat-kpi"><div class="dns-stat-label">Total queries</div><div class="dns-stat-value" id="dsKpiTotal">--</div></div>
+      <div class="dns-stat-kpi"><div class="dns-stat-label">Queries/seg</div><div class="dns-stat-value" id="dsKpiQps">--</div></div>
+      <div class="dns-stat-kpi" style="color:var(--green)"><div class="dns-stat-label">% Sucesso (NOERROR)</div><div class="dns-stat-value" id="dsKpiSuccess">--</div></div>
+      <div class="dns-stat-kpi" style="color:var(--yellow)"><div class="dns-stat-label">% NXDOMAIN</div><div class="dns-stat-value" id="dsKpiNxdomain">--</div></div>
+      <div class="dns-stat-kpi" style="color:var(--red)"><div class="dns-stat-label">% Falhas (SERVFAIL)</div><div class="dns-stat-value" id="dsKpiServfail">--</div></div>
+      <div class="dns-stat-kpi" style="color:var(--accent)"><div class="dns-stat-label">Cache hit (Unbound)</div><div class="dns-stat-value" id="dsKpiCache">--</div></div>
+    </div>
+    <canvas id="chartClientRcodes" style="max-height:240px"></canvas>
+    <div style="font-size:11px;color:var(--text-dim);margin-top:8px;font-style:italic;">Distribuicao de respostas DNS ao longo do periodo. Verde = sucesso; amarelo/vermelho = problemas.</div>
+    <div id="dsTypesContainer" style="margin-top:14px;display:none">
+      <div style="font-size:11px;font-weight:600;color:var(--text-mid);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">Tipos de query mais consultados</div>
+      <div id="dsTypesBars" style="display:flex;flex-direction:column;gap:6px;font-size:12px;"></div>
+    </div>
+    <div id="dsEmptyState" class="dim" style="font-size:12px;font-style:italic;display:none">Coleta de stats inicia ~10min apos primeira execucao do agente. Aguarde os primeiros ciclos.</div>
   </div>
 
   <!-- Alerts -->
@@ -509,6 +539,137 @@ function renderTimeline(data) {
   }).join('');
 }
 
+// DNS Query Stats — RCODEs / QPS / cache do servidor DNS do cliente
+async function loadDnsStats() {
+  let payload;
+  try { payload = await apiFetch(`/client/dns-stats?period=${currentPeriod}`); }
+  catch (e) {
+    console.warn('[client] /dns-stats falhou:', e?.message || e);
+    document.getElementById('dsEmptyState').style.display = '';
+    document.getElementById('dsEmptyState').textContent = 'Erro ao carregar dados de DNS. Tente novamente em alguns minutos.';
+    return;
+  }
+  const samples = payload.samples || [];
+
+  if (!samples.length) {
+    document.getElementById('dsEmptyState').style.display = '';
+    return;
+  }
+  document.getElementById('dsEmptyState').style.display = 'none';
+
+  // Agrega cross-host (cliente pode ter mais de um hostname)
+  const buckets = new Map();
+  for (const s of samples) {
+    const key = s.ts;
+    if (!buckets.has(key)) {
+      buckets.set(key, {
+        ts: key,
+        noerror: 0, nxdomain: 0, servfail: 0, refused: 0, notimpl: 0, formerr: 0,
+        queries_a: 0, queries_aaaa: 0, queries_mx: 0, queries_ptr: 0, queries_other: 0,
+        queries_total: 0, qps_avg_sum: 0, qps_avg_n: 0,
+        cache_hit_pct_sum: 0, cache_hit_pct_n: 0,
+      });
+    }
+    const b = buckets.get(key);
+    for (const k of ['noerror','nxdomain','servfail','refused','notimpl','formerr',
+                     'queries_a','queries_aaaa','queries_mx','queries_ptr','queries_other',
+                     'queries_total']) {
+      b[k] += Number(s[k] || 0);
+    }
+    if (s.qps_avg != null) { b.qps_avg_sum += Number(s.qps_avg); b.qps_avg_n++; }
+    if (s.cache_hit_pct != null) { b.cache_hit_pct_sum += Number(s.cache_hit_pct); b.cache_hit_pct_n++; }
+  }
+  const series = Array.from(buckets.values()).sort((a,b) => a.ts.localeCompare(b.ts));
+
+  // Totais agregados
+  const totals = series.reduce((acc, s) => ({
+    queries_total: acc.queries_total + s.queries_total,
+    noerror:       acc.noerror + s.noerror,
+    nxdomain:      acc.nxdomain + s.nxdomain,
+    servfail:      acc.servfail + s.servfail,
+    queries_a:     acc.queries_a + s.queries_a,
+    queries_aaaa:  acc.queries_aaaa + s.queries_aaaa,
+    queries_mx:    acc.queries_mx + s.queries_mx,
+    queries_ptr:   acc.queries_ptr + s.queries_ptr,
+    queries_other: acc.queries_other + s.queries_other,
+    qps_sum:       acc.qps_sum + (s.qps_avg_n ? s.qps_avg_sum / s.qps_avg_n : 0),
+    qps_n:         acc.qps_n + (s.qps_avg_n ? 1 : 0),
+    cache_sum:     acc.cache_sum + (s.cache_hit_pct_n ? s.cache_hit_pct_sum / s.cache_hit_pct_n : 0),
+    cache_n:       acc.cache_n + (s.cache_hit_pct_n ? 1 : 0),
+  }), {queries_total:0,noerror:0,nxdomain:0,servfail:0,queries_a:0,queries_aaaa:0,queries_mx:0,queries_ptr:0,queries_other:0,qps_sum:0,qps_n:0,cache_sum:0,cache_n:0});
+
+  const fmt = n => n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'k' : String(Math.round(n));
+  const pct = (a, total) => total > 0 ? ((a/total)*100).toFixed(2)+'%' : '0%';
+
+  document.getElementById('dsKpiTotal').textContent    = fmt(totals.queries_total);
+  document.getElementById('dsKpiQps').textContent      = totals.qps_n > 0 ? (totals.qps_sum/totals.qps_n).toFixed(1) : '--';
+  document.getElementById('dsKpiSuccess').textContent  = pct(totals.noerror, totals.queries_total);
+  document.getElementById('dsKpiNxdomain').textContent = pct(totals.nxdomain, totals.queries_total);
+  document.getElementById('dsKpiServfail').textContent = pct(totals.servfail, totals.queries_total);
+  document.getElementById('dsKpiCache').textContent    = totals.cache_n > 0 ? (totals.cache_sum/totals.cache_n).toFixed(1)+'%' : '—';
+
+  // Tabela visual de tipos
+  const types = [
+    ['A',     totals.queries_a],
+    ['AAAA',  totals.queries_aaaa],
+    ['MX',    totals.queries_mx],
+    ['PTR',   totals.queries_ptr],
+    ['Outros',totals.queries_other],
+  ].sort((a,b) => b[1] - a[1]);
+  const totalTypes = types.reduce((s, [,v]) => s + v, 0);
+  const typesEl = document.getElementById('dsTypesContainer');
+  const barsEl = document.getElementById('dsTypesBars');
+  if (totalTypes > 0) {
+    typesEl.style.display = '';
+    const maxN = Math.max(...types.map(([,n]) => n)) || 1;
+    barsEl.innerHTML = types.map(([name, n]) => {
+      const w = (n / maxN * 100).toFixed(1);
+      return `<div class="ds-type-bar">
+        <span class="ds-type-name">${esc(name)}</span>
+        <div class="ds-type-bar-track"><div class="ds-type-bar-fill" style="width:${w}%"></div></div>
+        <span class="ds-type-pct">${fmt(n)} (${pct(n, totalTypes)})</span>
+      </div>`;
+    }).join('');
+  } else {
+    typesEl.style.display = 'none';
+  }
+
+  // Stacked area chart RCODEs
+  const labels = series.map(s => s.ts);
+  const rcodeColors = {
+    noerror:  '#9ece6a', nxdomain: '#e0af68', servfail: '#f7768e',
+    refused:  '#bb9af7', notimpl:  '#7dcfff', formerr:  '#ff9e64',
+  };
+  try {
+    mk('chartClientRcodes', {
+      type: 'line',
+      data: {
+        labels,
+        datasets: ['noerror','nxdomain','servfail','refused','notimpl','formerr'].map(k => ({
+          label: k.toUpperCase(),
+          data: series.map(s => s[k]),
+          backgroundColor: rcodeColors[k] + '88',
+          borderColor: rcodeColors[k],
+          borderWidth: 1.5,
+          pointRadius: 0,
+          tension: 0.3,
+          fill: true,
+        })),
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 10 } } } },
+        scales: {
+          x: { type: 'time', time: { unit: currentPeriod === '7d' ? 'hour' : 'minute' }, grid: { color: '#1c203822' } },
+          y: { stacked: true, beginAtZero: true, grid: { color: '#1c203833' } },
+        },
+      },
+    });
+  } catch (e) { console.warn('chartClientRcodes:', e); }
+}
+
+
 async function loadPortal() {
   try {
     chartDefaults();
@@ -519,6 +680,8 @@ async function loadPortal() {
     renderCharts(data);
     renderAlerts(data);
     document.getElementById('heroAgo').textContent = 'Atualizado ' + new Date().toLocaleTimeString('pt-BR');
+    // Atualiza tambem stats DNS (em paralelo, sem bloquear se falhar)
+    loadDnsStats().catch(err => console.warn('dns-stats refresh:', err?.message || err));
     if (refreshTimer) clearInterval(refreshTimer);
     refreshTimer = setInterval(loadPortal, 60000);
   } catch (e) { toast.err(e.message); }
@@ -1131,7 +1294,7 @@ document.getElementById('traceInput').addEventListener('keydown', e => {
   if (e.key === 'Enter') runDnsTrace();
 });
 
-fetchSessionToken().then(() => { loadPortal(); loadSLA(); });
+fetchSessionToken().then(() => { loadPortal(); loadSLA(); loadDnsStats(); });
 </script>
 </body>
 </html>
