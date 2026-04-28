@@ -140,6 +140,24 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* ── Ambient background — "vigia atento": aurora mesh sob o conteudo ── */
+/* Estatico e leve. Cards ficam por cima por ordem de pintura.            */
+html[data-theme="dark"] body {
+  background:
+    radial-gradient(1100px 620px at 12% 8%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 60%),
+    radial-gradient(900px 520px at 88% 92%, color-mix(in srgb, var(--teal) 7%, transparent), transparent 60%),
+    radial-gradient(720px 420px at 50% 50%, color-mix(in srgb, var(--purple) 5%, transparent), transparent 70%),
+    var(--bg);
+  background-attachment: fixed;
+}
+html[data-theme="light"] body {
+  background:
+    radial-gradient(900px 500px at 8% 4%, color-mix(in srgb, var(--accent) 6%, transparent), transparent 65%),
+    radial-gradient(820px 460px at 92% 96%, color-mix(in srgb, var(--teal) 5%, transparent), transparent 65%),
+    var(--bg);
+  background-attachment: fixed;
+}
+
 /* Scan-line texture (dark only) — gives CRT/radar feel */
 html[data-theme="dark"] body::after {
   content: '';
@@ -155,6 +173,49 @@ html[data-theme="dark"] body::after {
     transparent 3px
   );
   opacity: .4;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   LOGIN AMBIENT — radar sweep rotativo atras do card (so em <body class="login-page">)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+body.login-page { overflow: hidden; }
+
+body.login-page::before {
+  content: '';
+  position: fixed;
+  inset: -25%;            /* extra espaco pra rotacao nao mostrar bordas */
+  z-index: 0;
+  pointer-events: none;
+  /* Cone fino com brilho do accent — varre o circulo lentamente */
+  background: conic-gradient(from 0deg at 50% 50%,
+    transparent 0deg,
+    transparent 308deg,
+    color-mix(in srgb, var(--accent) 26%, transparent) 348deg,
+    color-mix(in srgb, var(--accent) 8%, transparent)  357deg,
+    transparent 360deg);
+  /* Mascara radial: brilho maior no centro, esmaece nas bordas */
+  -webkit-mask-image: radial-gradient(circle at 50% 50%, black 22%, transparent 68%);
+          mask-image: radial-gradient(circle at 50% 50%, black 22%, transparent 68%);
+  animation: radarSweep 14s linear infinite;
+  will-change: transform;
+}
+html[data-theme="light"] body.login-page::before { opacity: .55; }
+
+@keyframes radarSweep {
+  to { transform: rotate(360deg); }
+}
+
+/* Conteudo da pagina de login fica por cima do sweep */
+body.login-page > * { position: relative; z-index: 1; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ACCESSIBILITY — respeita prefers-reduced-motion
+   ═══════════════════════════════════════════════════════════════════════════ */
+@media (prefers-reduced-motion: reduce) {
+  body.login-page::before { animation: none; }
+  .live-dot { animation: none; }
+  .spin, .spinner { animation: none; }
 }
 
 /* ── Scrollbar ── */
