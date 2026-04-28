@@ -140,22 +140,28 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* ── Ambient background — "vigia atento": aurora mesh sob o conteudo ── */
-/* Estatico e leve. Cards ficam por cima por ordem de pintura.            */
+/* ── Ambient background — "vigia atento": aurora mesh com respiracao lenta ── */
 html[data-theme="dark"] body {
   background:
-    radial-gradient(1100px 620px at 12% 8%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 60%),
-    radial-gradient(900px 520px at 88% 92%, color-mix(in srgb, var(--teal) 7%, transparent), transparent 60%),
-    radial-gradient(720px 420px at 50% 50%, color-mix(in srgb, var(--purple) 5%, transparent), transparent 70%),
+    radial-gradient(1100px 620px at 12% 8%,  color-mix(in srgb, var(--accent) 8%, transparent), transparent 60%),
+    radial-gradient(900px  520px at 88% 92%, color-mix(in srgb, var(--teal)   7%, transparent), transparent 60%),
+    radial-gradient(720px  420px at 50% 50%, color-mix(in srgb, var(--purple) 5%, transparent), transparent 70%),
     var(--bg);
   background-attachment: fixed;
+  animation: auroraBreath 55s ease-in-out infinite alternate;
 }
 html[data-theme="light"] body {
   background:
-    radial-gradient(900px 500px at 8% 4%, color-mix(in srgb, var(--accent) 6%, transparent), transparent 65%),
-    radial-gradient(820px 460px at 92% 96%, color-mix(in srgb, var(--teal) 5%, transparent), transparent 65%),
+    radial-gradient(900px 500px at 8% 4%,   color-mix(in srgb, var(--accent) 6%, transparent), transparent 65%),
+    radial-gradient(820px 460px at 92% 96%, color-mix(in srgb, var(--teal)   5%, transparent), transparent 65%),
     var(--bg);
   background-attachment: fixed;
+  animation: auroraBreath 55s ease-in-out infinite alternate;
+}
+/* Drift sutil: shift de poucos % na posicao das auroras — "respiracao" da malha */
+@keyframes auroraBreath {
+  0%   { background-position: 0% 0%, 100% 100%, 50% 50%, 0 0; }
+  100% { background-position: 6% 4%, 94% 96%, 54% 46%, 0 0; }
 }
 
 /* Scan-line texture (dark only) — gives CRT/radar feel */
@@ -176,44 +182,111 @@ html[data-theme="dark"] body::after {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   LOGIN AMBIENT — radar sweep rotativo atras do card (so em <body class="login-page">)
+   LOGIN AMBIENT — radar suave + ondas concentricas (so em <body class="login-page">)
    ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Custom property animavel: a rotacao acontece DENTRO do gradient, o elemento
+   fica estatico colado no viewport. Sem cantos rotativos vazando. */
+@property --radar-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
 
 body.login-page { overflow: hidden; }
 
 body.login-page::before {
   content: '';
   position: fixed;
-  inset: -25%;            /* extra espaco pra rotacao nao mostrar bordas */
+  inset: 0;             /* viewport-sized; nada a girar fora da tela */
   z-index: 0;
   pointer-events: none;
-  /* Cone fino com brilho do accent — varre o circulo lentamente */
-  background: conic-gradient(from 0deg at 50% 50%,
+  /* Cone fino e suave (~20°) com pico discreto cyan. Nao tem eco — limpo. */
+  background: conic-gradient(from var(--radar-angle) at 50% 50%,
     transparent 0deg,
-    transparent 308deg,
-    color-mix(in srgb, var(--accent) 26%, transparent) 348deg,
-    color-mix(in srgb, var(--accent) 8%, transparent)  357deg,
+    transparent 340deg,
+    color-mix(in srgb, var(--cyan) 4%, transparent)   346deg,
+    color-mix(in srgb, var(--cyan) 11%, transparent)  354deg,
+    color-mix(in srgb, var(--cyan) 17%, transparent)  358deg,
+    color-mix(in srgb, var(--cyan) 7%, transparent)   359.5deg,
     transparent 360deg);
-  /* Mascara radial: brilho maior no centro, esmaece nas bordas */
-  -webkit-mask-image: radial-gradient(circle at 50% 50%, black 22%, transparent 68%);
-          mask-image: radial-gradient(circle at 50% 50%, black 22%, transparent 68%);
-  animation: radarSweep 14s linear infinite;
-  will-change: transform;
+  /* Mascara cobre o viewport ate o canto, fade so nos ultimos 18% da diagonal. */
+  -webkit-mask-image: radial-gradient(circle farthest-corner at 50% 50%,
+    black 0%, black 82%, transparent 100%);
+          mask-image: radial-gradient(circle farthest-corner at 50% 50%,
+    black 0%, black 82%, transparent 100%);
+  animation: radarSweep 17s linear infinite;
 }
-html[data-theme="light"] body.login-page::before { opacity: .55; }
+html[data-theme="light"] body.login-page::before { opacity: .5; }
 
 @keyframes radarSweep {
-  to { transform: rotate(360deg); }
+  to { --radar-angle: 360deg; }
 }
 
-/* Conteudo da pagina de login fica por cima do sweep */
+/* Conteudo do login fica acima do radar e das ondas */
 body.login-page > * { position: relative; z-index: 1; }
+
+/* ── Ondas em um lago — 3 aneis concentricos delicados ── */
+/* Render por radial-gradient com calc() em px constante: anel sempre nitido
+   (nao escalavel), espessura 1-1.5px qualquer que seja o tamanho.
+   Animacao em background-size cresce o "raio do anel" sem layout thrashing. */
+.sonar-pulse {
+  position: fixed;
+  top: 50%; left: 50%;
+  width: 100vmax;
+  height: 100vmax;
+  margin: -50vmax 0 0 -50vmax;
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 0;
+  background-image: radial-gradient(circle at center,
+    transparent 0,
+    transparent calc(50% - 1.5px),
+    color-mix(in srgb, var(--cyan) 28%, transparent) 50%,
+    transparent calc(50% + 1.5px),
+    transparent 100%);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 0% 0%;
+  opacity: 0;
+  animation: ripple 9s cubic-bezier(.22, .61, .36, 1) infinite;
+  will-change: background-size, opacity;
+}
+.sonar-pulse-2 {
+  animation-delay: 3s;
+  background-image: radial-gradient(circle at center,
+    transparent 0,
+    transparent calc(50% - 1px),
+    color-mix(in srgb, var(--accent) 18%, transparent) 50%,
+    transparent calc(50% + 1px),
+    transparent 100%);
+}
+.sonar-pulse-3 {
+  animation-delay: 6s;
+  background-image: radial-gradient(circle at center,
+    transparent 0,
+    transparent calc(50% - 1px),
+    color-mix(in srgb, var(--teal) 14%, transparent) 50%,
+    transparent calc(50% + 1px),
+    transparent 100%);
+}
+html[data-theme="light"] .sonar-pulse,
+html[data-theme="light"] .sonar-pulse-2,
+html[data-theme="light"] .sonar-pulse-3 { mix-blend-mode: multiply; }
+
+@keyframes ripple {
+  0%   { background-size:   4% 4%;   opacity: 0; }
+  8%   { opacity: .85; }
+  100% { background-size: 220% 220%; opacity: 0; }
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════
    ACCESSIBILITY — respeita prefers-reduced-motion
    ═══════════════════════════════════════════════════════════════════════════ */
 @media (prefers-reduced-motion: reduce) {
+  body { animation: none; }
   body.login-page::before { animation: none; }
+  .sonar-pulse, .sonar-pulse-2, .sonar-pulse-3 { animation: none !important; opacity: 0; }
   .live-dot { animation: none; }
   .spin, .spinner { animation: none; }
 }
