@@ -28,9 +28,10 @@ ProtectSystem=strict
 # /opt/dns-agent precisa ser writable pra o auto-update funcionar:
 # o agent escreve dns_agent.py.update_tmp ao lado do binário antes do rename atômico.
 # Sem isso, "Update" no painel falha com [Errno 30] Read-only file system.
+# /var/lib/dns-agent guarda snapshot de stats DNS pra calcular delta entre amostras.
 # Trade-off aceitável: backend autentica via Bearer + checksum SHA-256 validado +
 # py_compile antes de gravar. Atacante com root local já tem acesso de qualquer jeito.
-ReadWritePaths=/var/log/dns-agent /run/sudo /opt/dns-agent
+ReadWritePaths=/var/log/dns-agent /run/sudo /opt/dns-agent /var/lib/dns-agent
 
 # Logs vão para journald automaticamente
 StandardOutput=journal

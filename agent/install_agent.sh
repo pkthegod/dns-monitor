@@ -91,9 +91,12 @@ fi
 # ---------------------------------------------------------------------------
 echo ""
 echo "3) Criando diretórios..."
-mkdir -p "$INSTALL_DIR" "$CONFIG_DIR" "$LOG_DIR"
-chown "$SERVICE_USER:$SERVICE_USER" "$LOG_DIR"
-echo "   $INSTALL_DIR, $CONFIG_DIR, $LOG_DIR — OK."
+STATE_DIR="/var/lib/dns-agent"
+mkdir -p "$INSTALL_DIR" "$CONFIG_DIR" "$LOG_DIR" "$STATE_DIR"
+# INSTALL_DIR precisa ser writable pelo agent pra self-update funcionar
+# (escreve dns_agent.py.update_tmp ao lado do binário antes do rename atômico).
+chown "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR" "$LOG_DIR" "$STATE_DIR"
+echo "   $INSTALL_DIR, $CONFIG_DIR, $LOG_DIR, $STATE_DIR — OK."
 
 # ---------------------------------------------------------------------------
 # 4. Arquivos do agente
