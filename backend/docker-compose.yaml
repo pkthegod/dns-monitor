@@ -100,7 +100,15 @@ services:
       SMTP_TLS: ${SMTP_TLS:-true}
       AGENT_FILE_PATH: /app/agent/dns_agent.py
     volumes:
-      - ../agent/dns_agent.py:/app/agent/dns_agent.py:ro
+      # SEC/OPS: bind mount de DIRETORIO (nao de arquivo unico).
+      # Bind mount de file unico amarra no inode original — quando `cp -a`
+      # substitui o arquivo no host (cria novo inode), o container continua
+      # vendo o conteudo antigo ate ser recreado com --force-recreate.
+      # Bind mount de diretorio segue o path: cp -a no host e visto
+      # imediatamente no container, sem restart.
+      # Container so enxerga arquivos que estiverem em /opt/dns-monitor/agent/
+      # (hoje so dns_agent.py — pedido pelo AGENT_FILE_PATH).
+      - ../agent:/app/agent:ro
     depends_on:
       postgres:
         condition: service_healthy
