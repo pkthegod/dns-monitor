@@ -42,7 +42,32 @@ async def handle_command_ack(msg):
         logger.error("NATS ACK handler erro: %s", exc)
 
 
+async def handle_dns_stats(msg):
+    """Recebe sample de stats DNS via NATS (dns.stats.<hostname>).
+
+    Payload esperado: JSON com chaves period_seconds, source, RCODEs (delta),
+    tipos de query, queries_total, qps_avg, cache_hits/misses (Unbound).
+    Ver project_dns_stats_feature.md pra schema completo.
+    """
+    try:
+        data = json.loads(msg.data.decode())
+        # Subject: "dns.stats.<hostname>" — extrai hostname do subject
+        parts = msg.subject.split(".", 2)
+        hostname = parts[2] if len(parts) >= 3 else data.get("hostname", "")
+        if not hostname:
+            logger.warning("NATS dns.stats sem hostname (subject=%s)", msg.subject)
+            await msg.ack()
+            return
+        await db.insert_dns_query_stats(hostname, data)
+        logger.debug("NATS dns.stats: %s recebido (queries_total=%s)",
+                     hostname, data.get("queries_total"))
+        await msg.ack()
+    except Exception as exc:
+        logger.error("NATS dns.stats handler erro: %s", exc)
+
+
 async def setup_nats_subscriptions():
     """Registra subscriptions NATS no backend."""
     if nc:
         await nc.js_subscribe("dns.commands.*.ack", handle_command_ack, durable="backend-cmd-ack")
+        await nc.js_subscribe("dns.stats.*", handle_dns_stats, durable="backend-dns-stats")

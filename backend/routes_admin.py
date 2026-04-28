@@ -299,6 +299,37 @@ async def update_admin_user_endpoint(user_id: int, request: Request) -> JSONResp
     return JSONResponse({"status": "ok"})
 
 
+# ---------------------------------------------------------------------------
+# DNS Query Stats — admin pode ver de qualquer agente + ajustar intervalo
+# ---------------------------------------------------------------------------
+
+@admin_v1.get("/agents/{hostname}/dns-stats", tags=["dns-stats"])
+async def get_agent_dns_stats(hostname: str, request: Request, period: str = "24h"):
+    """Serie temporal de stats DNS de um agente (admin)."""
+    from main import _SafeJSONResponse
+    await require_admin(request)
+    if not _re.match(r'^[a-zA-Z0-9._-]{1,128}$', hostname):
+        raise HTTPException(status_code=422, detail="hostname invalido")
+    data = await db.get_dns_query_stats(hostname=hostname, period=period)
+    return _SafeJSONResponse({"hostname": hostname, "period": period, "samples": data})
+
+
+@admin_v1.patch("/agents/{hostname}/stats-interval", tags=["dns-stats"])
+async def set_agent_stats_interval(hostname: str, request: Request) -> JSONResponse:
+    """Ajusta intervalo de coleta de stats DNS pro agente (60-3600s)."""
+    await require_admin_role(request)
+    body = await request.json()
+    interval = int(body.get("interval_seconds", 600))
+    try:
+        ok = await db.update_agent_stats_interval(hostname, interval)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Agente nao encontrado")
+    await db.audit("admin", "dns_stats_interval_set", hostname, detail=str(interval))
+    return JSONResponse({"hostname": hostname, "interval_seconds": interval})
+
+
 @admin_v1.delete("/admin-users/{user_id}", tags=["admin-users"])
 async def delete_admin_user_endpoint(user_id: int, request: Request) -> JSONResponse:
     """Remove um admin user (requer role=admin). Nao pode deletar a si mesmo."""

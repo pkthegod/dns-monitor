@@ -450,6 +450,28 @@ def _build_report_pdf(data: dict, client_user: str) -> bytes:
     return buf.getvalue()
 
 
+@client_v1.get("/client/dns-stats")
+async def client_dns_stats(request: Request, period: str = "24h"):
+    """Serie temporal de stats DNS dos hostnames associados ao cliente.
+
+    SEC: filtra por user.hostnames — cliente nunca ve outros tenants.
+    Periodos longos (>24h) usam continuous aggregate dns_stats_hourly.
+    """
+    from main import _SafeJSONResponse
+    cookie = request.cookies.get("client_session", "")
+    client_user = _verify_client_cookie(cookie)
+    if not client_user:
+        raise HTTPException(status_code=403, detail="Acesso negado")
+    user = await db.get_client(client_user)
+    if not user or not user["active"]:
+        raise HTTPException(status_code=403)
+    hostnames = user["hostnames"]
+    if not hostnames:
+        return _SafeJSONResponse({"period": period, "hostnames": [], "samples": []})
+    data = await db.get_dns_query_stats(hostnames=hostnames, period=period)
+    return _SafeJSONResponse({"period": period, "hostnames": hostnames, "samples": data})
+
+
 @client_v1.get("/client/data")
 async def client_data(request: Request, period: str = "24h"):
     """Dados filtrados por hostnames do cliente logado. Auth via cookie ONLY.
