@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="/static/theme.js?v=091"></script>
-<link rel="stylesheet" href="/static/base.css?v=102">
+<link rel="stylesheet" href="/static/base.css?v=103">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <style>
   .page { max-width: 1400px; margin: 0 auto; padding: 0 36px 48px; }
@@ -124,6 +124,35 @@
     <div class="kpi teal"><div class="label">DNS Latencia Avg</div><div class="value" id="kpiAvgLatency">--</div></div>
     <div class="kpi purple"><div class="label">CPU Avg</div><div class="value" id="kpiCpuAvg">--</div></div>
     <div class="kpi yellow"><div class="label">Alertas 24h</div><div class="value" id="kpiAlerts24h">--</div></div>
+  </div>
+
+  <!-- DNS Query Stats — RCODEs/QPS/cache via rndc-stats e unbound-control -->
+  <div class="kpis" id="kpiQueriesContainer">
+    <div class="kpi teal"><div class="label">Queries no periodo</div><div class="value" id="kpiQueriesTotal">--</div></div>
+    <div class="kpi blue"><div class="label">QPS medio</div><div class="value" id="kpiQpsAvg">--</div></div>
+    <div class="kpi green"><div class="label">% NOERROR</div><div class="value" id="kpiPctNoerror">--</div></div>
+    <div class="kpi yellow"><div class="label">% NXDOMAIN</div><div class="value" id="kpiPctNxdomain">--</div></div>
+    <div class="kpi red"><div class="label">% SERVFAIL</div><div class="value" id="kpiPctServfail">--</div></div>
+    <div class="kpi purple"><div class="label">Cache hit (Unbound)</div><div class="value" id="kpiCacheHit">--</div></div>
+  </div>
+
+  <div class="charts" id="chartsContainer2">
+    <div class="card chart-card">
+      <h3><span class="dot" style="background:var(--green)"></span> RCODEs ao longo do periodo (stacked)</h3>
+      <canvas id="chartRcodes"></canvas>
+    </div>
+    <div class="card chart-card">
+      <h3><span class="dot" style="background:var(--blue)"></span> QPS — queries por segundo</h3>
+      <canvas id="chartQps"></canvas>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:20px">
+    <h3 style="font-size:12px;font-weight:500;color:var(--text-mid);text-transform:uppercase;letter-spacing:.06em;margin-bottom:14px">Distribuicao de tipos de query</h3>
+    <table class="table" style="font-size:13px">
+      <thead><tr><th>Tipo</th><th style="text-align:right">Total</th><th style="text-align:right">% do total</th></tr></thead>
+      <tbody id="qtypesBody"><tr><td colspan="3" class="dim">Sem dados ainda. Aguarde primeiro ciclo de coleta (~10min).</td></tr></tbody>
+    </table>
   </div>
 
   <div class="charts" id="chartsContainer">
@@ -275,6 +304,156 @@ function renderAlerts(data) {
   </tr>`).join('');
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// DNS Query Stats — RCODEs/QPS/cache via rndc-stats e unbound-control
+// Backend agrega rows raw (<24h) ou hourly aggregate (>=7d). Frontend faz
+// soma cross-host quando hostFilter esta vazio.
+// ─────────────────────────────────────────────────────────────────────────
+async function loadDnsStats() {
+  let url = `/dns-stats?period=${currentPeriod}`;
+  if (currentHost) url += `&host=${encodeURIComponent(currentHost)}`;
+  let payload;
+  try { payload = await apiFetch(url); }
+  catch (e) {
+    // Erro silencioso — backend pode nao ter dados ainda (primeiros 10min)
+    console.warn('[dns-stats] fetch falhou:', e?.message || e);
+    return;
+  }
+  const samples = payload.samples || [];
+
+  // Agrega cross-host por timestamp quando sem filtro de host
+  const buckets = new Map();
+  for (const s of samples) {
+    // ts vem como ISO; usa como chave
+    const key = s.ts;
+    if (!buckets.has(key)) {
+      buckets.set(key, {
+        ts: key,
+        noerror: 0, nxdomain: 0, servfail: 0, refused: 0, notimpl: 0, formerr: 0,
+        queries_a: 0, queries_aaaa: 0, queries_mx: 0, queries_ptr: 0, queries_other: 0,
+        queries_total: 0, qps_avg_sum: 0, qps_avg_n: 0,
+        cache_hit_pct_sum: 0, cache_hit_pct_n: 0,
+      });
+    }
+    const b = buckets.get(key);
+    for (const k of ['noerror','nxdomain','servfail','refused','notimpl','formerr',
+                     'queries_a','queries_aaaa','queries_mx','queries_ptr','queries_other',
+                     'queries_total']) {
+      b[k] += Number(s[k] || 0);
+    }
+    if (s.qps_avg != null) { b.qps_avg_sum += Number(s.qps_avg); b.qps_avg_n++; }
+    if (s.cache_hit_pct != null) { b.cache_hit_pct_sum += Number(s.cache_hit_pct); b.cache_hit_pct_n++; }
+  }
+  const series = Array.from(buckets.values()).sort((a,b) => a.ts.localeCompare(b.ts));
+
+  // KPIs agregados do periodo todo
+  const totals = series.reduce((acc, s) => ({
+    queries_total: acc.queries_total + s.queries_total,
+    noerror:       acc.noerror + s.noerror,
+    nxdomain:      acc.nxdomain + s.nxdomain,
+    servfail:      acc.servfail + s.servfail,
+    queries_a:     acc.queries_a + s.queries_a,
+    queries_aaaa:  acc.queries_aaaa + s.queries_aaaa,
+    queries_mx:    acc.queries_mx + s.queries_mx,
+    queries_ptr:   acc.queries_ptr + s.queries_ptr,
+    queries_other: acc.queries_other + s.queries_other,
+    qps_sum:       acc.qps_sum + (s.qps_avg_n ? s.qps_avg_sum / s.qps_avg_n : 0),
+    qps_n:         acc.qps_n + (s.qps_avg_n ? 1 : 0),
+    cache_sum:     acc.cache_sum + (s.cache_hit_pct_n ? s.cache_hit_pct_sum / s.cache_hit_pct_n : 0),
+    cache_n:       acc.cache_n + (s.cache_hit_pct_n ? 1 : 0),
+  }), {queries_total:0,noerror:0,nxdomain:0,servfail:0,queries_a:0,queries_aaaa:0,queries_mx:0,queries_ptr:0,queries_other:0,qps_sum:0,qps_n:0,cache_sum:0,cache_n:0});
+
+  const fmt = n => n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'k' : String(n);
+  const pct = (a, total) => total > 0 ? ((a/total)*100).toFixed(2)+'%' : '0%';
+
+  document.getElementById('kpiQueriesTotal').textContent = fmt(totals.queries_total);
+  document.getElementById('kpiQpsAvg').textContent = totals.qps_n > 0 ? (totals.qps_sum/totals.qps_n).toFixed(1) : '--';
+  document.getElementById('kpiPctNoerror').textContent  = pct(totals.noerror, totals.queries_total);
+  document.getElementById('kpiPctNxdomain').textContent = pct(totals.nxdomain, totals.queries_total);
+  document.getElementById('kpiPctServfail').textContent = pct(totals.servfail, totals.queries_total);
+  document.getElementById('kpiCacheHit').textContent    = totals.cache_n > 0 ? (totals.cache_sum/totals.cache_n).toFixed(1)+'%' : '—';
+
+  // Tabela de tipos de query
+  const types = [
+    ['A',     totals.queries_a],
+    ['AAAA',  totals.queries_aaaa],
+    ['MX',    totals.queries_mx],
+    ['PTR',   totals.queries_ptr],
+    ['Outros',totals.queries_other],
+  ];
+  const totalTypes = types.reduce((s, [,v]) => s + v, 0);
+  const tbody = document.getElementById('qtypesBody');
+  if (totalTypes === 0) {
+    tbody.innerHTML = '<tr><td colspan="3" class="dim">Sem dados ainda. Aguarde primeiro ciclo de coleta (~10min) ou agente em versao >= 1.5.0</td></tr>';
+  } else {
+    tbody.innerHTML = types.map(([name, n]) =>
+      `<tr><td>${name}</td><td style="text-align:right;font-family:var(--font-mono)">${fmt(n)}</td><td style="text-align:right;font-family:var(--font-mono)">${pct(n, totalTypes)}</td></tr>`
+    ).join('');
+  }
+
+  // Charts: stacked area RCODEs + line QPS
+  const labels = series.map(s => s.ts);
+  const rcodeColors = {
+    noerror:  '#9ece6a', nxdomain: '#e0af68', servfail: '#f7768e',
+    refused:  '#bb9af7', notimpl:  '#7dcfff', formerr:  '#ff9e64',
+  };
+  try {
+    makeOrUpdate('chartRcodes', {
+      type: 'line',
+      data: {
+        labels,
+        datasets: ['noerror','nxdomain','servfail','refused','notimpl','formerr'].map(k => ({
+          label: k.toUpperCase(),
+          data: series.map(s => s[k]),
+          backgroundColor: rcodeColors[k] + '88',
+          borderColor: rcodeColors[k],
+          borderWidth: 1.5,
+          pointRadius: 0,
+          tension: 0.3,
+          fill: true,
+        })),
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 10 } } } },
+        scales: {
+          x: { type: 'time', time: { unit: currentPeriod === '7d' ? 'hour' : 'minute' }, grid: { color: '#1c203822' } },
+          y: { stacked: true, beginAtZero: true, grid: { color: '#1c203833' }, title: { display: true, text: 'queries' } },
+        },
+      },
+    });
+  } catch(ce) { console.warn('chartRcodes:', ce); }
+
+  try {
+    makeOrUpdate('chartQps', {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: 'QPS medio',
+          data: series.map(s => s.qps_avg_n ? (s.qps_avg_sum / s.qps_avg_n).toFixed(2) : 0),
+          borderColor: '#7aa2f7',
+          backgroundColor: '#7aa2f733',
+          borderWidth: 2,
+          pointRadius: 0,
+          tension: 0.4,
+          fill: true,
+        }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { type: 'time', time: { unit: currentPeriod === '7d' ? 'hour' : 'minute' }, grid: { color: '#1c203822' } },
+          y: { beginAtZero: true, grid: { color: '#1c203833' }, title: { display: true, text: 'queries/seg' } },
+        },
+      },
+    });
+  } catch(ce) { console.warn('chartQps:', ce); }
+}
+
+
 async function loadDashboard() {
   const st = document.getElementById('loadStatus');
   st.innerHTML = ICONS.loading + ' Carregando...'; st.style.color = 'var(--text-mid)';
@@ -302,6 +481,8 @@ async function loadDashboard() {
     try { renderLine('chartRam', groupBy(data.ram_history||[],'hostname'), 'ram_avg'); } catch(ce) { console.warn('chartRam:', ce); }
     try { renderLine('chartDnsHistory', groupBy(data.dns_history||[],'hostname'), 'latency_avg'); } catch(ce) { console.warn('chartDnsHistory:', ce); }
     renderAlerts(data);
+    // DNS query stats — chama em paralelo, falha aqui nao bloqueia o resto
+    loadDnsStats().catch(err => console.warn('dns-stats:', err?.message || err));
     animateChildren('#chartsContainer', 'slide-up');
     st.innerHTML = '<span class="live-dot"></span>Atualizado ' + new Date().toLocaleTimeString('pt-BR');
     st.style.color = 'var(--green)';

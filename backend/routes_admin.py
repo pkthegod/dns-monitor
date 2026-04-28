@@ -303,6 +303,24 @@ async def update_admin_user_endpoint(user_id: int, request: Request) -> JSONResp
 # DNS Query Stats — admin pode ver de qualquer agente + ajustar intervalo
 # ---------------------------------------------------------------------------
 
+@admin_v1.get("/dns-stats", tags=["dns-stats"])
+async def get_dns_stats_aggregated(request: Request, period: str = "24h", host: str = ""):
+    """Stats DNS agregadas pra dashboard admin.
+
+    Sem host: serie raw/horaria de TODOS os hostnames (frontend agrega client-side).
+    Com host: serie de 1 hostname especifico.
+    """
+    from main import _SafeJSONResponse
+    await require_admin(request)
+    if host:
+        if not _re.match(r'^[a-zA-Z0-9._-]{1,128}$', host):
+            raise HTTPException(status_code=422, detail="hostname invalido")
+        data = await db.get_dns_query_stats(hostname=host, period=period)
+    else:
+        data = await db.get_dns_query_stats(period=period)
+    return _SafeJSONResponse({"period": period, "host": host or None, "samples": data})
+
+
 @admin_v1.get("/agents/{hostname}/dns-stats", tags=["dns-stats"])
 async def get_agent_dns_stats(hostname: str, request: Request, period: str = "24h"):
     """Serie temporal de stats DNS de um agente (admin)."""
