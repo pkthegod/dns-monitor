@@ -351,19 +351,44 @@ configure_bind9() {
         exit 1
     fi
 
+    # Checa 3 coisas separadamente:
+    #   a) leitura do arquivo de stats (necessaria pra parse)
+    #   b) leitura do rndc.key (necessaria pra disparar rndc stats)
+    #   c) execucao do rndc stats end-to-end pelo dns-agent
     local need_group_fix=false
+    local read_ok=false rndc_ok=false rndckey_ok=false
+
     if sudo -u "$SERVICE_USER" test -r "$STATS_FILE" 2>/dev/null; then
-        echo "  [=] $SERVICE_USER ja consegue ler $STATS_FILE"
+        read_ok=true
+        echo "  [=] $SERVICE_USER consegue ler $STATS_FILE"
     else
+        echo "  [!] $SERVICE_USER NAO consegue ler $STATS_FILE"
         need_group_fix=true
-        echo "  [+] $SERVICE_USER NAO consegue ler $STATS_FILE — adicionar ao grupo 'bind'"
+    fi
+
+    if sudo -u "$SERVICE_USER" test -r /etc/bind/rndc.key 2>/dev/null; then
+        rndckey_ok=true
+        echo "  [=] $SERVICE_USER consegue ler /etc/bind/rndc.key"
+    else
+        echo "  [!] $SERVICE_USER NAO consegue ler /etc/bind/rndc.key (CRITICO — sem isso rndc stats falha)"
+        need_group_fix=true
+    fi
+
+    if sudo -u "$SERVICE_USER" rndc stats >/dev/null 2>&1; then
+        rndc_ok=true
+        echo "  [=] $SERVICE_USER consegue executar 'rndc stats'"
+    else
+        echo "  [!] 'rndc stats' falha quando rodado como $SERVICE_USER — coleta retorna vazio"
+        need_group_fix=true
     fi
 
     if [ "$MODE" = "check" ]; then
         echo ""
         echo "Modo --check: nada foi alterado."
         if $need_group_fix; then
-            echo "Acoes pendentes: usermod -aG bind $SERVICE_USER + chmod 640 $STATS_FILE"
+            echo "Acoes pendentes:"
+            echo "  usermod -aG bind $SERVICE_USER"
+            echo "  systemctl restart dns_agent   # pra novo grupo entrar em vigor"
         else
             echo "Bind9 ja esta pronto para coleta — nenhuma acao necessaria."
         fi
@@ -375,20 +400,31 @@ configure_bind9() {
         echo ""
         echo "Aplicando: adicionando $SERVICE_USER ao grupo bind..."
         usermod -aG bind "$SERVICE_USER"
-        chgrp bind "$STATS_FILE" 2>/dev/null || true
-        chmod 640 "$STATS_FILE" 2>/dev/null || true
         echo "  [+] $SERVICE_USER agora pertence ao grupo bind"
-        echo "  [!] reinicie o agente para o novo grupo entrar em vigor:"
-        echo "      systemctl restart dns_agent"
+        # Garante que rndc.key tem dono bind (caso default tenha mudado)
+        if [ -f /etc/bind/rndc.key ]; then
+            chgrp bind /etc/bind/rndc.key 2>/dev/null || true
+            chmod 640 /etc/bind/rndc.key 2>/dev/null || true
+        fi
+        echo "  [!] reiniciando dns_agent pra novo grupo entrar em vigor..."
+        systemctl restart dns_agent || echo "  [!] systemctl restart dns_agent falhou — reinicie manualmente"
     fi
 
     echo ""
-    echo "Validando como $SERVICE_USER..."
-    if sudo -u "$SERVICE_USER" test -r "$STATS_FILE" 2>/dev/null; then
-        echo "  [OK] leitura confirmada"
+    echo "Validando end-to-end..."
+    sleep 1
+    if sudo -u "$SERVICE_USER" rndc stats >/dev/null 2>&1; then
+        echo "  [OK] $SERVICE_USER consegue rodar rndc stats"
+        sleep 1
+        local linecount
+        linecount=$(sudo -u "$SERVICE_USER" wc -l < "$STATS_FILE" 2>/dev/null || echo 0)
+        echo "  [OK] stats file tem $linecount linhas"
+        echo ""
+        echo "Aguarde ~10min pelo proximo ciclo de coleta. Depois valide:"
+        echo "  journalctl -u dns_agent -n 30 --no-pager | grep -i stats"
     else
-        echo "  [!] ainda sem acesso. Possivel causa: /var/cache/bind tem mode 750 root:bind."
-        echo "      tente: chmod 755 /var/cache/bind"
+        echo "  [!] rndc stats ainda falha como $SERVICE_USER. Diagnostico:"
+        sudo -u "$SERVICE_USER" rndc stats 2>&1 | sed 's/^/        /' || true
     fi
 }
 
