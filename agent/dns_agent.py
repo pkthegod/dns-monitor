@@ -51,7 +51,7 @@ CONFIG_PATHS = [
 ]
 
 
-AGENT_VERSION = "1.5.4"
+AGENT_VERSION = "1.5.5"
 
 
 # ---------------------------------------------------------------------------
@@ -1629,14 +1629,21 @@ def _stats_collect_unbound() -> Optional[dict]:
         except ValueError:
             pass
 
+    # SEC: Unbound usa `num.query.type.X` (SINGULAR — bug anterior usava plural).
+    # `num.answer.rcode.X` so aparece se `extended-statistics: yes` em unbound.conf;
+    # sem isso, todos contadores RCODE serao 0 (configuracao padrao do Unbound).
     main_types = {"A", "AAAA", "MX", "PTR"}
     queries_other = sum(
         v for k, v in kv.items()
-        if k.startswith("num.queries.type.")
+        if k.startswith("num.query.type.")
         and k.split(".")[-1] not in main_types
     )
 
-    return {
+    # Detecta se extended-statistics esta off — sinal pra logger
+    has_extended = any(k.startswith("num.answer.rcode.") for k in kv)
+    has_types = any(k.startswith("num.query.type.") for k in kv)
+
+    result = {
         "source": "unbound",
         "noerror":  kv.get("num.answer.rcode.NOERROR", 0),
         "nxdomain": kv.get("num.answer.rcode.NXDOMAIN", 0),
@@ -1644,15 +1651,21 @@ def _stats_collect_unbound() -> Optional[dict]:
         "refused":  kv.get("num.answer.rcode.REFUSED", 0),
         "notimpl":  kv.get("num.answer.rcode.NOTIMPL", 0),
         "formerr":  kv.get("num.answer.rcode.FORMERR", 0),
-        "queries_a":     kv.get("num.queries.type.A", 0),
-        "queries_aaaa":  kv.get("num.queries.type.AAAA", 0),
-        "queries_mx":    kv.get("num.queries.type.MX", 0),
-        "queries_ptr":   kv.get("num.queries.type.PTR", 0),
+        "queries_a":     kv.get("num.query.type.A", 0),
+        "queries_aaaa":  kv.get("num.query.type.AAAA", 0),
+        "queries_mx":    kv.get("num.query.type.MX", 0),
+        "queries_ptr":   kv.get("num.query.type.PTR", 0),
         "queries_other": queries_other,
         "queries_total": kv.get("total.num.queries", 0),
         "cache_hits":    kv.get("total.num.cachehits", 0),
         "cache_misses":  kv.get("total.num.cachemiss", 0),
+        "_diag": {  # diagnostico embutido no payload pra debug
+            "has_extended_stats": has_extended,
+            "has_query_types":    has_types,
+            "raw_keys_sample":    sorted(kv.keys())[:10],
+        },
     }
+    return result
 
 
 def _stats_collect_bind9() -> Optional[dict]:
@@ -1784,6 +1797,24 @@ def collect_dns_stats_and_publish(cfg: "Config", logger: logging.Logger) -> None
     previous = _stats_load_snapshot()
     prev_ts = previous.pop("__ts__", None)
     now = datetime.now(timezone.utc)
+
+    # Diagnostico: se Unbound retornou zero RCODEs/types, provavel que
+    # `extended-statistics: yes` nao esteja em unbound.conf. Loga warning
+    # uma vez por amostra pra alertar operador.
+    diag = current.pop("_diag", None)
+    if diag and svc_name == "unbound":
+        if not diag["has_extended_stats"]:
+            logger.warning(
+                "dns_stats: Unbound NAO tem extended-statistics ativo — "
+                "RCODEs (NOERROR/NXDOMAIN/SERVFAIL) virao zero. "
+                "Adicione 'extended-statistics: yes' em unbound.conf (server: section) "
+                "e rode: unbound-control reload"
+            )
+        if not diag["has_query_types"]:
+            logger.warning(
+                "dns_stats: Unbound nao expoe num.query.type.* — "
+                "tipos de query virao zero. Mesma causa: extended-statistics: yes"
+            )
 
     if not previous or not prev_ts:
         _stats_persist_snapshot({**current, "__ts__": now.isoformat()})
