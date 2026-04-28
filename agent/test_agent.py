@@ -1733,8 +1733,9 @@ class TestSetupScheduleQuickProbe:
         }})
         logger = make_logger()
         da.setup_schedule(cfg, logger)
-        # Deve ter jobs: 1 check_time + 1 heartbeat + 1 quick_probe + 1 command_poll
-        assert len(sched.get_jobs()) == 4
+        # Jobs: 1 check_time + 1 heartbeat + 1 quick_probe + 1 command_poll
+        # + 1 dns_stats (default enabled em [dns_stats]) = 5
+        assert len(sched.get_jobs()) == 5
         sched.clear()
 
     def test_quick_probe_not_scheduled_when_disabled(self):
@@ -1748,8 +1749,9 @@ class TestSetupScheduleQuickProbe:
         }})
         logger = make_logger()
         da.setup_schedule(cfg, logger)
-        # Sem quick probe: 1 check_time + 1 heartbeat + 1 command_poll = 3
-        assert len(sched.get_jobs()) == 3
+        # Sem quick probe: 1 check_time + 1 heartbeat + 1 command_poll
+        # + 1 dns_stats (default enabled) = 4
+        assert len(sched.get_jobs()) == 4
         sched.clear()
 
     def test_quick_probe_interval_minimum_10s(self):
@@ -1763,10 +1765,10 @@ class TestSetupScheduleQuickProbe:
         }})
         logger = make_logger()
         da.setup_schedule(cfg, logger)
-        # Deve ter sido agendado com 10s (mínimo), não 5s
+        # Quick probe ainda agendado com 10s (minimo). Total 5 (com dns_stats).
         jobs = sched.get_jobs()
         sched.clear()
-        assert len(jobs) == 4  # quick probe still scheduled, just with min interval
+        assert len(jobs) == 5
 
 
 # ===========================================================================

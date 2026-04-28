@@ -408,6 +408,33 @@ async def get_command_status(command_id: int, request: Request):
 
 
 # ---------------------------------------------------------------------------
+# /agents/{hostname}/dns-stats — recebe sample do agente (HTTP path)
+# ---------------------------------------------------------------------------
+
+@agent_v1.post("/agents/{hostname}/dns-stats", tags=["dns-stats"])
+async def receive_dns_stats(hostname: str, request: Request) -> JSONResponse:
+    """Agente publica stats DNS aqui via Bearer token.
+
+    Mesmo handler que NATS dns.stats.* — converge em db.insert_dns_query_stats.
+    Usa HTTP por default (mais simples; NATS e otimizacao opcional v1.1).
+    """
+    import main as _m
+    await _m.require_token(request)
+    if not _re.match(r'^[a-zA-Z0-9._-]{1,128}$', hostname):
+        return JSONResponse({"error": "hostname invalido"}, status_code=422)
+    try:
+        data = await request.json()
+    except Exception as exc:
+        return JSONResponse({"error": f"JSON invalido: {exc}"}, status_code=422)
+    try:
+        await _m.db.insert_dns_query_stats(hostname, data)
+    except Exception as exc:
+        logger.error("receive_dns_stats erro pra %s: %s", hostname, exc)
+        return JSONResponse({"error": "Falha ao gravar stats"}, status_code=500)
+    return JSONResponse({"status": "ok"}, status_code=202)
+
+
+# ---------------------------------------------------------------------------
 # /agent/version, /agent/latest — auto-update
 # ---------------------------------------------------------------------------
 

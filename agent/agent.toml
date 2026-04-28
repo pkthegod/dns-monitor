@@ -67,6 +67,14 @@ ram_critical = 95
 dns_latency_warning = 200
 dns_latency_critical = 1000
 
+[dns_stats]
+# Coleta periodica de RCODEs/tipos/QPS via rndc-stats (Bind9) ou
+# unbound-control stats (Unbound). Resultado vai pro backend e fica
+# disponivel no painel + portal cliente.
+enabled = true
+# Intervalo entre coletas em segundos (60-3600 sugerido). Default 600 = 10min.
+interval = 600
+
 [nats]
 # Habilita comunicacao via NATS (comandos push instantaneos)
 enabled = false

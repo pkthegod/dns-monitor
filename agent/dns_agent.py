@@ -51,7 +51,7 @@ CONFIG_PATHS = [
 ]
 
 
-AGENT_VERSION = "1.4.1"
+AGENT_VERSION = "1.5.0"
 
 
 # ---------------------------------------------------------------------------
@@ -1814,6 +1814,20 @@ def setup_schedule(cfg: Config, logger: logging.Logger) -> None:
     cmd_interval = cfg.getint("schedule", "command_poll_interval", fallback=60)
     schedule.every(cmd_interval).seconds.do(poll_commands, cfg=cfg, logger=logger)
     logger.info("Polling de comandos agendado a cada %ds (adaptativo)", cmd_interval)
+
+    # Stats DNS — RCODEs/QPS via rndc-stats (Bind) ou unbound-control (Unbound).
+    # Default 600s (10min). Configuravel per-agente; backend pode mandar via
+    # set_stats_interval (futuro) ou via [dns_stats] interval no agent.toml.
+    if cfg.getboolean("dns_stats", "enabled", fallback=True):
+        stats_interval = max(60, cfg.getint("dns_stats", "interval", fallback=600))
+        try:
+            from dns_stats import collect_and_publish as _collect_dns_stats
+            schedule.every(stats_interval).seconds.do(
+                _collect_dns_stats, cfg=cfg, logger=logger
+            )
+            logger.info("Stats DNS agendado a cada %ds", stats_interval)
+        except ImportError as exc:
+            logger.warning("dns_stats nao carregou: %s", exc)
 
 
 # ---------------------------------------------------------------------------
