@@ -220,6 +220,15 @@ CREATE INDEX IF NOT EXISTS idx_alerts_hostname_ts
 CREATE INDEX IF NOT EXISTS idx_alerts_unresolved
     ON alerts_log (resolved_at) WHERE resolved_at IS NULL;
 
+-- A1 (v1.5 race-fix R6): unique partial index pra suportar
+-- INSERT ... ON CONFLICT DO NOTHING e impedir duplicatas de alertas abertos
+-- sob race entre coroutines. Severity faz parte da chave: warning pode escalar
+-- pra critical sem o warning ter sido resolvido (visto em prod: CPU 81% gera
+-- warning, sobe pra 96% gera critical antes de resolver o warning).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_open_unique
+    ON alerts_log (hostname, alert_type, severity)
+    WHERE resolved_at IS NULL;
+
 
 -- =============================================================================
 -- 6. REGISTRO DE AGENTES CONHECIDOS

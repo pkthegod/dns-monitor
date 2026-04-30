@@ -188,53 +188,55 @@ async def _evaluate_alerts(payload: AgentPayload) -> None:
     hostname = payload.hostname
     sys = payload.system
 
+    # A1 (R6 race-fix): insert_alert agora e atomico (ON CONFLICT DO NOTHING).
+    # Retorna None se ja existia um alerta aberto pro mesmo (host,type,severity);
+    # nesses casos pulamos o notify pra nao spammar Telegram/webhook. Antes,
+    # has_open_alert + insert_alert era check-then-act vulneravel a race entre
+    # 2 payloads do mesmo host chegando em <100ms.
     if sys:
         if sys.cpu and sys.cpu.percent is not None:
             pct = sys.cpu.percent
             if pct >= THRESHOLDS["cpu_critical"]:
                 aid = await _m.db.insert_alert(hostname, "cpu", "critical", f"CPU {pct:.1f}%", "cpu_percent", pct, THRESHOLDS["cpu_critical"])
-                if await _m.tg.alert_cpu(hostname, pct, THRESHOLDS["cpu_critical"], "critical"):
+                if aid and await _m.tg.alert_cpu(hostname, pct, THRESHOLDS["cpu_critical"], "critical"):
                     await _m.db.mark_alert_notified(aid)
             elif pct >= THRESHOLDS["cpu_warning"]:
-                if not await _m.db.has_open_alert(hostname, "cpu"):
-                    await _m.db.insert_alert(hostname, "cpu", "warning", f"CPU {pct:.1f}%", "cpu_percent", pct, THRESHOLDS["cpu_warning"])
+                await _m.db.insert_alert(hostname, "cpu", "warning", f"CPU {pct:.1f}%", "cpu_percent", pct, THRESHOLDS["cpu_warning"])
 
         if sys.ram and sys.ram.percent is not None:
             pct = sys.ram.percent
             if pct >= THRESHOLDS["ram_critical"]:
                 aid = await _m.db.insert_alert(hostname, "ram", "critical", f"RAM {pct:.1f}%", "ram_percent", pct, THRESHOLDS["ram_critical"])
-                if await _m.tg.alert_ram(hostname, pct, THRESHOLDS["ram_critical"], "critical"):
+                if aid and await _m.tg.alert_ram(hostname, pct, THRESHOLDS["ram_critical"], "critical"):
                     await _m.db.mark_alert_notified(aid)
             elif pct >= THRESHOLDS["ram_warning"]:
-                if not await _m.db.has_open_alert(hostname, "ram"):
-                    await _m.db.insert_alert(hostname, "ram", "warning", f"RAM {pct:.1f}%", "ram_percent", pct, THRESHOLDS["ram_warning"])
+                await _m.db.insert_alert(hostname, "ram", "warning", f"RAM {pct:.1f}%", "ram_percent", pct, THRESHOLDS["ram_warning"])
 
         for disk in (sys.disk or []):
             if disk.alert in ("warning", "critical") and disk.percent is not None:
                 threshold = THRESHOLDS[f"disk_{disk.alert}"]
                 aid = await _m.db.insert_alert(hostname, "disk", disk.alert, f"Disco {disk.mountpoint} {disk.percent:.1f}%", "disk_percent", disk.percent, threshold)
-                if disk.alert == "critical":
+                if aid and disk.alert == "critical":
                     if await _m.tg.alert_disk(hostname, disk.mountpoint or "?", disk.percent, threshold, "critical"):
                         await _m.db.mark_alert_notified(aid)
 
     for check in (payload.dns_checks or []):
         if not check.success:
             aid = await _m.db.insert_alert(hostname, "dns_fail", "critical", f"DNS falhou: {check.domain} ({check.error})", "dns_success", 0, 1)
-            if await _m.tg.alert_dns_failure(hostname, check.domain, check.error or "unknown", check.attempts or 0):
+            if aid and await _m.tg.alert_dns_failure(hostname, check.domain, check.error or "unknown", check.attempts or 0):
                 await _m.db.mark_alert_notified(aid)
         elif check.latency_ms is not None:
             if check.latency_ms >= THRESHOLDS["dns_latency_critical"]:
                 aid = await _m.db.insert_alert(hostname, "dns_latency", "critical", f"DNS latencia {check.latency_ms:.0f}ms para {check.domain}", "latency_ms", check.latency_ms, THRESHOLDS["dns_latency_critical"])
-                if await _m.tg.alert_dns_latency(hostname, check.domain, check.latency_ms, THRESHOLDS["dns_latency_critical"], "critical"):
+                if aid and await _m.tg.alert_dns_latency(hostname, check.domain, check.latency_ms, THRESHOLDS["dns_latency_critical"], "critical"):
                     await _m.db.mark_alert_notified(aid)
             elif check.latency_ms >= THRESHOLDS["dns_latency_warning"]:
-                if not await _m.db.has_open_alert(hostname, "dns_latency"):
-                    await _m.db.insert_alert(hostname, "dns_latency", "warning", f"DNS latencia {check.latency_ms:.0f}ms para {check.domain}", "latency_ms", check.latency_ms, THRESHOLDS["dns_latency_warning"])
+                await _m.db.insert_alert(hostname, "dns_latency", "warning", f"DNS latencia {check.latency_ms:.0f}ms para {check.domain}", "latency_ms", check.latency_ms, THRESHOLDS["dns_latency_warning"])
 
     if payload.dns_service and payload.dns_service.active is False:
         svc = payload.dns_service.name or "unknown"
         aid = await _m.db.insert_alert(hostname, "dns_service", "critical", f"Servico DNS '{svc}' inativo")
-        if await _m.tg.alert_dns_service_down(hostname, svc):
+        if aid and await _m.tg.alert_dns_service_down(hostname, svc):
             await _m.db.mark_alert_notified(aid)
 
     # Dispatch webhooks para clientes que monitoram este hostname
@@ -518,22 +520,25 @@ async def _evaluate_dns_stats_alerts(hostname: str, data: dict) -> None:
     import main as _m
     qt = int(data.get("queries_total") or 0)
 
+    # A1 (R6 race-fix): insert_alert atomico (ON CONFLICT DO NOTHING).
+    # has_open_alert removido — se o INSERT retorna None, ja havia alerta
+    # aberto pra (host,type,severity) e pulamos o notify.
+
     # 1. SERVFAIL alto — critical, dispara Telegram
     if qt >= 100:
         sf = int(data.get("servfail") or 0)
         sf_pct = (sf / qt) * 100
         if sf_pct > 5.0:
-            if not await _m.db.has_open_alert(hostname, "dns_servfail_high"):
-                aid = await _m.db.insert_alert(
-                    hostname, "dns_servfail_high", "critical",
-                    f"SERVFAIL alto: {sf_pct:.1f}% das queries ({sf} de {qt})",
-                    "servfail_pct", sf_pct, 5.0,
-                )
-                if await _m.tg.alert_dns_failure(
-                    hostname, "SERVFAIL spike",
-                    f"{sf_pct:.1f}% das queries falharam ({sf} de {qt})", 0,
-                ):
-                    await _m.db.mark_alert_notified(aid)
+            aid = await _m.db.insert_alert(
+                hostname, "dns_servfail_high", "critical",
+                f"SERVFAIL alto: {sf_pct:.1f}% das queries ({sf} de {qt})",
+                "servfail_pct", sf_pct, 5.0,
+            )
+            if aid and await _m.tg.alert_dns_failure(
+                hostname, "SERVFAIL spike",
+                f"{sf_pct:.1f}% das queries falharam ({sf} de {qt})", 0,
+            ):
+                await _m.db.mark_alert_notified(aid)
         else:
             # Voltou ao normal — fecha o alerta aberto se houver
             await _m.db.resolve_alert(hostname, "dns_servfail_high")
@@ -543,12 +548,11 @@ async def _evaluate_dns_stats_alerts(hostname: str, data: dict) -> None:
         nxd = int(data.get("nxdomain") or 0)
         nxd_pct = (nxd / qt) * 100
         if nxd_pct > 50.0:
-            if not await _m.db.has_open_alert(hostname, "dns_nxdomain_high"):
-                await _m.db.insert_alert(
-                    hostname, "dns_nxdomain_high", "warning",
-                    f"NXDOMAIN alto: {nxd_pct:.0f}% das queries ({nxd} de {qt}) — possivel scan ou config errada",
-                    "nxdomain_pct", nxd_pct, 50.0,
-                )
+            await _m.db.insert_alert(
+                hostname, "dns_nxdomain_high", "warning",
+                f"NXDOMAIN alto: {nxd_pct:.0f}% das queries ({nxd} de {qt}) — possivel scan ou config errada",
+                "nxdomain_pct", nxd_pct, 50.0,
+            )
         else:
             await _m.db.resolve_alert(hostname, "dns_nxdomain_high")
 
@@ -562,12 +566,12 @@ async def _evaluate_dns_stats_alerts(hostname: str, data: dict) -> None:
         had_traffic = sum(
             1 for s in recent if int(s.get("queries_total") or 0) > 100
         ) >= 2
-        if had_traffic and not await _m.db.has_open_alert(hostname, "dns_silence"):
+        if had_traffic:
             aid = await _m.db.insert_alert(
                 hostname, "dns_silence", "critical",
                 "DNS sem trafego — resolver pode estar parado ou desconectado da rede",
             )
-            if await _m.tg.alert_dns_service_down(hostname, "DNS resolver (sem trafego)"):
+            if aid and await _m.tg.alert_dns_service_down(hostname, "DNS resolver (sem trafego)"):
                 await _m.db.mark_alert_notified(aid)
     elif qt >= 100:
         # Voltou a ter trafego — fecha alerta de silence

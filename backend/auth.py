@@ -166,29 +166,45 @@ async def require_client(request: Request) -> dict:
 # ---------------------------------------------------------------------------
 # Rate limiting — protecao contra brute-force em logins
 # ---------------------------------------------------------------------------
+#
+# A2 (R1 race-fix): asyncio.Lock protege estado mutavel compartilhado entre
+# coroutines. Em Python asyncio single-thread, codigo sem await nao preempta —
+# entao os corpos sync abaixo ja seriam atomic se chamados isoladamente. O
+# lock e necessario porque os callers fazem CHECK em uma coroutine, suspendem
+# (await form/db/etc), e ACT em outra — entre os awaits, outras coroutines
+# podem rodar a mesma sequencia.
+#
+# Limitacao: vale apenas pra single-process. Multi-worker exige Redis ou
+# Postgres advisory lock (D7 no roadmap).
 
 _login_attempts: dict[str, list[float]] = {}  # ip -> [timestamps]
 _LOGIN_MAX_ATTEMPTS = 5
 _LOGIN_LOCKOUT_SECONDS = 900  # 15 minutos
 
+import asyncio
+_login_lock = asyncio.Lock()
 
-def _check_rate_limit(ip: str) -> bool:
+
+async def _check_rate_limit(ip: str) -> bool:
     """Retorna True se IP esta bloqueado. Limpa tentativas expiradas."""
-    now = time.time()
-    attempts = _login_attempts.get(ip, [])
-    attempts = [t for t in attempts if now - t < _LOGIN_LOCKOUT_SECONDS]
-    _login_attempts[ip] = attempts
-    return len(attempts) >= _LOGIN_MAX_ATTEMPTS
+    async with _login_lock:
+        now = time.time()
+        attempts = _login_attempts.get(ip, [])
+        attempts = [t for t in attempts if now - t < _LOGIN_LOCKOUT_SECONDS]
+        _login_attempts[ip] = attempts
+        return len(attempts) >= _LOGIN_MAX_ATTEMPTS
 
 
-def _record_failed_login(ip: str) -> None:
+async def _record_failed_login(ip: str) -> None:
     """Registra tentativa falhada de login."""
-    _login_attempts.setdefault(ip, []).append(time.time())
+    async with _login_lock:
+        _login_attempts.setdefault(ip, []).append(time.time())
 
 
-def _clear_login_attempts(ip: str) -> None:
+async def _clear_login_attempts(ip: str) -> None:
     """Limpa tentativas apos login bem-sucedido."""
-    _login_attempts.pop(ip, None)
+    async with _login_lock:
+        _login_attempts.pop(ip, None)
 
 
 # ---------------------------------------------------------------------------
@@ -196,18 +212,21 @@ def _clear_login_attempts(ip: str) -> None:
 # ---------------------------------------------------------------------------
 
 _action_cooldowns: dict[str, float] = {}  # key -> timestamp do ultimo uso
+_cooldown_lock = asyncio.Lock()
 
 
-def _check_cooldown(key: str, cooldown_seconds: int = 60) -> bool:
+async def _check_cooldown(key: str, cooldown_seconds: int = 60) -> bool:
     """Retorna True se a acao esta em cooldown."""
-    now = time.time()
-    last = _action_cooldowns.get(key, 0)
-    return (now - last) < cooldown_seconds
+    async with _cooldown_lock:
+        now = time.time()
+        last = _action_cooldowns.get(key, 0)
+        return (now - last) < cooldown_seconds
 
 
-def _record_action(key: str) -> None:
+async def _record_action(key: str) -> None:
     """Registra timestamp da acao para cooldown."""
-    _action_cooldowns[key] = time.time()
+    async with _cooldown_lock:
+        _action_cooldowns[key] = time.time()
 
 
 # ---------------------------------------------------------------------------

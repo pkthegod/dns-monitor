@@ -112,17 +112,16 @@ async def upsert_agent(
     Registra ou atualiza o agente.
     Retorna {"is_new": True} se for o primeiro heartbeat deste hostname.
     Usado pelo backend para disparar alerta de novo agente detectado.
+
+    A3 (R7 race-fix): is_new vinha de SELECT separado do INSERT — duas
+    transacoes, race entre 2 heartbeats simultaneos do mesmo hostname
+    perdia detecao de novo agente. Agora usamos `xmax = 0` no RETURNING:
+    em Postgres, xmax=0 significa "linha foi inserida agora" (vs xmax!=0
+    que indica UPDATE). Atomic em uma unica statement.
     """
     ts = _parse_ts(last_seen_ts)
     async with get_conn() as conn:
-        # Verifica se já existe antes do upsert
-        existing = await conn.fetchrow(
-            "SELECT hostname, registered_at FROM agents WHERE hostname = $1",
-            hostname,
-        )
-        is_new = existing is None
-
-        await conn.execute(
+        row = await conn.fetchrow(
             """
             INSERT INTO agents (hostname, registered_at, last_seen, display_name, location, agent_version)
             VALUES ($1, $2, $2, $3, $4, $5)
@@ -131,13 +130,14 @@ async def upsert_agent(
                 display_name  = COALESCE(EXCLUDED.display_name,  agents.display_name),
                 location      = COALESCE(EXCLUDED.location,      agents.location),
                 agent_version = COALESCE(EXCLUDED.agent_version, agents.agent_version)
+            RETURNING (xmax = 0) AS is_new
             """,
             hostname, ts,
             display_name or None,
             location or None,
             agent_version or None,
         )
-    return {"is_new": is_new}
+    return {"is_new": bool(row["is_new"])}
 
 
 async def insert_heartbeat(hostname: str, ts: str, agent_version: Optional[str]) -> None:
@@ -438,7 +438,18 @@ async def insert_alert(
     hostname: str, alert_type: str, severity: str, message: str,
     metric_name: Optional[str] = None, metric_value: Optional[float] = None,
     threshold_value: Optional[float] = None,
-) -> int:
+) -> Optional[int]:
+    """Insere alerta. Retorna id se foi inserido, None se ja existia um aberto
+    do mesmo (hostname, alert_type, severity).
+
+    A1 (v1.5 race-fix R6): troca check-then-act (has_open_alert + insert)
+    por upsert atomico. ON CONFLICT exige idx_alerts_open_unique em
+    (hostname, alert_type, severity) WHERE resolved_at IS NULL — definido
+    em schemas.sql. Sob race, apenas uma coroutine consegue o INSERT;
+    as outras recebem None e pulam o notify.
+
+    Chamadores devem checar None pra decidir se notificam Telegram/webhook.
+    """
     async with get_conn() as conn:
         row = await conn.fetchrow(
             """
@@ -446,12 +457,15 @@ async def insert_alert(
                 (hostname, alert_type, severity, message,
                  metric_name, metric_value, threshold_value)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (hostname, alert_type, severity)
+                WHERE resolved_at IS NULL
+                DO NOTHING
             RETURNING id
             """,
             hostname, alert_type, severity, message,
             metric_name, metric_value, threshold_value,
         )
-        return row["id"]
+        return row["id"] if row else None
 
 
 async def mark_alert_notified(alert_id: int) -> None:
@@ -634,46 +648,56 @@ async def upsert_fingerprint(hostname: str, fingerprint: str) -> dict:
     """
     Registra ou atualiza o fingerprint do agente.
     Retorna dict com 'is_new' e 'changed' para o backend decidir se alerta.
+
+    A3 (R8 race-fix): SELECT + multi-UPDATE foi consolidado em UMA transacao
+    com SELECT ... FOR UPDATE. O row-level lock garante que dois heartbeats
+    simultaneos do mesmo hostname serializam — sem isso, perdia-se deteccao
+    de mudanca de fingerprint (2 reboots simultaneos podiam reportar changed=False).
     """
     async with get_conn() as conn:
-        row = await conn.fetchrow(
-            "SELECT fingerprint, fingerprint_first_seen FROM agents WHERE hostname = $1",
-            hostname,
-        )
-        if row is None:
-            return {"is_new": True, "changed": False}
-
-        existing = row["fingerprint"]
-        first_seen = row["fingerprint_first_seen"]
-
-        if existing is None:
-            # Primeiro registro do fingerprint
-            await conn.execute(
+        async with conn.transaction():
+            row = await conn.fetchrow(
                 """
-                UPDATE agents
-                SET fingerprint            = $1,
-                    fingerprint_first_seen = NOW(),
-                    fingerprint_last_seen  = NOW()
-                WHERE hostname = $2
+                SELECT fingerprint
+                FROM agents
+                WHERE hostname = $1
+                FOR UPDATE
                 """,
-                fingerprint, hostname,
+                hostname,
             )
-            return {"is_new": False, "changed": False}
+            if row is None:
+                return {"is_new": True, "changed": False}
 
-        if existing != fingerprint:
-            # Fingerprint mudou — possível cópia ou migração de hardware
+            existing = row["fingerprint"]
+
+            if existing is None:
+                # Primeiro registro do fingerprint
+                await conn.execute(
+                    """
+                    UPDATE agents
+                    SET fingerprint            = $1,
+                        fingerprint_first_seen = NOW(),
+                        fingerprint_last_seen  = NOW()
+                    WHERE hostname = $2
+                    """,
+                    fingerprint, hostname,
+                )
+                return {"is_new": False, "changed": False}
+
+            if existing != fingerprint:
+                # Fingerprint mudou — possivel copia ou migracao de hardware
+                await conn.execute(
+                    "UPDATE agents SET fingerprint_last_seen = NOW() WHERE hostname = $1",
+                    hostname,
+                )
+                return {"is_new": False, "changed": True, "previous": existing}
+
+            # Fingerprint igual — so atualiza last_seen
             await conn.execute(
                 "UPDATE agents SET fingerprint_last_seen = NOW() WHERE hostname = $1",
                 hostname,
             )
-            return {"is_new": False, "changed": True, "previous": existing}
-
-        # Fingerprint igual — só atualiza last_seen
-        await conn.execute(
-            "UPDATE agents SET fingerprint_last_seen = NOW() WHERE hostname = $1",
-            hostname,
-        )
-        return {"is_new": False, "changed": False}
+            return {"is_new": False, "changed": False}
 
 
 # ===========================================================================

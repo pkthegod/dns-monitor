@@ -125,7 +125,7 @@ async def client_login_page(request: Request) -> HTMLResponse:
 
 async def client_login_post(request: Request):
     ip = request.client.host if request.client else "unknown"
-    if _check_rate_limit(ip):
+    if await _check_rate_limit(ip):
         return RedirectResponse("/client/login?error=locked", status_code=303)
 
     form = await request.form()
@@ -134,11 +134,11 @@ async def client_login_post(request: Request):
     user = await db.authenticate_client(username)
     _dummy_hash = "$2b$12$000000000000000000000uGPOaHLkG6VgbGG7ZtBCRqGz4eXxWfS"
     if not _verify_password(password, user["password_hash"] if user else _dummy_hash) or not user:
-        _record_failed_login(ip)
+        await _record_failed_login(ip)
         logger.warning("Login cliente falhado de %s (user=%s)", ip, username)
         await db.audit("client", "login_failed", username, ip=ip)
         return RedirectResponse("/client/login?error=1", status_code=303)
-    _clear_login_attempts(ip)
+    await _clear_login_attempts(ip)
     await db.audit("client", "login_ok", username, ip=ip)
     resp = RedirectResponse("/client", status_code=303)
     import os as _os
@@ -186,7 +186,7 @@ async def client_dns_test(request: Request) -> JSONResponse:
 
     ip = request.client.host if request.client else "unknown"
     rate_key = f"dnstest:{client_user}"
-    if _check_cooldown(rate_key, 30):
+    if await _check_cooldown(rate_key, 30):
         return JSONResponse(
             {"error": "Aguarde 30 segundos entre testes", "retry_after": 30},
             status_code=429,
@@ -207,7 +207,7 @@ async def client_dns_test(request: Request) -> JSONResponse:
             "id": cmd_id, "command": "run_script", "params": "dig_test",
         })
 
-    _record_action(rate_key)
+    await _record_action(rate_key)
     await db.audit("client:" + client_user, "dns_test", hostname, ip=ip)
     return JSONResponse({"id": cmd_id, "hostname": hostname, "status": "testing"})
 
@@ -225,7 +225,7 @@ async def client_dns_trace(request: Request) -> JSONResponse:
 
     ip = request.client.host if request.client else "unknown"
     rate_key = f"dnstrace:{client_user}"
-    if _check_cooldown(rate_key, 30):
+    if await _check_cooldown(rate_key, 30):
         return JSONResponse(
             {"error": "Aguarde 30 segundos entre testes", "retry_after": 30},
             status_code=429,
@@ -254,7 +254,7 @@ async def client_dns_trace(request: Request) -> JSONResponse:
             "id": cmd_id, "command": "run_script", "params": params,
         })
 
-    _record_action(rate_key)
+    await _record_action(rate_key)
     await db.audit("client:" + client_user, "dns_trace", hostname, ip=ip, detail=domain)
     return JSONResponse({"id": cmd_id, "hostname": hostname, "domain": domain, "status": "testing"})
 

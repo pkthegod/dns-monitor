@@ -13,6 +13,7 @@ Starlette executa middlewares em ordem REVERSA do add_middleware,
 então o último adicionado é o mais externo.
 """
 
+import asyncio
 import base64
 import logging
 import secrets
@@ -31,8 +32,16 @@ logger = logging.getLogger("infra-vision.api")
 # ---------------------------------------------------------------------------
 
 class APIRateLimitMiddleware(BaseHTTPMiddleware):
-    """Rate limit por IP com limites diferenciados por endpoint."""
+    """Rate limit por IP com limites diferenciados por endpoint.
+
+    A2 (R5 race-fix): _requests e _lock sao class vars compartilhados entre
+    requests concorrentes. O lock atomiza read+filter+write — sem ele, dois
+    requests simultaneos do mesmo IP podem ler a mesma lista, ambos acharem
+    'abaixo do limit' e burlar o cap. Em single-thread asyncio sem await
+    interno isso ja seria atomic, mas usamos lock como defesa em profundidade.
+    """
     _requests: dict[str, list[float]] = {}
+    _lock = asyncio.Lock()
 
     # Limites por path prefix (requests/window)
     LIMITS = {
@@ -68,20 +77,21 @@ class APIRateLimitMiddleware(BaseHTTPMiddleware):
 
         # Key combines IP + path prefix for granular limiting
         key = f"{ip}:{path.split('/')[1:4]}"  # e.g. "1.2.3.4:['api', 'v1', 'speedtest']"
-        now = _time.time()
-        reqs = self._requests.get(key, [])
-        reqs = [t for t in reqs if now - t < window]
+        async with self._lock:
+            now = _time.time()
+            reqs = self._requests.get(key, [])
+            reqs = [t for t in reqs if now - t < window]
 
-        if len(reqs) >= limit:
-            logger.warning("Rate limit: %s %s (%d req/%ds)", ip, path, len(reqs), window)
-            return JSONResponse(
-                {"error": "Rate limit exceeded. Try again later."},
-                status_code=429,
-                headers={"Retry-After": str(window)},
-            )
+            if len(reqs) >= limit:
+                logger.warning("Rate limit: %s %s (%d req/%ds)", ip, path, len(reqs), window)
+                return JSONResponse(
+                    {"error": "Rate limit exceeded. Try again later."},
+                    status_code=429,
+                    headers={"Retry-After": str(window)},
+                )
 
-        reqs.append(now)
-        self._requests[key] = reqs
+            reqs.append(now)
+            self._requests[key] = reqs
         return await call_next(request)
 
 
@@ -133,7 +143,7 @@ class SecurityMonitorMiddleware(BaseHTTPMiddleware):
         path = request.url.path
 
         # IP bloqueado?
-        if security.is_blocked(ip):
+        if await security.is_blocked(ip):
             return JSONResponse({"error": "Access denied"}, status_code=403)
 
         # Honeypot?

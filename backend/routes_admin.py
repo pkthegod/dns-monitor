@@ -68,7 +68,7 @@ async def admin_login_page(request: Request) -> HTMLResponse:
 async def admin_login_post(request: Request):
     """Valida credenciais contra DB primeiro, depois fallback para env vars."""
     ip = request.client.host if request.client else "unknown"
-    if _check_rate_limit(ip):
+    if await _check_rate_limit(ip):
         return RedirectResponse("/admin/login?error=locked", status_code=303)
 
     form = await request.form()
@@ -93,12 +93,12 @@ async def admin_login_post(request: Request):
         _verify_password(password, _dummy_hash)  # equaliza timing
 
     if role is None:
-        _record_failed_login(ip)
+        await _record_failed_login(ip)
         logger.warning("Login admin falhado de %s (user=%s)", ip, username)
         await db.audit("admin", "login_failed", username, ip=ip)
         return RedirectResponse("/admin/login?error=1", status_code=303)
 
-    _clear_login_attempts(ip)
+    await _clear_login_attempts(ip)
     await db.audit("admin", "login_ok", username, ip=ip, detail=f"role={role}")
     resp = RedirectResponse("/admin", status_code=303)
     cookie_val = _sign_admin_cookie(username, role)
@@ -183,14 +183,14 @@ async def admin_help_page(request: Request) -> HTMLResponse:
 async def list_blocked_ips() -> JSONResponse:
     """Lista IPs bloqueados pelo security monitor."""
     import security
-    return JSONResponse(security.get_blocked_ips())
+    return JSONResponse(await security.get_blocked_ips())
 
 
 @admin_v1.delete("/security/blocked", tags=["tools"], dependencies=[Depends(require_admin)])
 async def unblock_all_ips() -> JSONResponse:
     """Desbloqueia todos os IPs."""
     import security
-    count = security.unblock_all()
+    count = await security.unblock_all()
     return JSONResponse({"unblocked": count})
 
 
@@ -198,7 +198,7 @@ async def unblock_all_ips() -> JSONResponse:
 async def unblock_ip(ip: str) -> JSONResponse:
     """Desbloqueia um IP especifico."""
     import security
-    found = security.unblock_ip(ip)
+    found = await security.unblock_ip(ip)
     return JSONResponse({"ip": ip, "was_blocked": found})
 
 

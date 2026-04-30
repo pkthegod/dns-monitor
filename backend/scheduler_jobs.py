@@ -31,22 +31,25 @@ async def job_check_offline() -> None:
     """
     import main as _m
     THRESHOLDS = _m.THRESHOLDS
+    # A1 (R9 race-fix): insert_alert agora e atomico — ON CONFLICT DO NOTHING.
+    # Antes, get_open_alerts + insert era check-then-act que duplicava alerta
+    # quando este job (5min) corria simultaneo com receive_metrics inserindo
+    # um alerta offline.
     offline = await _m.db.get_agents_offline(THRESHOLDS["offline_minutes"])
     for agent in offline:
         hostname = agent["hostname"]
-        open_alerts = await _m.db.get_open_alerts(hostname)
-        already_open = any(a["alert_type"] == "offline" for a in open_alerts)
-        if not already_open:
-            alert_id = await _m.db.insert_alert(
-                hostname=hostname,
-                alert_type="offline",
-                severity="critical",
-                message=f"Agente {hostname} sem heartbeat por mais de {THRESHOLDS['offline_minutes']} minutos",
-            )
-            sent = await _m.tg.alert_agent_offline(hostname, agent.get("last_seen"))
-            if sent:
-                await _m.db.mark_alert_notified(alert_id)
-            logger.warning("Agente offline detectado: %s", hostname)
+        alert_id = await _m.db.insert_alert(
+            hostname=hostname,
+            alert_type="offline",
+            severity="critical",
+            message=f"Agente {hostname} sem heartbeat por mais de {THRESHOLDS['offline_minutes']} minutos",
+        )
+        if alert_id is None:
+            continue  # ja existia alerta aberto, nao re-notifica
+        sent = await _m.tg.alert_agent_offline(hostname, agent.get("last_seen"))
+        if sent:
+            await _m.db.mark_alert_notified(alert_id)
+        logger.warning("Agente offline detectado: %s", hostname)
 
 
 async def job_send_report() -> None:

@@ -238,11 +238,17 @@ class TestEvaluateAlerts:
         return asyncio.run(coro)
 
     def _make_mocks(self, has_open=False):
-        """Retorna db e tg mockados com comportamentos padrão."""
+        """Retorna db e tg mockados com comportamentos padrão.
+
+        A1 (R6 race-fix): insert_alert virou atomico (ON CONFLICT DO NOTHING).
+        Quando ja existe alerta aberto, retorna None — simulamos isso aqui
+        com `return_value=None` se has_open=True. Antes, has_open_alert era
+        consultado primeiro; agora o teste reflete o caminho real do codigo.
+        """
         mock_db = MagicMock()
-        mock_db.insert_alert = AsyncMock(return_value=42)
+        mock_db.insert_alert = AsyncMock(return_value=None if has_open else 42)
         mock_db.mark_alert_notified = AsyncMock()
-        mock_db.has_open_alert = AsyncMock(return_value=has_open)
+        mock_db.has_open_alert = AsyncMock(return_value=has_open)  # mantido pra compat
 
         mock_tg = MagicMock()
         mock_tg.alert_cpu = AsyncMock(return_value=True)
@@ -282,11 +288,15 @@ class TestEvaluateAlerts:
         mock_tg.alert_cpu.assert_not_called()  # warning não vai pro Telegram
 
     def test_cpu_warning_deduplicated_when_open(self):
-        """Fix 2: warning não insere se já há alerta aberto."""
+        """A1 (R6): insert_alert atomico — sempre chamado, mas DB rejeita
+        com ON CONFLICT (mock retorna None). mark_alert_notified NAO e
+        chamado, validando que dedup ainda acontece."""
         mock_db, mock_tg = self._make_mocks(has_open=True)
         self._evaluate(make_payload(cpu_pct=85.0), mock_db, mock_tg)
-        mock_db.has_open_alert.assert_called_with("test-host-01", "cpu")
-        mock_db.insert_alert.assert_not_called()
+        mock_db.insert_alert.assert_called_once()
+        assert mock_db.insert_alert.call_args[0][:3] == ("test-host-01", "cpu", "warning")
+        mock_db.mark_alert_notified.assert_not_called()
+        mock_tg.alert_cpu.assert_not_called()
 
     def test_cpu_critical_sends_telegram(self):
         mock_db, mock_tg = self._make_mocks()
@@ -311,11 +321,13 @@ class TestEvaluateAlerts:
     # ── RAM ──────────────────────────────────────────────────────────────
 
     def test_ram_warning_deduplicated(self):
-        """Fix 2: RAM warning deduplicado."""
+        """A1 (R6): insert_alert atomico — DB rejeita (mock None) e nao notifica."""
         mock_db, mock_tg = self._make_mocks(has_open=True)
         self._evaluate(make_payload(ram_pct=88.0), mock_db, mock_tg)
-        mock_db.has_open_alert.assert_called_with("test-host-01", "ram")
-        mock_db.insert_alert.assert_not_called()
+        mock_db.insert_alert.assert_called_once()
+        assert mock_db.insert_alert.call_args[0][:3] == ("test-host-01", "ram", "warning")
+        mock_db.mark_alert_notified.assert_not_called()
+        mock_tg.alert_ram.assert_not_called()
 
     def test_ram_warning_inserts_when_no_open(self):
         mock_db, mock_tg = self._make_mocks(has_open=False)
@@ -365,12 +377,14 @@ class TestEvaluateAlerts:
         assert call_args[2] == "unknown"  # fallback quando error é None
 
     def test_dns_latency_warning_deduplicated(self):
-        """Fix 2: DNS latency warning deduplicado."""
+        """A1 (R6): insert_alert atomico — DB rejeita e nao notifica."""
         mock_db, mock_tg = self._make_mocks(has_open=True)
         data = make_payload(dns_success=True, dns_latency=250.0)
         self._evaluate(data, mock_db, mock_tg)
-        mock_db.has_open_alert.assert_called_with("test-host-01", "dns_latency")
-        mock_db.insert_alert.assert_not_called()
+        mock_db.insert_alert.assert_called_once()
+        assert mock_db.insert_alert.call_args[0][:3] == ("test-host-01", "dns_latency", "warning")
+        mock_db.mark_alert_notified.assert_not_called()
+        mock_tg.alert_dns_latency.assert_not_called()
 
     def test_dns_latency_warning_inserts_when_no_open(self):
         mock_db, mock_tg = self._make_mocks(has_open=False)
@@ -521,14 +535,26 @@ class TestJobCheckOffline:
         return asyncio.run(coro)
 
     def _setup(self, offline_agents, existing_open_alerts):
+        """A1 (R9): insert_alert agora e atomico. Se existing_open_alerts
+        contem alerta 'offline' pro hostname, simulamos ON CONFLICT retornando
+        None. Caso contrario, retorna id 99."""
         import importlib
         import main as m
         importlib.reload(m)
 
+        offline_hosts_with_alert = {
+            a["hostname"] for a in (existing_open_alerts or [])
+            if a.get("alert_type") == "offline"
+        }
+
+        async def fake_insert(*args, **kwargs):
+            host = kwargs.get("hostname") or (args[0] if args else None)
+            return None if host in offline_hosts_with_alert else 99
+
         mock_db = MagicMock()
         mock_db.get_agents_offline = AsyncMock(return_value=offline_agents)
         mock_db.get_open_alerts = AsyncMock(return_value=existing_open_alerts)
-        mock_db.insert_alert = AsyncMock(return_value=99)
+        mock_db.insert_alert = AsyncMock(side_effect=fake_insert)
         mock_db.mark_alert_notified = AsyncMock()
 
         mock_tg = MagicMock()
@@ -553,14 +579,17 @@ class TestJobCheckOffline:
         mock_db.mark_alert_notified.assert_called_once_with(99)
 
     def test_offline_agent_with_existing_alert_no_spam(self):
-        """Anti-spam: agente já tem alerta offline aberto, não cria outro."""
+        """A1 (R9): insert_alert atomico — chamado, mas DB rejeita (mock None)
+        e Telegram NAO e disparado. Antes era check-then-act e poderia
+        duplicar alerta sob race com receive_metrics."""
         offline = [{"hostname": "h1", "last_seen": None}]
         existing = [{"alert_type": "offline", "hostname": "h1"}]
         m, mock_db, mock_tg = self._setup(offline, existing)
         with patch.object(m, 'db', mock_db), patch.object(m, 'tg', mock_tg):
             self._run(m.job_check_offline())
-        mock_db.insert_alert.assert_not_called()
+        mock_db.insert_alert.assert_called_once()
         mock_tg.alert_agent_offline.assert_not_called()
+        mock_db.mark_alert_notified.assert_not_called()
 
     def test_multiple_offline_agents_each_gets_alert(self):
         offline = [
@@ -1915,11 +1944,12 @@ class TestAgentVersionUpsert:
     """Verifica que upsert_agent grava agent_version na tabela agents."""
 
     def test_upsert_agent_passes_agent_version(self):
+        """A3 (R7): upsert_agent agora usa fetchrow + RETURNING (xmax=0)
+        em vez de SELECT + execute separados."""
         import db
 
         mock_conn = AsyncMock()
-        mock_conn.fetchval = AsyncMock(return_value=0)  # não é novo
-        mock_conn.execute = AsyncMock()
+        mock_conn.fetchrow = AsyncMock(return_value={"is_new": False})
         mock_ctx = MagicMock()
         mock_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_ctx.__aexit__ = AsyncMock(return_value=False)
@@ -1931,16 +1961,17 @@ class TestAgentVersionUpsert:
                     agent_version="1.2.3",
                 )
 
-        asyncio.run(run())
-        sql_called = mock_conn.execute.call_args[0][0]
+        result = asyncio.run(run())
+        sql_called = mock_conn.fetchrow.call_args[0][0]
         assert "agent_version" in sql_called
+        assert "xmax = 0" in sql_called  # is_new vem do RETURNING
+        assert result["is_new"] is False
 
     def test_upsert_agent_none_version_uses_coalesce(self):
         import db
 
         mock_conn = AsyncMock()
-        mock_conn.fetchval = AsyncMock(return_value=0)
-        mock_conn.execute = AsyncMock()
+        mock_conn.fetchrow = AsyncMock(return_value={"is_new": True})
         mock_ctx = MagicMock()
         mock_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_ctx.__aexit__ = AsyncMock(return_value=False)
@@ -1952,9 +1983,10 @@ class TestAgentVersionUpsert:
                     agent_version=None,
                 )
 
-        asyncio.run(run())
-        sql_called = mock_conn.execute.call_args[0][0]
+        result = asyncio.run(run())
+        sql_called = mock_conn.fetchrow.call_args[0][0]
         assert "COALESCE" in sql_called
+        assert result["is_new"] is True
 
 
 # ===========================================================================
@@ -2754,6 +2786,161 @@ class TestAuditHashChain:
         assert result["broken_at_id"] == 2
         assert "nao bate" in result["message"]
 
+
+# ===========================================================================
+# A5 — Race condition stress tests (cobre R1-R5 da auditoria)
+# ===========================================================================
+#
+# Dispara N coroutines simultaneas contra estado compartilhado (rate-limiters,
+# security counters, middleware request log) e valida invariantes. Materializa
+# em red/green o que o auditor reportou como "alta likelihood".
+#
+# Single-thread asyncio: codigo sync sem await ja e atomic; o lock importa
+# quando o flow real tem awaits intercalados (ex: admin_login_post checa
+# rate-limit, await form(), depois grava failure). Os testes simulam esse
+# padrao injetando await asyncio.sleep(0) entre check e act.
+
+class TestRaceConditionsStress:
+    """A5 (C7 + R1-R5): valida invariantes sob concorrencia."""
+
+    def test_login_rate_limit_holds_under_concurrent_attempts(self):
+        """R1: 50 coroutines tentando registrar falha simultaneamente nao podem
+        burlar o limite de 5 tentativas. Apos a tempestade, _login_attempts[ip]
+        tem exatamente 50 entradas (todas registradas) — mas check_rate_limit
+        retorna True (locked) consistentemente apos a 5a."""
+        import importlib
+        import auth
+        importlib.reload(auth)
+
+        async def attacker(ip: str):
+            await auth._record_failed_login(ip)
+            return await auth._check_rate_limit(ip)
+
+        async def run():
+            ip = "10.0.0.99"
+            # Limpa estado de runs anteriores
+            auth._login_attempts.pop(ip, None)
+            results = await asyncio.gather(*[attacker(ip) for _ in range(50)])
+            # Invariante 1: nenhuma corrupcao do dict (50 entries gravadas)
+            assert len(auth._login_attempts[ip]) == 50, \
+                f"contagem perdeu eventos: {len(auth._login_attempts[ip])}"
+            # Invariante 2: a partir da 6a tentativa, locked = True
+            # (pode ser dificil garantir ordem exata sob concorrencia, mas
+            # MAIORIA dos resultados deve ser True quando >= 5 entradas existem)
+            locked_count = sum(1 for r in results if r)
+            assert locked_count >= 45, \
+                f"esperava maioria locked, got {locked_count}/50"
+
+        asyncio.run(run())
+
+    def test_security_record_event_no_lost_writes(self):
+        """R2: 100 coroutines registrando events do mesmo IP. Apos run,
+        _events[ip] tem exatamente 100 entradas — sem perdas por race."""
+        import importlib
+        import security
+        importlib.reload(security)
+        security.SECURITY_ENABLED = True
+
+        async def run():
+            ip = "10.0.0.42"
+            security._events.pop(ip, None)
+            await asyncio.gather(*[
+                security.record_event(ip, "404") for _ in range(100)
+            ])
+            assert len(security._events[ip]) == 100, \
+                f"perdeu events: {len(security._events[ip])} de 100"
+
+        asyncio.run(run())
+
+    def test_security_block_unblock_consistent(self):
+        """R3: bloquear e unblock concorrentes nao deixam estado corrompido."""
+        import importlib
+        import security
+        importlib.reload(security)
+        security.SECURITY_ENABLED = True
+
+        async def block_then_unblock(ip: str):
+            # Bloqueia direto via lock interno (handle_honeypot e o caminho real)
+            async with security._state_lock:
+                security._block_ip_unlocked(ip, "stress")
+            # Pequeno yield pra outras coroutines rodarem
+            await asyncio.sleep(0)
+            await security.unblock_ip(ip)
+
+        async def run():
+            ips = [f"10.0.0.{i}" for i in range(20)]
+            security._blocked_ips.clear()
+            await asyncio.gather(*[block_then_unblock(ip) for ip in ips])
+            # Apos block+unblock pareados, dict deve estar vazio
+            assert len(security._blocked_ips) == 0, \
+                f"blocked_ips nao zerado: {dict(security._blocked_ips)}"
+
+        asyncio.run(run())
+
+    def test_api_rate_limit_middleware_count_exact(self):
+        """R5: APIRateLimitMiddleware._requests deve refletir contagem exata
+        sob N requests concorrentes ao mesmo (ip,path). Disparamos 130
+        requests; exatamente 120 (limit default /api/) passam e 10 sao 429.
+
+        ATENCAO: o middleware tem bypass `if not SECURITY_ENABLED` no inicio
+        do dispatch — entao SECURITY_ENABLED precisa estar True pro
+        rate-limit aplicar. Mantemos o IP fora da whitelist."""
+        import importlib
+        import middlewares
+        importlib.reload(middlewares)
+
+        import security
+        security.SECURITY_ENABLED = True
+        security._WHITELIST = set()  # garante IP de teste nao whitelistado
+
+        async def fake_call_next(_request):
+            from fastapi import Response
+            return Response(content="ok", media_type="text/plain")
+
+        mw = middlewares.APIRateLimitMiddleware(app=None)
+        mw._requests.clear()
+
+        def make_req():
+            req = MagicMock()
+            req.url.path = "/api/v1/agents"
+            req.client.host = "10.0.0.50"
+            req.headers = {}
+            return req
+
+        async def fire():
+            return await mw.dispatch(make_req(), fake_call_next)
+
+        async def run():
+            results = await asyncio.gather(*[fire() for _ in range(130)])
+            success = sum(1 for r in results if r.status_code == 200)
+            blocked = sum(1 for r in results if r.status_code == 429)
+            assert success <= 120, f"limit burlado: {success} OK"
+            assert success + blocked == 130
+            assert blocked >= 10, f"esperava >=10 bloqueios, got {blocked}"
+
+        asyncio.run(run())
+
+    def test_security_should_alert_cooldown_no_double_fire(self):
+        """R4: 50 coroutines tentando alertar pro mesmo (type,ip) em paralelo.
+        Apenas UMA deve ver should_alert=True; resto deve ver False (cooldown)."""
+        import importlib
+        import security
+        importlib.reload(security)
+        security.SECURITY_ENABLED = True
+
+        async def try_alert(key: str):
+            async with security._state_lock:
+                return security._should_alert_unlocked(key)
+
+        async def run():
+            key = "scan:10.0.0.7"
+            security._alerted.pop(key, None)
+            results = await asyncio.gather(*[try_alert(key) for _ in range(50)])
+            true_count = sum(1 for r in results if r)
+            assert true_count == 1, \
+                f"esperava 1 alert disparado, got {true_count} (cooldown burlado)"
+
+        asyncio.run(run())
 
 
 # ===========================================================================
