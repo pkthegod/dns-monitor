@@ -220,11 +220,25 @@ CREATE INDEX IF NOT EXISTS idx_alerts_hostname_ts
 CREATE INDEX IF NOT EXISTS idx_alerts_unresolved
     ON alerts_log (resolved_at) WHERE resolved_at IS NULL;
 
--- A1 (v1.5 race-fix R6): unique partial index pra suportar
--- INSERT ... ON CONFLICT DO NOTHING e impedir duplicatas de alertas abertos
--- sob race entre coroutines. Severity faz parte da chave: warning pode escalar
--- pra critical sem o warning ter sido resolvido (visto em prod: CPU 81% gera
--- warning, sobe pra 96% gera critical antes de resolver o warning).
+-- A1 (v1.5 race-fix R6): dedupe defensivo de rows abertas antes de criar o
+-- UNIQUE partial index. Bancos com historico pre-migration podem ter
+-- duplicatas geradas pelo race antigo (has_open_alert + insert separados);
+-- sem este DELETE, o CREATE UNIQUE INDEX falharia e travaria o startup.
+-- Idempotente: sem duplicatas, e no-op. Mantem o ID mais antigo de cada
+-- (hostname, alert_type, severity) aberto, descartando duplicatas mais novas.
+DELETE FROM alerts_log a
+USING alerts_log b
+WHERE a.id > b.id
+  AND a.hostname = b.hostname
+  AND a.alert_type = b.alert_type
+  AND a.severity = b.severity
+  AND a.resolved_at IS NULL
+  AND b.resolved_at IS NULL;
+
+-- Unique partial index pra suportar INSERT ... ON CONFLICT DO NOTHING.
+-- Severity faz parte da chave: warning pode escalar pra critical sem o
+-- warning ter sido resolvido (visto em prod: CPU 81% gera warning, sobe
+-- pra 96% gera critical antes do operador resolver o warning).
 CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_open_unique
     ON alerts_log (hostname, alert_type, severity)
     WHERE resolved_at IS NULL;
