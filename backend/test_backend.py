@@ -2607,6 +2607,155 @@ class TestClientPortal:
         assert "/client/logout" in routes
 
 
+
+# ===========================================================================
+# Audit log hash chain (C2 — v1.5 security audit)
+# ===========================================================================
+
+class TestAuditHashChain:
+    """Hash chain immutable: row_hash determinismo + verify pega adulteracao."""
+
+    def test_hash_deterministic(self):
+        """Mesma entrada gera mesmo hash."""
+        from datetime import datetime, timezone
+        import db
+        ts = datetime(2026, 4, 30, 12, 0, 0, tzinfo=timezone.utc)
+        h1 = db._compute_audit_hash(None, ts, "admin", "login", "panel", "ok", "10.0.0.1")
+        h2 = db._compute_audit_hash(None, ts, "admin", "login", "panel", "ok", "10.0.0.1")
+        assert h1 == h2
+
+    def test_hash_changes_on_any_field(self):
+        """Mudar 1 campo muda o hash — base do chain integrity."""
+        from datetime import datetime, timezone
+        import db
+        ts = datetime(2026, 4, 30, 12, 0, 0, tzinfo=timezone.utc)
+        base = db._compute_audit_hash(None, ts, "admin", "login", "panel", "ok", "10.0.0.1")
+        # Cada uma dessas variacoes deve dar hash diferente
+        variants = [
+            db._compute_audit_hash("PREV", ts, "admin", "login", "panel", "ok", "10.0.0.1"),
+            db._compute_audit_hash(None, ts.replace(second=1), "admin", "login", "panel", "ok", "10.0.0.1"),
+            db._compute_audit_hash(None, ts, "admin2", "login", "panel", "ok", "10.0.0.1"),
+            db._compute_audit_hash(None, ts, "admin", "logout", "panel", "ok", "10.0.0.1"),
+            db._compute_audit_hash(None, ts, "admin", "login", "other", "ok", "10.0.0.1"),
+            db._compute_audit_hash(None, ts, "admin", "login", "panel", "fail", "10.0.0.1"),
+            db._compute_audit_hash(None, ts, "admin", "login", "panel", "ok", "10.0.0.2"),
+        ]
+        for v in variants:
+            assert v != base, f"hash collision: {v}"
+
+    def test_hash_separator_prevents_concat_collision(self):
+        """Separator US (\\x1f) impede colisao por concatenacao ambigua —
+        ('ab', 'c') vs ('a', 'bc') devem dar hashes diferentes."""
+        from datetime import datetime, timezone
+        import db
+        ts = datetime(2026, 4, 30, 12, 0, 0, tzinfo=timezone.utc)
+        h1 = db._compute_audit_hash(None, ts, "ab", "c", None, None, None)
+        h2 = db._compute_audit_hash(None, ts, "a", "bc", None, None, None)
+        assert h1 != h2
+
+    def test_verify_chain_empty(self):
+        """Chain vazia retorna valid=True com totals zero."""
+        import asyncio
+        from unittest.mock import patch, AsyncMock
+        import db
+        mock_conn = AsyncMock()
+        mock_conn.fetch = AsyncMock(return_value=[])
+        with patch.object(db, "get_conn") as gc:
+            gc.return_value.__aenter__.return_value = mock_conn
+            result = asyncio.run(db.verify_audit_chain())
+        assert result["valid"] is True
+        assert result["total"] == 0
+        assert result["signed_count"] == 0
+        assert result["legacy_count"] == 0
+
+    def test_verify_chain_legacy_only(self):
+        """Rows pre-migration (row_hash NULL) sao toleradas."""
+        import asyncio
+        from unittest.mock import patch, AsyncMock
+        from datetime import datetime, timezone
+        import db
+        ts = datetime(2026, 4, 30, 12, 0, 0, tzinfo=timezone.utc)
+        rows = [
+            {"id": 1, "ts": ts, "actor": "old", "action": "login",
+             "target": None, "detail": None, "ip": None,
+             "prev_hash": None, "row_hash": None},
+            {"id": 2, "ts": ts, "actor": "old", "action": "logout",
+             "target": None, "detail": None, "ip": None,
+             "prev_hash": None, "row_hash": None},
+        ]
+        mock_conn = AsyncMock()
+        mock_conn.fetch = AsyncMock(return_value=rows)
+        with patch.object(db, "get_conn") as gc:
+            gc.return_value.__aenter__.return_value = mock_conn
+            result = asyncio.run(db.verify_audit_chain())
+        assert result["valid"] is True
+        assert result["legacy_count"] == 2
+        assert result["signed_count"] == 0
+
+    def test_verify_chain_detects_tampering(self):
+        """Adulteracao de campo (row_hash invalido) e detectada."""
+        import asyncio
+        from unittest.mock import patch, AsyncMock
+        from datetime import datetime, timezone
+        import db
+        ts = datetime(2026, 4, 30, 12, 0, 0, tzinfo=timezone.utc)
+        # Row 1: row_hash valido
+        h1 = db._compute_audit_hash(None, ts, "admin", "login", None, None, None)
+        # Row 2: row_hash valido com prev=h1
+        h2 = db._compute_audit_hash(h1, ts, "admin", "create_user", "alice", None, None)
+        # Row 3: alguem ALTEROU o action (de "delete" pra "rename") mas
+        # row_hash continua sendo o de "delete" — verify deve pegar.
+        h3_real = db._compute_audit_hash(h2, ts, "admin", "delete_user", "bob", None, None)
+        rows = [
+            {"id": 1, "ts": ts, "actor": "admin", "action": "login",
+             "target": None, "detail": None, "ip": None,
+             "prev_hash": None, "row_hash": h1},
+            {"id": 2, "ts": ts, "actor": "admin", "action": "create_user",
+             "target": "alice", "detail": None, "ip": None,
+             "prev_hash": h1, "row_hash": h2},
+            {"id": 3, "ts": ts, "actor": "admin", "action": "rename_user",  # ALTERADO!
+             "target": "bob", "detail": None, "ip": None,
+             "prev_hash": h2, "row_hash": h3_real},
+        ]
+        mock_conn = AsyncMock()
+        mock_conn.fetch = AsyncMock(return_value=rows)
+        with patch.object(db, "get_conn") as gc:
+            gc.return_value.__aenter__.return_value = mock_conn
+            result = asyncio.run(db.verify_audit_chain())
+        assert result["valid"] is False
+        assert result["broken_at_id"] == 3
+        assert "recomputado nao bate" in result["message"]
+
+    def test_verify_chain_detects_broken_link(self):
+        """prev_hash que nao bate com row_hash anterior e detectado."""
+        import asyncio
+        from unittest.mock import patch, AsyncMock
+        from datetime import datetime, timezone
+        import db
+        ts = datetime(2026, 4, 30, 12, 0, 0, tzinfo=timezone.utc)
+        h1 = db._compute_audit_hash(None, ts, "admin", "login", None, None, None)
+        # Row 2 com prev_hash WRONG (nao igual a h1)
+        WRONG_PREV = "0" * 64
+        h2_wrong = db._compute_audit_hash(WRONG_PREV, ts, "admin", "do", None, None, None)
+        rows = [
+            {"id": 1, "ts": ts, "actor": "admin", "action": "login",
+             "target": None, "detail": None, "ip": None,
+             "prev_hash": None, "row_hash": h1},
+            {"id": 2, "ts": ts, "actor": "admin", "action": "do",
+             "target": None, "detail": None, "ip": None,
+             "prev_hash": WRONG_PREV, "row_hash": h2_wrong},
+        ]
+        mock_conn = AsyncMock()
+        mock_conn.fetch = AsyncMock(return_value=rows)
+        with patch.object(db, "get_conn") as gc:
+            gc.return_value.__aenter__.return_value = mock_conn
+            result = asyncio.run(db.verify_audit_chain())
+        assert result["valid"] is False
+        assert result["broken_at_id"] == 2
+        assert "nao bate" in result["message"]
+
+
+
 # ===========================================================================
 # CSP regression guard — script-src deve ser nonce-only
 # ===========================================================================

@@ -434,6 +434,12 @@ CREATE TABLE IF NOT EXISTS audit_log (
 
 CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log (ts DESC);
 
+-- C2 (v1.5 audit): hash chain immutable. prev_hash referencia row_hash da
+-- linha anterior; row_hash = SHA-256 do conteudo + prev_hash. Adulteracao
+-- de qualquer campo invalida a recomputacao em verify_audit_chain.
+ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS prev_hash TEXT;
+ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS row_hash  TEXT;
+
 
 CREATE TABLE IF NOT EXISTS client_users (
     id            SERIAL       PRIMARY KEY,

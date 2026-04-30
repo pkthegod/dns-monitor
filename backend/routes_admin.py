@@ -364,3 +364,22 @@ async def delete_admin_user_endpoint(user_id: int, request: Request) -> JSONResp
         raise HTTPException(status_code=404, detail="Admin user nao encontrado")
     await db.audit(caller["username"], "admin_user_deleted", target["username"])
     return JSONResponse({"status": "ok"})
+
+
+# ---------------------------------------------------------------------------
+# Audit log integrity (C2 — v1.5 security audit)
+# ---------------------------------------------------------------------------
+
+@admin_v1.get("/admin/audit/verify", tags=["audit"])
+async def verify_audit_chain_endpoint(request: Request, limit: int | None = None) -> JSONResponse:
+    """Verifica integridade do hash chain do audit_log.
+    Admin only — operacao read-only mas expoe estado do chain.
+    """
+    caller = await require_admin_role(request)
+    result = await db.verify_audit_chain(limit=limit)
+    await db.audit(
+        caller["username"], "audit_chain_verify",
+        target=f"limit={limit or 'all'}",
+        detail=f"valid={result['valid']} signed={result['signed_count']} legacy={result['legacy_count']}",
+    )
+    return JSONResponse(result)

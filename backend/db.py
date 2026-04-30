@@ -1,27 +1,27 @@
 """
 db.py — Camada de acesso ao TimescaleDB via asyncpg.
 
-Indice (use grep para navegar; numeros sao orientativos):
+Secoes (cada uma marcada por bloco `# === Nome ===` no corpo;
+use grep '^# ===' para navegar):
 
-    init_pool / close_pool / get_conn / apply_schema  ──  L27-L73
-    Agents — upsert + heartbeat                        ──  L76-L122
-    Metrics inserts — cpu/ram/disk/io                  ──  L123-L193
-    DNS checks + service status                        ──  L194-L228
-    DNS query stats — RCODEs/QPS via rndc/unbound      ──  L237-L390
-    Alerts — insert / notified / resolve / queries     ──  L391-L580
-    Agent admin — meta update / delete / offline       ──  L268-L390
-    # === Fingerprints ===                             ──  L418
-    # === Commands ===                                 ──  L468
-    # === Client users — portal read-only ===          ──  L602
-    # === Admin users — multi-user RBAC ===            ──  L673
-    # === Audit log ===                                ──  L751
-    # === Daily Reports ===                            ──  L769
-    # === Dashboard / Client — queries agregadas ===   ──  L819
-    # === Speedtest — Domain SSL/Port checker ===      ──  L933
-
-Ao adicionar funcoes em uma secao, atualize o indice acima.
+    Pool / schema
+    Agents — registro e heartbeat
+    Metrics — cpu / ram / disk / io
+    DNS checks
+    DNS Query Stats — RCODEs/QPS via rndc/unbound
+    Alerts
+    Agent admin & alert queries
+    Fingerprint — identificacao de hardware
+    Comandos remotos
+    Client users — portal read-only
+    Admin users — multi-user RBAC
+    Audit log
+    Daily Reports
+    Dashboard / Client — queries agregadas
+    Speedtest — Domain SSL/Port checker
 """
 
+import hashlib
 import logging
 import os
 import re
@@ -35,6 +35,10 @@ logger = logging.getLogger("infra-vision.db")
 
 _pool: Optional[asyncpg.Pool] = None
 
+
+# ===========================================================================
+# Pool / schema
+# ===========================================================================
 
 def _parse_ts(ts: str) -> datetime:
     """Converte ISO 8601 string para datetime. asyncpg exige datetime, não str."""
@@ -93,6 +97,10 @@ async def apply_schema() -> None:
     logger.info("Schema aplicado (%d statements)", len(statements))
 
 
+# ===========================================================================
+# Agents — registro e heartbeat
+# ===========================================================================
+
 async def upsert_agent(
     hostname: str,
     last_seen_ts: str,
@@ -139,6 +147,10 @@ async def insert_heartbeat(hostname: str, ts: str, agent_version: Optional[str])
             _parse_ts(ts), hostname, agent_version,
         )
 
+
+# ===========================================================================
+# Metrics — cpu / ram / disk / io
+# ===========================================================================
 
 async def insert_metrics_cpu(hostname: str, ts: str, cpu: dict, load: dict) -> None:
     async with get_conn() as conn:
@@ -210,6 +222,10 @@ async def insert_metrics_io(hostname: str, ts: str, io: dict) -> None:
             io.get("read_time_ms"), io.get("write_time_ms"),
         )
 
+
+# ===========================================================================
+# DNS checks
+# ===========================================================================
 
 async def insert_dns_checks(hostname: str, ts: str, checks: list) -> None:
     if not checks:
@@ -414,6 +430,10 @@ async def insert_dns_service_status(hostname: str, ts: str, svc: dict) -> None:
         )
 
 
+# ===========================================================================
+# Alerts
+# ===========================================================================
+
 async def insert_alert(
     hostname: str, alert_type: str, severity: str, message: str,
     metric_name: Optional[str] = None, metric_value: Optional[float] = None,
@@ -451,6 +471,10 @@ async def resolve_alert(hostname: str, alert_type: str) -> None:
             hostname, alert_type,
         )
 
+
+# ===========================================================================
+# Agent admin & alert queries
+# ===========================================================================
 
 async def update_agent_meta(
     hostname: str,
@@ -602,9 +626,9 @@ async def get_open_alerts(hostname: Optional[str] = None) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-# ---------------------------------------------------------------------------
-# Fingerprint — identificação de hardware do agente
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# Fingerprint — identificacao de hardware do agente
+# ===========================================================================
 
 async def upsert_fingerprint(hostname: str, fingerprint: str) -> dict:
     """
@@ -652,9 +676,9 @@ async def upsert_fingerprint(hostname: str, fingerprint: str) -> dict:
         return {"is_new": False, "changed": False}
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Comandos remotos
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 VALID_COMMANDS = {"stop", "disable", "enable", "restart", "purge", "decommission", "run_script", "update_agent", "dnstop"}
 
@@ -984,23 +1008,138 @@ def _sanitize_audit_field(value, max_len: int = _AUDIT_MAX_LEN):
     return s
 
 
+# C2 (v1.5): hash chain immutable. Constante 64-bit pra advisory lock —
+# serializa appends concorrentes (varios await audit() em flight) e evita
+# race em prev_hash. Liberado no commit/rollback da transaction.
+_AUDIT_LOCK_KEY = 8329472100  # const arbitraria; isolada em sua keyspace
+
+
+def _compute_audit_hash(prev_hash: Optional[str], ts: datetime,
+                        actor: Optional[str], action: Optional[str],
+                        target: Optional[str], detail: Optional[str],
+                        ip: Optional[str]) -> str:
+    """SHA-256 canonico do conteudo + prev_hash. Mudanca em qualquer campo
+    apos o INSERT invalida a verificacao. Separator US (\\x1f) impede
+    colisao por concatenacao ambigua."""
+    parts = [
+        prev_hash or '',
+        ts.isoformat(),
+        actor or '',
+        action or '',
+        target or '',
+        detail or '',
+        ip or '',
+    ]
+    canonical = '\x1f'.join(parts).encode('utf-8')
+    return hashlib.sha256(canonical).hexdigest()
+
+
 async def audit(actor: str, action: str, target: str = None,
                 detail: str = None, ip: str = None) -> None:
-    """Registra acao no audit log. Sanitiza campos user-controlled."""
+    """Registra acao no audit log com hash chain (append-only imutavel).
+    Sanitiza campos user-controlled. Em caso de falha, loga e nao bloqueia
+    a acao chamadora — audit e best-effort no path atual.
+    """
     actor  = _sanitize_audit_field(actor,  max_len=128)
     action = _sanitize_audit_field(action, max_len=64)
     target = _sanitize_audit_field(target, max_len=256)
     detail = _sanitize_audit_field(detail, max_len=512)
     ip     = _sanitize_audit_field(ip,     max_len=64)
+    ts = datetime.now(timezone.utc)
     try:
         async with get_conn() as conn:
-            await conn.execute(
-                """INSERT INTO audit_log (actor, action, target, detail, ip)
-                   VALUES ($1, $2, $3, $4, $5)""",
-                actor, action, target, detail, ip,
-            )
+            async with conn.transaction():
+                # Advisory lock — serializa todas as chamadas concorrentes
+                # de audit() pra evitar 2 transactions pegarem o mesmo
+                # prev_hash (chain quebraria).
+                await conn.execute("SELECT pg_advisory_xact_lock($1)", _AUDIT_LOCK_KEY)
+                row = await conn.fetchrow(
+                    "SELECT row_hash FROM audit_log WHERE row_hash IS NOT NULL "
+                    "ORDER BY id DESC LIMIT 1"
+                )
+                prev_hash = row['row_hash'] if row else None
+                row_hash = _compute_audit_hash(prev_hash, ts, actor, action, target, detail, ip)
+                await conn.execute(
+                    """INSERT INTO audit_log
+                         (ts, actor, action, target, detail, ip, prev_hash, row_hash)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
+                    ts, actor, action, target, detail, ip, prev_hash, row_hash,
+                )
     except Exception as exc:
         logger.warning("Audit log falhou: %s", exc)
+
+
+async def verify_audit_chain(limit: Optional[int] = None) -> dict:
+    """Verifica integridade do hash chain do audit_log.
+
+    Tolera rows legacy (criadas antes da migration C2 — row_hash IS NULL)
+    SE estiverem todas no inicio (continuas, antes de qualquer row assinada).
+    A partir da primeira row com row_hash != NULL, exige cadeia integra.
+
+    Retorna dict com keys: valid (bool), total (int), legacy_count (int),
+    signed_count (int), broken_at_id (int|None), message (str).
+    """
+    sql = ("SELECT id, ts, actor, action, target, detail, ip, prev_hash, row_hash "
+           "FROM audit_log ORDER BY id ASC")
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    async with get_conn() as conn:
+        rows = await conn.fetch(sql)
+
+    total = len(rows)
+    legacy_count = 0
+    signed_count = 0
+    chain_started = False
+    expected_prev: Optional[str] = None  # row_hash esperado como prev_hash da proxima
+
+    for r in rows:
+        if r['row_hash'] is None:
+            if chain_started:
+                return {
+                    "valid": False, "total": total,
+                    "legacy_count": legacy_count, "signed_count": signed_count,
+                    "broken_at_id": r['id'],
+                    "message": (f"Row id={r['id']} sem row_hash apos chain iniciar — "
+                                f"insercao manual sem hash ou rollback parcial."),
+                }
+            legacy_count += 1
+            continue
+
+        if not chain_started:
+            chain_started = True
+            # Primeira row do chain pode ter qualquer prev_hash (incluindo None
+            # se for genesis OU o row_hash da ultima legacy se aplicado pos-fato).
+            # Nao validamos prev_hash aqui — apenas o conteudo.
+        else:
+            if r['prev_hash'] != expected_prev:
+                return {
+                    "valid": False, "total": total,
+                    "legacy_count": legacy_count, "signed_count": signed_count,
+                    "broken_at_id": r['id'],
+                    "message": (f"Row id={r['id']} prev_hash={r['prev_hash'][:16]+'...' if r['prev_hash'] else 'NULL'} "
+                                f"nao bate com row_hash anterior."),
+                }
+
+        computed = _compute_audit_hash(r['prev_hash'], r['ts'], r['actor'],
+                                       r['action'], r['target'], r['detail'], r['ip'])
+        if computed != r['row_hash']:
+            return {
+                "valid": False, "total": total,
+                "legacy_count": legacy_count, "signed_count": signed_count,
+                "broken_at_id": r['id'],
+                "message": (f"Row id={r['id']} row_hash recomputado nao bate — "
+                            f"conteudo modificado apos o INSERT."),
+            }
+        signed_count += 1
+        expected_prev = r['row_hash']
+
+    return {
+        "valid": True, "total": total,
+        "legacy_count": legacy_count, "signed_count": signed_count,
+        "broken_at_id": None,
+        "message": (f"Chain integro: {signed_count} rows assinadas + "
+                    f"{legacy_count} legacy."),
+    }
 
 
 # ===========================================================================
