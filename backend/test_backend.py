@@ -2539,10 +2539,18 @@ class TestClientPortal:
         assert m._verify_client_cookie("") is None
 
     def test_client_login_page_returns_html(self):
+        """SEC: pagina agora injeta CSP nonce nos <script> via _html_with_nonce.
+        Assinatura passou a receber `request` para acessar request.state.csp_nonce.
+        """
         import main as m
-        resp = self._run(m.client_login_page())
+        request = MagicMock()
+        request.state = MagicMock(csp_nonce="testnonce")
+        resp = self._run(m.client_login_page(request))
         assert resp.status_code == 200
-        assert "Portal do Cliente" in resp.body.decode()
+        body = resp.body.decode()
+        assert "Portal do Cliente" in body
+        # Garantir que o nonce foi propagado para tags <script>
+        assert 'nonce="testnonce"' in body
 
     def test_client_portal_redirects_without_cookie(self):
         import importlib, main as m
@@ -2597,6 +2605,47 @@ class TestClientPortal:
         assert "/client" in routes
         assert "/client/login" in routes
         assert "/client/logout" in routes
+
+
+# ===========================================================================
+# CSP regression guard — script-src deve ser nonce-only
+# ===========================================================================
+
+class TestCSPNonceOnly:
+    """Garante que o CSP nao volta a ter 'unsafe-inline' em script-src.
+
+    Browsers em CSP3 ignoram nonce-source quando 'unsafe-inline' tambem
+    esta presente — adicionar um equivale a desligar o outro. Isso ja foi
+    regressao real (changelog v1.0.2 anunciou nonce mas a string CSP nunca
+    foi atualizada). O guarda abaixo trava o invariante.
+    """
+
+    def test_csp_script_src_has_nonce_no_unsafe_inline(self):
+        import asyncio
+        from middlewares import SecurityHeadersMiddleware
+
+        async def fake_call_next(request):
+            from fastapi import Response
+            return Response(content="ok", media_type="text/plain")
+
+        mw = SecurityHeadersMiddleware(app=None)
+        request = MagicMock()
+        request.state = type("S", (), {})()
+        request.url.path = "/"
+
+        async def run():
+            return await mw.dispatch(request, fake_call_next)
+
+        resp = asyncio.run(run())
+        csp = resp.headers["Content-Security-Policy"]
+        # Encontra a diretiva script-src e checa apenas ela
+        directives = {d.strip().split(" ", 1)[0]: d.strip()
+                      for d in csp.split(";") if d.strip()}
+        script_src = directives.get("script-src", "")
+        assert "'unsafe-inline'" not in script_src, \
+            f"REGRESSION: script-src tem 'unsafe-inline' — nonce-source vira no-op. CSP={csp}"
+        assert "nonce-" in script_src, \
+            f"script-src precisa de 'nonce-X' para inline scripts: {script_src}"
 
 
 # ===========================================================================

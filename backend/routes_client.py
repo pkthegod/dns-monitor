@@ -115,9 +115,12 @@ async def delete_client_endpoint(client_id: int, request: Request) -> JSONRespon
 # ---------------------------------------------------------------------------
 
 
-async def client_login_page() -> HTMLResponse:
+async def client_login_page(request: Request) -> HTMLResponse:
     html_path = pathlib.Path(__file__).parent / "static" / "client-login.html"
-    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+    html = html_path.read_text(encoding="utf-8")
+    nonce = getattr(request.state, "csp_nonce", "")
+    from main import _html_with_nonce
+    return HTMLResponse(_html_with_nonce(html, nonce))
 
 
 async def client_login_post(request: Request):
