@@ -910,17 +910,20 @@ class TestCommandEndpoints:
 
         asyncio.run(run())
 
+    # SEC: create_command passou de require_token (Bearer compartilhado) para
+    # require_admin_role (cookie admin OU Bearer com whitelist). Mocks abaixo
+    # devolvem dict {username, role} que require_admin_role retorna.
+    _ADMIN_INFO = {"username": "admin", "role": "admin"}
+
     def test_create_command_missing_fields(self):
         import main as m_module
         import asyncio
 
         async def run():
             req = MagicMock()
-            req.headers = {"authorization": "Bearer tok"}
             req.json = AsyncMock(return_value={"hostname": "", "command": ""})
-            with patch.dict("os.environ", {"AGENT_TOKEN": "tok"}):
-                with patch("main.require_token", AsyncMock(return_value=None)):
-                    resp = await m_module.create_command(req)
+            with patch("main.require_admin_role", AsyncMock(return_value=self._ADMIN_INFO)):
+                resp = await m_module.create_command(req)
             assert resp.status_code == 422
 
         asyncio.run(run())
@@ -931,20 +934,21 @@ class TestCommandEndpoints:
 
         async def run():
             req = MagicMock()
-            req.headers = {"authorization": "Bearer tok"}
             req.json = AsyncMock(return_value={
                 "hostname": "ns1", "command": "purge", "issued_by": "admin"
             })
-            with patch.dict("os.environ", {"AGENT_TOKEN": "tok"}):
-                with patch("main.require_token", AsyncMock(return_value=None)):
-                    with patch("main.db.insert_command", AsyncMock(return_value=99)):
-                        resp = await m_module.create_command(req)
+            with patch("main.require_admin_role", AsyncMock(return_value=self._ADMIN_INFO)), \
+                 patch("main.db.insert_command", AsyncMock(return_value=99)), \
+                 patch("main.db.audit", AsyncMock()):
+                resp = await m_module.create_command(req)
             import json
             data = json.loads(resp.body)
-            assert resp.status_code == 201
+            # SEC (M7): purge agora exige fluxo two-step. 1a chamada (sem
+            # confirm_token) retorna 202 com token; nao enfileira o comando.
+            assert resp.status_code == 202
+            assert data["requires_confirm"] is True
             assert "confirm_token" in data
-            assert "warning" in data
-            assert len(data["confirm_token"]) == 16
+            assert len(data["confirm_token"]) >= 16
 
         asyncio.run(run())
 
@@ -954,14 +958,13 @@ class TestCommandEndpoints:
 
         async def run():
             req = MagicMock()
-            req.headers = {"authorization": "Bearer tok"}
             req.json = AsyncMock(return_value={
                 "hostname": "ns1", "command": "stop", "issued_by": "admin"
             })
-            with patch.dict("os.environ", {"AGENT_TOKEN": "tok"}):
-                with patch("main.require_token", AsyncMock(return_value=None)):
-                    with patch("main.db.insert_command", AsyncMock(return_value=1)):
-                        resp = await m_module.create_command(req)
+            with patch("main.require_admin_role", AsyncMock(return_value=self._ADMIN_INFO)), \
+                 patch("main.db.insert_command", AsyncMock(return_value=1)), \
+                 patch("main.db.audit", AsyncMock()):
+                resp = await m_module.create_command(req)
             import json
             data = json.loads(resp.body)
             assert resp.status_code == 201
@@ -975,13 +978,12 @@ class TestCommandEndpoints:
 
         async def run():
             req = MagicMock()
-            req.headers = {"authorization": "Bearer tok"}
             req.json = AsyncMock(return_value={"hostname": "ns1", "command": "reboot"})
-            with patch.dict("os.environ", {"AGENT_TOKEN": "tok"}):
-                with patch("main.require_token", AsyncMock(return_value=None)):
-                    with patch("main.db.insert_command",
-                               AsyncMock(side_effect=ValueError("Comando inválido"))):
-                        resp = await m_module.create_command(req)
+            with patch("main.require_admin_role", AsyncMock(return_value=self._ADMIN_INFO)), \
+                 patch("main.db.insert_command",
+                       AsyncMock(side_effect=ValueError("Comando inválido"))), \
+                 patch("main.db.audit", AsyncMock()):
+                resp = await m_module.create_command(req)
             assert resp.status_code == 422
 
         asyncio.run(run())
@@ -1532,6 +1534,8 @@ class TestAllCommandsHistory:
         assert "limit" in sig.parameters
 
     def test_history_endpoint_returns_list(self):
+        """SEC: history agora exige sessao admin (cookie OU Bearer admin
+        whitelistado), nao mais Bearer compartilhado de agente."""
         import main as m
 
         history = [
@@ -1542,10 +1546,10 @@ class TestAllCommandsHistory:
 
         async def run():
             req = MagicMock()
-            req.headers = {"Authorization": "Bearer tok"}
-            with patch("main.require_token", AsyncMock(return_value=None)):
-                with patch("main.db.get_all_commands_history", AsyncMock(return_value=history)):
-                    resp = await m.get_all_commands_history(req, limit=50)
+            with patch("main.require_admin",
+                       AsyncMock(return_value={"username": "admin", "role": "admin"})), \
+                 patch("main.db.get_all_commands_history", AsyncMock(return_value=history)):
+                resp = await m.get_all_commands_history(req, limit=50)
             import json
             return json.loads(resp.body)
 
@@ -1691,71 +1695,87 @@ class TestAdminLogin:
         assert "html" in resp.media_type
 
     def test_login_post_valid_credentials_sets_cookie(self):
-        """POST /admin/login com user/pass corretos deve setar cookie e redirecionar."""
-        import importlib
+        """POST /admin/login com user/pass corretos (env fallback) seta cookie e redireciona.
+
+        SEC: login virou DB-first; mockamos authenticate_admin_user=None pra
+        forcar env-fallback. routes_admin importa ADMIN_USER/PASSWORD por
+        binding local (`from auth import ...`), entao patch tem que ser
+        em routes_admin, nao em os.environ — reload(main) nao recarrega
+        routes_admin.
+        """
         import main as m
 
-        with patch.dict(os.environ, {"ADMIN_USER": "myadmin", "ADMIN_PASSWORD": "mypass123"}):
-            importlib.reload(m)
+        async def run():
+            from fastapi import Request as FReq
+            request = MagicMock(spec=FReq)
+            request.form = AsyncMock(return_value={"username": "myadmin", "password": "mypass123"})
+            request.client = MagicMock(host="127.0.0.1")
+            with patch("routes_admin.ADMIN_USER", "myadmin"), \
+                 patch("routes_admin.ADMIN_PASSWORD", "mypass123"), \
+                 patch("main.db.authenticate_admin_user", AsyncMock(return_value=None)), \
+                 patch("main.db.audit", AsyncMock()):
+                return await m.admin_login_post(request)
 
-            async def run():
-                from fastapi import Request as FReq
-                request = MagicMock(spec=FReq)
-                request.form = AsyncMock(return_value={"username": "myadmin", "password": "mypass123"})
-                resp = await m.admin_login_post(request)
-                return resp
-
-            resp = self._run(run())
-            assert resp.status_code == 303
-            assert "/admin" in resp.headers.get("location", "")
-            # Cookie deve estar no response
-            cookie_header = resp.headers.get("set-cookie", "")
-            assert "admin_session" in cookie_header
+        resp = self._run(run())
+        assert resp.status_code == 303
+        assert "/admin" in resp.headers.get("location", "")
+        cookie_header = resp.headers.get("set-cookie", "")
+        assert "admin_session" in cookie_header
 
     def test_login_post_invalid_credentials_redirects_with_error(self):
-        """POST /admin/login com credenciais erradas deve redirecionar para login?error=1."""
-        import importlib
+        """POST /admin/login com credenciais erradas redireciona para login?error=1."""
         import main as m
 
-        with patch.dict(os.environ, {"ADMIN_USER": "myadmin", "ADMIN_PASSWORD": "mypass123"}):
-            importlib.reload(m)
+        async def run():
+            request = MagicMock()
+            request.form = AsyncMock(return_value={"username": "myadmin", "password": "errado"})
+            request.client = MagicMock(host="127.0.0.1")
+            with patch("routes_admin.ADMIN_USER", "myadmin"), \
+                 patch("routes_admin.ADMIN_PASSWORD", "mypass123"), \
+                 patch("main.db.authenticate_admin_user", AsyncMock(return_value=None)), \
+                 patch("main.db.audit", AsyncMock()):
+                return await m.admin_login_post(request)
 
-            async def run():
-                request = MagicMock()
-                request.form = AsyncMock(return_value={"username": "myadmin", "password": "errado"})
-                resp = await m.admin_login_post(request)
-                return resp
+        resp = self._run(run())
+        assert resp.status_code == 303
+        assert "/admin/login?error=1" in resp.headers.get("location", "")
 
-            resp = self._run(run())
-            assert resp.status_code == 303
-            assert "/admin/login?error=1" in resp.headers.get("location", "")
+    def test_login_post_missing_env_redirects_with_error(self):
+        """POST /admin/login sem ADMIN_USER/PASSWORD (e DB vazio) cai em error=1.
 
-    def test_login_post_missing_env_redirects_with_config_error(self):
-        """POST /admin/login sem ADMIN_USER/PASSWORD deve redirecionar para login?error=config."""
-        import importlib
+        Antes existia error=config para diferenciar misconfig de bad-creds; o
+        bloco 2+3 unificou para error=1 (DB-first deixou misconfig ambiguo —
+        admin pode estar so no DB e env vazio e legitimo).
+        """
         import main as m
 
-        with patch.dict(os.environ, {"ADMIN_USER": "", "ADMIN_PASSWORD": ""}, clear=False):
-            importlib.reload(m)
+        async def run():
+            request = MagicMock()
+            request.form = AsyncMock(return_value={"username": "x", "password": "y"})
+            request.client = MagicMock(host="127.0.0.1")
+            with patch("routes_admin.ADMIN_USER", ""), \
+                 patch("routes_admin.ADMIN_PASSWORD", ""), \
+                 patch("main.db.authenticate_admin_user", AsyncMock(return_value=None)), \
+                 patch("main.db.audit", AsyncMock()):
+                return await m.admin_login_post(request)
 
-            async def run():
-                request = MagicMock()
-                request.form = AsyncMock(return_value={"username": "x", "password": "y"})
-                resp = await m.admin_login_post(request)
-                return resp
-
-            resp = self._run(run())
-            assert resp.status_code == 303
-            assert "/admin/login?error=config" in resp.headers.get("location", "")
+        resp = self._run(run())
+        assert resp.status_code == 303
+        assert "/admin/login?error=1" in resp.headers.get("location", "")
 
     def test_sign_and_verify_cookie_roundtrip(self):
-        """Cookie assinado deve ser verificável."""
+        """Cookie assinado deve ser verificável.
+
+        SEC: cookie agora carrega role explicito (admin|viewer) — verify
+        retorna dict {username, role}, nao string. Compat com qualquer
+        chamador que dependia do retorno antigo foi removida no bloco 2+3.
+        """
         import importlib
         import main as m
         importlib.reload(m)
 
         cookie = m._sign_admin_cookie("admin")
-        assert m._verify_admin_cookie(cookie) == "admin"
+        assert m._verify_admin_cookie(cookie) == {"username": "admin", "role": "admin"}
 
     def test_verify_tampered_cookie_returns_none(self):
         """Cookie adulterado deve retornar None."""
@@ -2149,6 +2169,9 @@ class TestCommandStatusEndpoint:
         return asyncio.run(coro)
 
     def test_returns_command_data(self):
+        """SEC: get_command_status faz auth manual (admin cookie OU Bearer
+        admin OU client cookie + ownership). Aqui passamos cookie admin
+        valido pra exercer o caminho admin."""
         import main as m
 
         cmd = {"id": 42, "hostname": "ns1", "command": "update_agent",
@@ -2156,8 +2179,9 @@ class TestCommandStatusEndpoint:
 
         async def run():
             req = MagicMock()
-            with patch("main.require_token", AsyncMock(return_value=None)), \
-                 patch("main.db.get_command_by_id", AsyncMock(return_value=cmd)):
+            req.cookies = {"admin_session": m._sign_admin_cookie("admin")}
+            req.headers = {}
+            with patch("main.db.get_command_by_id", AsyncMock(return_value=cmd)):
                 resp = await m.get_command_status(42, req)
             return resp
 
@@ -2173,8 +2197,9 @@ class TestCommandStatusEndpoint:
 
         async def run():
             req = MagicMock()
-            with patch("main.require_token", AsyncMock(return_value=None)), \
-                 patch("main.db.get_command_by_id", AsyncMock(return_value=None)):
+            req.cookies = {"admin_session": m._sign_admin_cookie("admin")}
+            req.headers = {}
+            with patch("main.db.get_command_by_id", AsyncMock(return_value=None)):
                 with pytest.raises(HTTPException) as exc:
                     await m.get_command_status(999, req)
                 assert exc.value.status_code == 404
@@ -2193,6 +2218,7 @@ class TestCreateCommandWithParams:
         return asyncio.run(coro)
 
     def test_params_passed_to_insert_command(self):
+        """SEC: create_command agora exige require_admin_role."""
         import main as m
 
         captured = {}
@@ -2208,8 +2234,10 @@ class TestCreateCommandWithParams:
                 "hostname": "ns1", "command": "run_script",
                 "issued_by": "admin", "params": '{"script":"dig_test"}'
             })
-            with patch("main.require_token", AsyncMock(return_value=None)), \
-                 patch("main.db.insert_command", side_effect=fake_insert):
+            with patch("main.require_admin_role",
+                       AsyncMock(return_value={"username": "admin", "role": "admin"})), \
+                 patch("main.db.insert_command", side_effect=fake_insert), \
+                 patch("main.db.audit", AsyncMock()):
                 resp = await m.create_command(req)
             return resp
 
@@ -2436,32 +2464,37 @@ class TestSessionTokenSecurity:
             resp = self._run(run())
             assert "dash-tok-123" not in resp.body.decode()
 
-    def test_session_token_returns_token_with_admin_cookie(self):
-        """GET /session/token com sessao admin retorna token."""
+    def test_session_token_deprecated_with_admin_cookie_returns_410(self):
+        """SEC: /session/token foi removido por entregar AGENT_TOKEN a clientes
+        do portal (multi-tenant break). Agora retorna 410 mesmo com cookie admin
+        valido — admin/cliente devem usar /session/whoami + cookies same-origin.
+        """
         import importlib, main as m
+        from fastapi import HTTPException
         with patch.dict(os.environ, {"AGENT_TOKEN": "tok-abc"}):
             importlib.reload(m)
             async def run():
                 request = MagicMock()
                 request.cookies = {"admin_session": m._sign_admin_cookie("admin"), "client_session": ""}
-                return await m.session_token(request)
-            resp = self._run(run())
-            import json
-            body = json.loads(resp.body)
-            assert body["token"] == "tok-abc"
+                request.client = MagicMock(host="127.0.0.1")
+                return await m.session_token_deprecated(request)
+            with pytest.raises(HTTPException) as exc:
+                self._run(run())
+            assert exc.value.status_code == 410
 
-    def test_session_token_rejects_without_session(self):
-        """GET /session/token sem sessao retorna 401."""
+    def test_session_token_deprecated_without_session_returns_410(self):
+        """SEC: endpoint deprecated retorna 410 incondicionalmente."""
         import importlib, main as m
+        from fastapi import HTTPException
         importlib.reload(m)
         async def run():
             request = MagicMock()
             request.cookies = {"admin_session": "", "client_session": ""}
-            return await m.session_token(request)
-        from fastapi import HTTPException
+            request.client = MagicMock(host="127.0.0.1")
+            return await m.session_token_deprecated(request)
         with pytest.raises(HTTPException) as exc:
             self._run(run())
-        assert exc.value.status_code == 401
+        assert exc.value.status_code == 410
 
 
 # ===========================================================================
