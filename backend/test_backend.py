@@ -2948,27 +2948,28 @@ class TestRaceConditionsStress:
 # ===========================================================================
 
 class TestCSPNonceOnly:
-    """Trava o pipeline de nonce em script-src. NAO trava ausencia de
-    'unsafe-inline' enquanto o debt de event handlers inline existir.
+    """Trava o estado do CSP enquanto o debt de event handlers inline existir.
 
     Estado atual:
-      script-src 'self' 'unsafe-inline' 'nonce-{nonce}' ...
+      script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://static.cloudflareinsights.com
 
-    Em CSP3 navegadores ignoram nonce quando 'unsafe-inline' tambem esta
-    presente — efetivamente o nonce nao protege NADA hoje. Mantemos o
-    nonce pra pre-aquecer _html_with_nonce em todas as paginas; quando o
-    refactor terminar, basta remover 'unsafe-inline' da string CSP em
-    middlewares.py sem mexer em template/HTML algum.
+    Razao do unsafe-inline puro (sem nonce): em CSP3, quando 'nonce-X'
+    esta presente, browsers entram em strict mode e IGNORAM 'unsafe-inline'
+    especificamente para event handlers HTML (onclick=, onchange=, onsubmit=).
+    Os ~60 handlers inline existentes em admin/speedtest/dashboard/client
+    HTMLs e em innerHTML strings (admin-*.js, app.js) precisam de
+    'unsafe-inline' efetivo, entao removemos o nonce do CSP — fica como
+    decoracao no _html_with_nonce ate o refactor B.
 
-    Origem do debt: ~60 inline event handlers (onclick=, onchange=,
-    onsubmit=) em admin.html, speedtest.html, dashboard.html, client.html
-    e em strings de innerHTML em admin-{agents,clients,commands}.js /
-    app.js. CSP nonce protege <script> tags mas NAO atributos HTML;
-    pra fechar o gap, refactor pra addEventListener + event delegation.
+    Combos validados em browser real:
+      'unsafe-inline' SO              -> handlers OK (atual)
+      'unsafe-inline' + 'nonce-X'     -> handlers BLOQUEADOS (CSP3 strict)
+      'nonce-X' + addEventListener    -> alvo do refactor B
 
-    O test_csp_has_no_unsafe_inline abaixo valida o estado FUTURO e e
-    marcado como xfail enquanto o debt existir — assim aparece em
-    `pytest -rx` sem virar falso vermelho.
+    Tres testes abaixo:
+      - has_unsafe_inline_today: trava o estado atual (passa)
+      - has_no_unsafe_inline:    estado futuro (xfail; vira xpass com refactor B)
+      - connect_src_jsdelivr:    sourcemap (passa)
     """
 
     def _capture_csp(self):
@@ -2993,32 +2994,42 @@ class TestCSPNonceOnly:
                       for d in csp.split(";") if d.strip()}
         return csp, directives
 
-    def test_csp_script_src_has_nonce(self):
-        """Pipeline de nonce ativo: script-src declara 'nonce-X'.
-
-        Quando o refactor de event handlers terminar, 'unsafe-inline' e
-        removido e o nonce vira a unica forma de executar inline script.
-        """
+    def test_csp_has_unsafe_inline_today(self):
+        """Estado atual conhecido — 'unsafe-inline' sustenta event handlers
+        HTML enquanto o refactor B nao fecha o ciclo. Mudanca acidental
+        que tire 'unsafe-inline' (sem refactor) quebra a UI; este teste
+        impede regressao silenciosa."""
         _, directives = self._capture_csp()
         script_src = directives.get("script-src", "")
-        assert "nonce-" in script_src, \
-            f"script-src precisa declarar 'nonce-X' (mesmo durante o debt): {script_src}"
+        assert "'unsafe-inline'" in script_src, \
+            f"script-src DEVE ter 'unsafe-inline' enquanto handlers inline existirem: {script_src}"
+        # Defesa adicional: nonce nao deve estar presente junto com unsafe-inline,
+        # senao browsers entram em CSP3 strict e bloqueiam handlers.
+        assert "nonce-" not in script_src, \
+            (f"script-src tem nonce-source com 'unsafe-inline': em CSP3 strict, "
+             f"event handlers ficam bloqueados. CSP={script_src}")
 
     @pytest.mark.xfail(reason="DEBT: ~60 inline event handlers; refactor pra "
                               "addEventListener planejado. Quando feito, este "
-                              "xfail vira xpass e remove-se o decorator.")
+                              "xfail vira xpass; remove-se 'unsafe-inline' do "
+                              "CSP em middlewares.py, adiciona-se 'nonce-{nonce}', "
+                              "e remove-se o decorator.")
     def test_csp_has_no_unsafe_inline(self):
-        """Estado futuro: script-src sem 'unsafe-inline'.
+        """Estado futuro: script-src sem 'unsafe-inline', com nonce-source.
 
-        Hoje xfail intencional. Quando virar xpass:
-          1. Confirma que o refactor terminou.
-          2. Remove o decorator @pytest.mark.xfail.
-          3. Remove 'unsafe-inline' da string CSP em middlewares.py.
+        Quando virar xpass:
+          1. Confirma que o refactor B terminou (todos os onclick=/onchange= viraram addEventListener).
+          2. Remove 'unsafe-inline' da string CSP em middlewares.py.
+          3. Adiciona f"'nonce-{nonce}'" no script-src.
+          4. Remove o decorator @pytest.mark.xfail.
+          5. Atualiza test_csp_has_unsafe_inline_today (vira xfail / removido).
         """
         _, directives = self._capture_csp()
         script_src = directives.get("script-src", "")
         assert "'unsafe-inline'" not in script_src, \
             f"script-src ainda tem 'unsafe-inline': {script_src}"
+        assert "nonce-" in script_src, \
+            f"script-src precisa declarar 'nonce-X' apos refactor: {script_src}"
 
     def test_csp_connect_src_allows_jsdelivr_for_sourcemaps(self):
         """DevTools tenta baixar .js.map via fetch — se cdn.jsdelivr.net
@@ -3028,6 +3039,133 @@ class TestCSPNonceOnly:
         connect_src = directives.get("connect-src", "")
         assert "cdn.jsdelivr.net" in connect_src, \
             f"connect-src precisa permitir cdn.jsdelivr.net pra sourcemaps: {connect_src}"
+
+
+# ===========================================================================
+# CSP — matriz de antipatterns conhecidos (regression guard parametrizado)
+# ===========================================================================
+#
+# Cada antipattern documenta um padrao que NUNCA deve aparecer no CSP
+# servido pelo backend, junto com a vulnerabilidade que ele habilita.
+# Adicionar novos antipatterns aqui quando descobrirmos novos modos de
+# falha — esta tabela e o "memorial dos bugs que nos morderam" expressado
+# em codigo verificavel.
+#
+# Tipos suportados em "needles":
+#   - str: substring que precisa estar AUSENTE da diretiva
+#   - tuple[str, ...]: todas as substrings precisam estar AUSENTES juntas
+#                       (combo proibido — uma sozinha pode ser ok, todas juntas nao)
+# ---------------------------------------------------------------------------
+
+CSP_ANTIPATTERNS = [
+    # (id, diretiva, needles, explicacao)
+    (
+        "script-src-wildcard",
+        "script-src",
+        "*",
+        "Wildcard permite qualquer origem; XSS trivial via <script src=evil.com>.",
+    ),
+    (
+        "script-src-unsafe-eval",
+        "script-src",
+        "'unsafe-eval'",
+        "Permite eval()/new Function(); escala injecao de string pra execucao.",
+    ),
+    (
+        "script-src-data-uri",
+        "script-src",
+        "data:",
+        "<script src='data:application/javascript,...'> e XSS classico.",
+    ),
+    (
+        "script-src-http-downgrade",
+        "script-src",
+        " http:",  # com espaco pra nao matchar 'https:' nem 'http://localhost'
+        "Downgrade HTTP permite MITM injetar JS em transito.",
+    ),
+    (
+        "script-src-unsafe-inline-with-nonce",
+        "script-src",
+        ("'unsafe-inline'", "nonce-"),
+        "CSP3 strict mode: presenca de nonce-source faz browser IGNORAR "
+        "'unsafe-inline' especificamente para event handlers HTML "
+        "(onclick=, onchange=, onsubmit=). Resultado: UI quebra silenciosa "
+        "em sort/bulk-select/modais. Bug ja visto em prod (commit b74948c).",
+    ),
+    (
+        "object-src-not-restricted",
+        "default-src",
+        # default-src cobre object-src se este nao estiver definido. Se o CSP
+        # nao tem nem object-src explicito nem default-src restritivo, plugins
+        # Flash/PDF podem ser carregados.
+        # Aqui validamos so que default-src esta declarado (mais facil que
+        # parsear object-src ausente).
+        "",  # sentinela: o test trata diretiva vazia como "deve existir e ser != ''"
+        "Se default-src nem object-src estao declarados, browsers carregam "
+        "<object>/<embed> sem restricao (Flash/PDF/etc.).",
+    ),
+]
+
+
+class TestCSPAntipatterns:
+    """Matriz de combos proibidos. Cada entrada CSP_ANTIPATTERNS vira 1 caso.
+
+    Atualizar a tabela quando descobrir novos antipatterns. Bug repetido =
+    teste novo aqui.
+    """
+
+    def _capture_csp(self):
+        import asyncio
+        from middlewares import SecurityHeadersMiddleware
+
+        async def fake_call_next(request):
+            from fastapi import Response
+            return Response(content="ok", media_type="text/plain")
+
+        mw = SecurityHeadersMiddleware(app=None)
+        request = MagicMock()
+        request.state = type("S", (), {})()
+        request.url.path = "/"
+
+        async def run():
+            return await mw.dispatch(request, fake_call_next)
+
+        resp = asyncio.run(run())
+        csp = resp.headers["Content-Security-Policy"]
+        directives = {d.strip().split(" ", 1)[0]: d.strip()
+                      for d in csp.split(";") if d.strip()}
+        return csp, directives
+
+    @pytest.mark.parametrize("ap_id,directive,needles,reason", CSP_ANTIPATTERNS,
+                             ids=[a[0] for a in CSP_ANTIPATTERNS])
+    def test_csp_no_antipattern(self, ap_id, directive, needles, reason):
+        full_csp, directives = self._capture_csp()
+        directive_value = directives.get(directive, "")
+
+        # Caso especial: needle vazia = a diretiva precisa EXISTIR e ser nao-vazia
+        # (usado pra default-src, garante restricao de object-src/embed).
+        if needles == "":
+            assert directive_value, \
+                (f"[{ap_id}] Diretiva '{directive}' ausente do CSP.\n"
+                 f"Motivo: {reason}\nCSP completo: {full_csp}")
+            return
+
+        # Combo (tupla): todos os elementos juntos sao proibidos.
+        if isinstance(needles, tuple):
+            present = [n for n in needles if n in directive_value]
+            assert len(present) < len(needles), (
+                f"[{ap_id}] Diretiva '{directive}' contem combo proibido "
+                f"{needles}.\nMotivo: {reason}\n"
+                f"Diretiva atual: {directive_value}"
+            )
+            return
+
+        # String simples: substring nao pode estar presente.
+        assert needles not in directive_value, (
+            f"[{ap_id}] Diretiva '{directive}' contem substring proibida "
+            f"'{needles}'.\nMotivo: {reason}\n"
+            f"Diretiva atual: {directive_value}"
+        )
 
 
 # ===========================================================================
