@@ -210,19 +210,33 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
-        # SEC: script-src usa nonce-only (sem 'unsafe-inline'). Browsers
-        # com CSP3 ignoram nonce quando unsafe-inline esta presente, entao
-        # ter os dois e equivalente a nao ter nonce. _html_with_nonce()
-        # injeta o nonce em todas as <script> tags servidas pelo backend.
-        # style-src mantem 'unsafe-inline' por escopo: CSS nao executa codigo
-        # e refatorar todos os styles inline e trabalho separado.
+        # SEC (DEBT): script-src tem 'unsafe-inline' E 'nonce-{nonce}'. Em
+        # CSP3, navegadores ignoram nonce quando unsafe-inline esta presente,
+        # entao a protecao efetiva hoje e a do unsafe-inline (= nenhuma
+        # contra XSS injection inline). O nonce permanece pra:
+        #   1. Pre-aquecer o pipeline _html_with_nonce em todas as paginas
+        #      — quando o refactor terminar, basta remover 'unsafe-inline'
+        #      desta linha sem mexer em template/HTML algum.
+        #   2. Documentar a intencao: o sistema deve ser nonce-only.
+        #
+        # Origem do debt: HTML/JS servido tem ~60 inline event handlers
+        # (onclick=, onchange=, onsubmit=) em admin.html, speedtest.html,
+        # dashboard.html, client.html, e em strings de innerHTML em
+        # admin-{agents,clients,commands}.js / app.js. CSP nonce protege
+        # <script> tags mas NAO event handlers HTML — refactor pra
+        # addEventListener + event delegation (data-action="...") e o caminho.
+        #
+        # Refactor planejado: tracker "csp-event-delegation" — agendado.
+        #
+        # connect-src inclui cdn.jsdelivr.net pra DevTools poder baixar
+        # sourcemaps (.js.map) sem violar CSP. Afeta so DX, nao runtime.
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            f"script-src 'self' 'nonce-{nonce}' https://cdn.jsdelivr.net https://static.cloudflareinsights.com; "
+            f"script-src 'self' 'unsafe-inline' 'nonce-{nonce}' https://cdn.jsdelivr.net https://static.cloudflareinsights.com; "
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
             "font-src https://fonts.gstatic.com; "
             "img-src 'self' data:; "
-            "connect-src 'self' https://cloudflareinsights.com; "
+            "connect-src 'self' https://cdn.jsdelivr.net https://cloudflareinsights.com; "
             "frame-ancestors 'none'; "
             "base-uri 'self'; "
             "form-action 'self'"
