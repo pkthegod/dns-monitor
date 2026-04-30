@@ -75,7 +75,11 @@ log "  timestamp_utc : $TS"
 log "  git           : $GIT"
 log "  pg_version    : $PG"
 log "  db_size_bytes : $SIZE"
-log "  audit_tip     : ${AUDIT_TIP:0:24}${AUDIT_TIP:24:+...}"
+if [[ ${#AUDIT_TIP} -gt 24 ]]; then
+  log "  audit_tip     : ${AUDIT_TIP:0:24}..."
+else
+  log "  audit_tip     : ${AUDIT_TIP}"
+fi
 
 case "$SCHEMA" in
   v1.5-c2-audit-chain) ok "schema_version reconhecido" ;;
