@@ -108,18 +108,52 @@ ok "componentes obrigatorios presentes"
 
 # -----------------------------------------------------------------------------
 # 6) pg_dump header sanity check
+#
+# Tenta `pg_restore -l` em 3 camadas:
+#   1. Binario local (mais rapido se estiver instalado)
+#   2. Container Postgres rodando (DB_CONTAINER, default infra_vision_db) —
+#      garante que a versao do pg_restore casa com o servidor
+#   3. Skip com warning se nem um nem outro
 # -----------------------------------------------------------------------------
 DUMP="$WORK_DIR/extract/db/dns_monitor.dump"
-if command -v pg_restore >/dev/null 2>&1; then
-  if pg_restore -l "$DUMP" >/dev/null 2>"$WORK_DIR/pg_restore.err"; then
-    ENTRIES=$(pg_restore -l "$DUMP" 2>/dev/null | grep -cE '^\s*[0-9]+;' || echo 0)
-    ok "pg_restore -l ok ($ENTRIES entries)"
-  else
-    log "AVISO: pg_restore -l falhou:"
-    sed 's/^/  /' "$WORK_DIR/pg_restore.err" >&2
+DB_CONTAINER="${DB_CONTAINER:-infra_vision_db}"
+
+# pg_restore_l_listing: imprime o listing em stdout e retorna:
+#   0 = ok, 1 = falhou (dump invalido), 127 = ferramenta indisponivel
+#
+# Cada comando que pode falhar tem `|| rc=$?` pra capturar exit sem o
+# `set -e` abortar a funcao. `local rc=$?` direto NAO funciona porque
+# `local` retorna 0 e mascara o exit anterior.
+pg_restore_l_listing() {
+  local rc=0
+  if command -v pg_restore >/dev/null 2>&1; then
+    pg_restore -l "$DUMP" 2>"$WORK_DIR/pg_restore.err" || rc=$?
+    return $rc
   fi
+  if command -v docker >/dev/null 2>&1 \
+     && docker inspect "$DB_CONTAINER" >/dev/null 2>&1 \
+     && [[ "$(docker inspect -f '{{.State.Running}}' "$DB_CONTAINER" 2>/dev/null)" == "true" ]]; then
+    log "  pg_restore: usando container $DB_CONTAINER (binario local indisponivel)"
+    docker cp "$DUMP" "$DB_CONTAINER:/tmp/_verify.dump" 2>"$WORK_DIR/pg_restore.err" || return 1
+    docker exec "$DB_CONTAINER" pg_restore -l /tmp/_verify.dump 2>"$WORK_DIR/pg_restore.err" || rc=$?
+    docker exec "$DB_CONTAINER" rm -f /tmp/_verify.dump >/dev/null 2>&1 || true
+    return $rc
+  fi
+  return 127
+}
+
+# `set -e` aborta o subshell se a funcao falhar — `|| RC=$?` captura sem abortar.
+# Sem `|| true` antes pra preservar o RC real.
+RC=0
+LISTING="$(pg_restore_l_listing)" || RC=$?
+if [[ $RC -eq 0 ]]; then
+  ENTRIES=$(echo "$LISTING" | grep -cE '^\s*[0-9]+;' || true)
+  ok "pg_restore -l ok ($ENTRIES entries)"
+elif [[ $RC -eq 127 ]]; then
+  log "AVISO: pg_restore indisponivel (sem binario local nem container '$DB_CONTAINER' rodando) — header nao validado"
 else
-  log "AVISO: pg_restore nao disponivel localmente — header nao validado"
+  log "AVISO: pg_restore -l falhou (exit=$RC):"
+  sed 's/^/  /' "$WORK_DIR/pg_restore.err" >&2
 fi
 
 echo
