@@ -2788,6 +2788,90 @@ class TestAuditHashChain:
 
 
 # ===========================================================================
+# A4 — PDF DoS protections (rate-limit + timeout + audit)
+# ===========================================================================
+
+class TestPdfReportDosProtection:
+    """A4 (L2 fix): client_report?format=pdf agora tem rate-limit per-cliente
+    (1/10min), timeout de 10s na geracao em thread pool, e audit em cada
+    estado. Antes, 10 requests concorrentes geravam ~300MB de PDFs in-memory
+    e bloqueavam o event loop por minutos."""
+
+    def _setup(self):
+        import importlib
+        import auth
+        import main as m
+        # Reset cooldowns pra isolar teste de outros runs
+        importlib.reload(auth)
+        importlib.reload(m)
+        return m
+
+    def test_pdf_rate_limit_returns_429(self):
+        """Segunda chamada dentro de 10min recebe 429 com Retry-After."""
+        m = self._setup()
+
+        async def run():
+            req = MagicMock()
+            req.cookies = {"client_session": m._sign_client_cookie("alice")}
+            with patch("main.db.get_client",
+                       AsyncMock(return_value={"username": "alice", "active": True,
+                                               "hostnames": ["h1"]})), \
+                 patch("main.db.audit", AsyncMock()), \
+                 patch("auth._action_cooldowns", {f"pdf-report:alice": __import__("time").time()}):
+                # cooldown ja registrado -> _check_cooldown retorna True
+                return await m.client_report(req, month="2026-04", format="pdf")
+
+        resp = asyncio.run(run())
+        assert resp.status_code == 429
+        assert resp.headers.get("Retry-After") == "600"
+        body = json.loads(resp.body) if (json := __import__("json")) else {}
+        assert "10 minutos" in body["error"]
+
+    def test_pdf_timeout_returns_504(self):
+        """Geracao que demora mais que PDF_TIMEOUT_SECONDS cancela e retorna 504.
+
+        Patcha PDF_TIMEOUT_SECONDS pra 0.1s e _build_report_pdf pra dormir
+        0.3s (sync, em thread pool) — wait_for deve cancelar e levantar
+        TimeoutError, que o handler converte em 504.
+        """
+        m = self._setup()
+        import routes_client
+
+        def slow_build(*args, **kwargs):
+            # SYNC pra rodar dentro de asyncio.to_thread.
+            # time.sleep bloqueia thread (nao event loop) — wait_for cancela
+            # apos 0.1s e thread vai morrer no proximo gc (vaza ~200ms).
+            import time
+            time.sleep(0.3)
+            return b"never"
+
+        mock_conn = AsyncMock()
+        mock_conn.fetchval = AsyncMock(return_value=0)
+        mock_conn.fetchrow = AsyncMock(return_value={})
+
+        async def run():
+            req = MagicMock()
+            req.cookies = {"client_session": m._sign_client_cookie("bob")}
+            with patch("main.db.get_client",
+                       AsyncMock(return_value={"username": "bob", "active": True,
+                                               "hostnames": ["h1"]})), \
+                 patch("main.db.audit", AsyncMock()), \
+                 patch("auth._action_cooldowns", {}), \
+                 patch.object(routes_client, "_build_report_pdf", side_effect=slow_build), \
+                 patch.object(routes_client, "PDF_TIMEOUT_SECONDS", 0.1), \
+                 patch("db.get_conn") as mock_get_conn, \
+                 patch("main.db.get_dns_query_stats_summary",
+                       AsyncMock(return_value={})):
+                mock_get_conn.return_value.__aenter__.return_value = mock_conn
+                return await m.client_report(req, month="2026-04", format="pdf")
+
+        resp = asyncio.run(run())
+        assert resp.status_code == 504
+        body = __import__("json").loads(resp.body)
+        assert "demorou" in body["error"].lower()
+
+
+# ===========================================================================
 # A5 — Race condition stress tests (cobre R1-R5 da auditoria)
 # ===========================================================================
 #

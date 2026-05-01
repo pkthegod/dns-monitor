@@ -28,6 +28,12 @@ except ImportError:
 
 logger = logging.getLogger("infra-vision.api")
 
+# A4 (L2 fix): timeout pra geracao de PDF mensal. reportlab e CPU-bound;
+# 10s e suficiente pra periodos tipicos (1 mes, 1-3 hosts). Periodos maiores
+# devem usar daily_reports cached em vez de gerar on-demand. Configuravel
+# via patch (testes) ou monkey-patch (admin/ops).
+PDF_TIMEOUT_SECONDS = 10.0
+
 # Router para endpoints versionados (/api/v1/client/*, /api/v1/clients)
 client_v1 = APIRouter()
 
@@ -261,7 +267,18 @@ async def client_dns_trace(request: Request) -> JSONResponse:
 
 @client_v1.get("/client/report")
 async def client_report(request: Request, month: str = "", format: str = "json"):
-    """Relatorio mensal — uptime, latencia, alertas. ?format=pdf para PDF."""
+    """Relatorio mensal — uptime, latencia, alertas. ?format=pdf para PDF.
+
+    A4 (L2 fix): geracao de PDF e CPU+RAM bound (~500ms, ~30MB de buffer
+    in-memory por relatorio mensal). Sem protecao, 10 requests concorrentes
+    saturam memoria do container (limit 2G no compose). Defesas:
+      - Rate-limit per-cliente: 1 PDF / 10min via _check_cooldown
+      - Timeout 10s na geracao via asyncio.wait_for + asyncio.to_thread
+        (thread pool evita bloquear event loop; cancelamento no timeout)
+      - Audit em cada estado: rate_limited / timeout / generated
+    JSON nao precisa dessas defesas — usa as queries SQL agregadas que
+    sao cheap, e ja tem rate-limit do middleware (180 req/min em /client/).
+    """
     from main import _SafeJSONResponse
     cookie = request.cookies.get("client_session", "")
     client_user = _verify_client_cookie(cookie)
@@ -270,6 +287,23 @@ async def client_report(request: Request, month: str = "", format: str = "json")
     user = await db.get_client(client_user)
     if not user or not user["active"]:
         raise HTTPException(status_code=403)
+
+    # A4: rate-limit ANTES de qualquer query pesada quando format=pdf.
+    # Atacante que dispare 100 requests com format=pdf pagaria CPU do DB
+    # nas queries agregadas mesmo se a geracao do PDF falhar; gate primeiro.
+    if format == "pdf":
+        _rate_key = f"pdf-report:{client_user}"
+        if await _check_cooldown(_rate_key, 600):
+            await db.audit(
+                "client:" + client_user, "pdf_rate_limited",
+                detail=str(month or "current"),
+            )
+            return JSONResponse(
+                {"error": "Aguarde 10 minutos antes de gerar outro PDF",
+                 "retry_after": 600},
+                status_code=429,
+                headers={"Retry-After": "600"},
+            )
 
     hostnames = user["hostnames"]
     if not hostnames:
@@ -350,7 +384,44 @@ async def client_report(request: Request, month: str = "", format: str = "json")
     }
 
     if format == "pdf":
-        pdf_bytes = _build_report_pdf(report_data, client_user)
+        # A4: claim do slot ANTES da geracao. Se o build estourar timeout ou
+        # falhar, mantemos o cooldown ativo (10min penalty defensivo) — quem
+        # forcou um periodo grande nao pode tentar de novo imediatamente.
+        await _record_action(_rate_key)
+
+        # Gera em thread pool (reportlab e CPU-bound) com timeout.
+        # asyncio.wait_for cancela e mata a thread se 10s estourar.
+        import asyncio as _asyncio
+        try:
+            pdf_bytes = await _asyncio.wait_for(
+                _asyncio.to_thread(_build_report_pdf, report_data, client_user),
+                timeout=PDF_TIMEOUT_SECONDS,
+            )
+        except _asyncio.TimeoutError:
+            await db.audit(
+                "client:" + client_user, "pdf_timeout",
+                detail=str(month or "current"),
+            )
+            logger.warning("PDF report timeout pra %s (period=%s)", client_user, month or "current")
+            return JSONResponse(
+                {"error": "Geracao do relatorio demorou demais. "
+                          "Tente um periodo menor ou aguarde o relatorio diario."},
+                status_code=504,
+            )
+        except Exception as exc:
+            await db.audit(
+                "client:" + client_user, "pdf_error",
+                detail=f"{type(exc).__name__}: {str(exc)[:200]}",
+            )
+            logger.exception("PDF report falhou pra %s: %s", client_user, exc)
+            return JSONResponse(
+                {"error": "Falha ao gerar relatorio"}, status_code=500,
+            )
+
+        await db.audit(
+            "client:" + client_user, "pdf_generated",
+            detail=str(month or "current"),
+        )
         from starlette.responses import Response
         period_label = month or start.strftime("%Y-%m")
         return Response(
