@@ -1,0 +1,55 @@
+# CodeQL — SAST semanal + por PR em paths sensiveis (auth, db.audit, agent).
+# Audit roadmap: 2026-04-27 #Bloco-4-CI
+
+name: CodeQL
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - "backend/**"
+      - "agent/**"
+      - "scripts/**"
+  pull_request:
+    branches: [ main ]
+    paths:
+      - "backend/**"
+      - "agent/**"
+      - "scripts/**"
+  schedule:
+    # Toda segunda 07:00 BRT (10:00 UTC)
+    - cron: "0 10 * * 1"
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [ python ]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-extended,security-and-quality
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
