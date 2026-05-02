@@ -3253,6 +3253,364 @@ class TestCSPAntipatterns:
 
 
 # ===========================================================================
+# Fase B (C1) — N+1 Detector
+# ===========================================================================
+
+class TestNPlusOneDetector:
+    """Detector de N+1 query — Fase B (C1) da matriz de fundamentos."""
+
+    def setup_method(self):
+        # Reset state entre testes — ContextVar persiste se nao limpar
+        import db_observability as obs
+        obs._query_tracker.set(None)
+
+    def test_normalize_template_strip_whitespace(self):
+        import db_observability as obs
+        a = obs._normalize_template("SELECT * FROM agents WHERE id = $1")
+        b = obs._normalize_template("SELECT  *\nFROM   agents\nWHERE id = $1")
+        assert a == b
+
+    def test_normalize_template_normaliza_literais(self):
+        """Loop com IDs diferentes deve gerar mesmo template (detecta N+1)."""
+        import db_observability as obs
+        t1 = obs._normalize_template("SELECT * FROM agents WHERE id = 5")
+        t2 = obs._normalize_template("SELECT * FROM agents WHERE id = 12")
+        t3 = obs._normalize_template("SELECT * FROM agents WHERE id = 89")
+        assert t1 == t2 == t3
+        assert "?" in t1
+
+    def test_normalize_template_preserva_placeholders(self):
+        """$1/$2/$N nao devem virar '?' — sao parte do template."""
+        import db_observability as obs
+        t = obs._normalize_template("SELECT * FROM x WHERE id = $1 AND y = $2")
+        assert "$1" in t
+        assert "$2" in t
+
+    def test_normalize_template_trunca_strings_longas(self):
+        import db_observability as obs
+        long_sql = "SELECT " + "x, " * 100 + "y FROM agents"
+        t = obs._normalize_template(long_sql)
+        assert len(t) <= 203  # 200 + "..."
+        assert t.endswith("...")
+
+    def test_tracker_conta_por_template(self):
+        import db_observability as obs
+        tracker = obs.QueryTracker()
+        tracker.record("SELECT * FROM agents WHERE id = 1")
+        tracker.record("SELECT * FROM agents WHERE id = 2")
+        tracker.record("SELECT * FROM agents WHERE id = 3")
+        assert tracker.total == 3
+        offenders = tracker.report(threshold=2)
+        assert len(offenders) == 1
+        template, count = offenders[0]
+        assert count == 3
+
+    def test_tracker_abaixo_threshold_nao_reporta(self):
+        import db_observability as obs
+        tracker = obs.QueryTracker()
+        for i in range(5):
+            tracker.record(f"SELECT * FROM x WHERE id = {i}")
+        offenders = tracker.report(threshold=10)
+        assert offenders == []
+
+    def test_tracker_separa_templates_diferentes(self):
+        import db_observability as obs
+        tracker = obs.QueryTracker()
+        for i in range(15):
+            tracker.record(f"SELECT * FROM agents WHERE id = {i}")
+        for i in range(3):
+            tracker.record(f"SELECT * FROM clients WHERE id = {i}")
+        offenders = tracker.report(threshold=10)
+        assert len(offenders) == 1
+        template, count = offenders[0]
+        assert "agents" in template
+        assert count == 15
+
+    def test_tracker_ordena_por_count_desc(self):
+        import db_observability as obs
+        tracker = obs.QueryTracker()
+        for i in range(20):
+            tracker.record(f"SELECT a FROM x WHERE id = {i}")
+        for i in range(50):
+            tracker.record(f"SELECT b FROM y WHERE id = {i}")
+        offenders = tracker.report(threshold=10)
+        assert offenders[0][1] == 50
+        assert offenders[1][1] == 20
+
+    def test_record_query_fora_de_request_scope_e_noop(self):
+        """Scheduler jobs / startup nao tem tracker — nao deve crashar."""
+        import db_observability as obs
+        obs._query_tracker.set(None)
+        # Nao deve raise
+        obs.record_query("SELECT * FROM x")
+
+    def test_start_request_quando_disabled_retorna_none(self):
+        import db_observability as obs
+        with patch.object(obs, "N1_DETECTOR_ENABLED", False):
+            tracker = obs.start_request()
+        assert tracker is None
+
+    def test_end_request_limpa_contextvar(self):
+        import db_observability as obs
+        obs.start_request()
+        assert obs._query_tracker.get() is not None
+        obs.end_request()
+        assert obs._query_tracker.get() is None
+
+    def test_tracker_record_query_string_vazia_e_noop(self):
+        import db_observability as obs
+        tracker = obs.QueryTracker()
+        tracker.record("")
+        tracker.record(None)
+        assert tracker.total == 0
+
+
+# ===========================================================================
+# Fase B (C1) — TrackedConn proxy
+# ===========================================================================
+
+class TestTrackedConn:
+    """_TrackedConn delega pra asyncpg.Connection mas registra no tracker."""
+
+    def test_proxy_delega_attrs_nao_interceptados(self):
+        import db
+        fake_conn = MagicMock()
+        fake_conn.some_attr = "value"
+        proxy = db._TrackedConn(fake_conn)
+        assert proxy.some_attr == "value"
+
+    def test_proxy_registra_e_delega_execute(self):
+        import db, db_observability as obs
+        fake_conn = MagicMock()
+        fake_conn.execute = AsyncMock(return_value="OK")
+        proxy = db._TrackedConn(fake_conn)
+        tracker = obs.QueryTracker()
+        obs._query_tracker.set(tracker)
+        try:
+            result = asyncio.run(proxy.execute("UPDATE x SET y = $1", 1))
+        finally:
+            obs._query_tracker.set(None)
+        assert result == "OK"
+        fake_conn.execute.assert_called_once()
+        assert tracker.total == 1
+
+    def test_proxy_registra_fetch_fetchrow_fetchval_executemany(self):
+        import db, db_observability as obs
+        fake_conn = MagicMock()
+        fake_conn.fetch = AsyncMock(return_value=[])
+        fake_conn.fetchrow = AsyncMock(return_value=None)
+        fake_conn.fetchval = AsyncMock(return_value=0)
+        fake_conn.executemany = AsyncMock(return_value=None)
+        proxy = db._TrackedConn(fake_conn)
+        tracker = obs.QueryTracker()
+        obs._query_tracker.set(tracker)
+        try:
+            asyncio.run(proxy.fetch("SELECT 1"))
+            asyncio.run(proxy.fetchrow("SELECT 2"))
+            asyncio.run(proxy.fetchval("SELECT 3"))
+            asyncio.run(proxy.executemany("INSERT INTO x VALUES ($1)", [(1,)]))
+        finally:
+            obs._query_tracker.set(None)
+        assert tracker.total == 4
+
+
+# ===========================================================================
+# Fase B (C1+C2) — Middlewares de observabilidade
+# ===========================================================================
+
+class TestNPlusOneMiddleware:
+    """Middleware integra tracker com lifecycle do request."""
+
+    def setup_method(self):
+        import db_observability as obs
+        obs._query_tracker.set(None)
+
+    def test_middleware_loga_warning_quando_threshold_estourado(self):
+        """Caso central: loop simulando 15 fetches com mesmo template."""
+        import db_observability as obs
+        from middlewares import NPlusOneDetectorMiddleware
+
+        request = MagicMock()
+        request.method = "GET"
+        request.url.path = "/api/v1/agents"
+
+        async def fake_call_next(req):
+            tracker = obs._query_tracker.get()
+            for i in range(15):
+                tracker.record(f"SELECT * FROM agents WHERE id = {i}")
+            return MagicMock(status_code=200)
+
+        mw = NPlusOneDetectorMiddleware(app=None)
+        with patch.object(obs, "N1_DETECTOR_ENABLED", True), \
+             patch.object(obs, "N1_DETECTOR_THRESHOLD", 10), \
+             patch("middlewares.logger") as mock_logger:
+            asyncio.run(mw.dispatch(request, fake_call_next))
+        mock_logger.warning.assert_called_once()
+        msg = mock_logger.warning.call_args[0][0]
+        assert "N+1 detectado" in msg
+
+    def test_middleware_silencioso_abaixo_threshold(self):
+        import db_observability as obs
+        from middlewares import NPlusOneDetectorMiddleware
+
+        request = MagicMock()
+        request.method = "GET"
+        request.url.path = "/api/v1/agents"
+
+        async def fake_call_next(req):
+            tracker = obs._query_tracker.get()
+            for i in range(3):
+                tracker.record(f"SELECT * FROM x WHERE id = {i}")
+            return MagicMock(status_code=200)
+
+        mw = NPlusOneDetectorMiddleware(app=None)
+        with patch.object(obs, "N1_DETECTOR_ENABLED", True), \
+             patch.object(obs, "N1_DETECTOR_THRESHOLD", 10), \
+             patch("middlewares.logger") as mock_logger:
+            asyncio.run(mw.dispatch(request, fake_call_next))
+        mock_logger.warning.assert_not_called()
+
+    def test_middleware_skip_paths_estaticos(self):
+        import db_observability as obs
+        from middlewares import NPlusOneDetectorMiddleware
+
+        request = MagicMock()
+        request.method = "GET"
+        request.url.path = "/static/admin.css"
+
+        async def fake_call_next(req):
+            # Nao deveria nem ter tracker no scope
+            assert obs._query_tracker.get() is None
+            return MagicMock(status_code=200)
+
+        mw = NPlusOneDetectorMiddleware(app=None)
+        asyncio.run(mw.dispatch(request, fake_call_next))
+
+    def test_middleware_limpa_tracker_mesmo_em_excecao(self):
+        """Se handler lanca, end_request deve rodar (try/finally)."""
+        import db_observability as obs
+        from middlewares import NPlusOneDetectorMiddleware
+
+        request = MagicMock()
+        request.method = "GET"
+        request.url.path = "/api/v1/x"
+
+        async def fake_call_next(req):
+            raise RuntimeError("boom")
+
+        mw = NPlusOneDetectorMiddleware(app=None)
+        with patch.object(obs, "N1_DETECTOR_ENABLED", True), \
+             pytest.raises(RuntimeError):
+            asyncio.run(mw.dispatch(request, fake_call_next))
+        # Tracker deve estar limpo
+        assert obs._query_tracker.get() is None
+
+    def test_middleware_disabled_nao_inicia_tracker(self):
+        import db_observability as obs
+        from middlewares import NPlusOneDetectorMiddleware
+
+        request = MagicMock()
+        request.method = "GET"
+        request.url.path = "/api/v1/x"
+
+        async def fake_call_next(req):
+            assert obs._query_tracker.get() is None
+            return MagicMock(status_code=200)
+
+        mw = NPlusOneDetectorMiddleware(app=None)
+        with patch.object(obs, "N1_DETECTOR_ENABLED", False):
+            asyncio.run(mw.dispatch(request, fake_call_next))
+
+
+class TestSlowRequestMiddleware:
+    """Middleware de threshold global — Fase B (C2)."""
+
+    def test_middleware_loga_quando_excede_threshold(self):
+        from middlewares import SlowRequestMiddleware
+
+        request = MagicMock()
+        request.method = "GET"
+        request.url.path = "/api/v1/agents"
+
+        async def fake_call_next(req):
+            await asyncio.sleep(0.05)  # 50ms
+            return MagicMock(status_code=200)
+
+        mw = SlowRequestMiddleware(app=None)
+        with patch("middlewares.SLOW_REQUEST_THRESHOLD_MS", 10), \
+             patch("middlewares.logger") as mock_logger:
+            asyncio.run(mw.dispatch(request, fake_call_next))
+        mock_logger.warning.assert_called_once()
+        msg = mock_logger.warning.call_args[0][0]
+        assert "Slow request" in msg
+
+    def test_middleware_silencioso_abaixo_threshold(self):
+        from middlewares import SlowRequestMiddleware
+
+        request = MagicMock()
+        request.method = "GET"
+        request.url.path = "/api/v1/agents"
+
+        async def fake_call_next(req):
+            return MagicMock(status_code=200)  # rapido
+
+        mw = SlowRequestMiddleware(app=None)
+        with patch("middlewares.SLOW_REQUEST_THRESHOLD_MS", 1000), \
+             patch("middlewares.logger") as mock_logger:
+            asyncio.run(mw.dispatch(request, fake_call_next))
+        mock_logger.warning.assert_not_called()
+
+    def test_middleware_skip_pdf_e_speedtest(self):
+        """Endpoints inerentemente lentos nao spammam warnings."""
+        from middlewares import SlowRequestMiddleware
+
+        for skip_path in ("/api/v1/speedtest", "/api/v1/client/report",
+                          "/api/v1/reports/2026-05-01/clienteX",
+                          "/ws/live", "/static/x.css", "/health"):
+            request = MagicMock()
+            request.method = "GET"
+            request.url.path = skip_path
+
+            async def fake_call_next(req):
+                await asyncio.sleep(0.05)
+                return MagicMock(status_code=200)
+
+            mw = SlowRequestMiddleware(app=None)
+            with patch("middlewares.SLOW_REQUEST_THRESHOLD_MS", 1), \
+                 patch("middlewares.logger") as mock_logger:
+                asyncio.run(mw.dispatch(request, fake_call_next))
+            mock_logger.warning.assert_not_called(), f"path {skip_path} deveria ser skip"
+
+    def test_middleware_inclui_query_count_no_log(self):
+        """Slow request com tracker ativo loga numero de queries."""
+        import db_observability as obs
+        from middlewares import SlowRequestMiddleware
+
+        request = MagicMock()
+        request.method = "GET"
+        request.url.path = "/api/v1/x"
+
+        async def fake_call_next(req):
+            tracker = obs.QueryTracker()
+            obs._query_tracker.set(tracker)
+            tracker.record("SELECT 1")
+            tracker.record("SELECT 2")
+            await asyncio.sleep(0.05)
+            return MagicMock(status_code=200)
+
+        mw = SlowRequestMiddleware(app=None)
+        try:
+            with patch("middlewares.SLOW_REQUEST_THRESHOLD_MS", 10), \
+                 patch("middlewares.logger") as mock_logger:
+                asyncio.run(mw.dispatch(request, fake_call_next))
+            args = mock_logger.warning.call_args[0]
+            # args = (msg, method, path, status, elapsed, qcount, threshold)
+            assert args[5] == 2  # qcount
+        finally:
+            obs._query_tracker.set(None)
+
+
+# ===========================================================================
 # Entry point
 # ===========================================================================
 

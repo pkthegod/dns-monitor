@@ -31,7 +31,48 @@ from typing import Optional
 
 import asyncpg
 
+import db_observability as _obs
+
 logger = logging.getLogger("infra-vision.db")
+
+
+class _TrackedConn:
+    """Proxy de asyncpg.Connection que registra cada query no _query_tracker
+    do request atual. Fora de request scope (ex: scheduler_jobs, init) o
+    tracker e None — record_query e no-op, custo zero.
+
+    Cobre os 5 metodos usados em db.py + routes_*.py + scheduler_jobs.py:
+    execute, executemany, fetch, fetchrow, fetchval. Tudo o mais (transaction,
+    cursor, etc) e delegado via __getattr__.
+    """
+
+    __slots__ = ("_conn",)
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    async def execute(self, query, *args, **kwargs):
+        _obs.record_query(query)
+        return await self._conn.execute(query, *args, **kwargs)
+
+    async def executemany(self, query, *args, **kwargs):
+        _obs.record_query(query)
+        return await self._conn.executemany(query, *args, **kwargs)
+
+    async def fetch(self, query, *args, **kwargs):
+        _obs.record_query(query)
+        return await self._conn.fetch(query, *args, **kwargs)
+
+    async def fetchrow(self, query, *args, **kwargs):
+        _obs.record_query(query)
+        return await self._conn.fetchrow(query, *args, **kwargs)
+
+    async def fetchval(self, query, *args, **kwargs):
+        _obs.record_query(query)
+        return await self._conn.fetchval(query, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
 
 _pool: Optional[asyncpg.Pool] = None
 
@@ -73,7 +114,7 @@ async def close_pool() -> None:
 @asynccontextmanager
 async def get_conn():
     async with _pool.acquire() as conn:
-        yield conn
+        yield _TrackedConn(conn)
 
 
 def _split_sql(sql: str) -> list[str]:

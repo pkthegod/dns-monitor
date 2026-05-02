@@ -206,6 +206,7 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \\
 from middlewares import (  # noqa: F401
     APIRateLimitMiddleware, CSRFMiddleware, SecurityMonitorMiddleware,
     RequestLoggingMiddleware, SecurityHeadersMiddleware, RequestSizeLimitMiddleware,
+    NPlusOneDetectorMiddleware, SlowRequestMiddleware,
     _security_alert,
 )
 
@@ -228,6 +229,10 @@ app.add_middleware(APIRateLimitMiddleware)
 app.add_middleware(RequestSizeLimitMiddleware)
 app.add_middleware(SecurityMonitorMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
+# Observability — Fase B. Adicionados por ultimo (outermost) pra capturar
+# tempo total e queries de TUDO (auth, dependencies, business logic).
+app.add_middleware(SlowRequestMiddleware)
+app.add_middleware(NPlusOneDetectorMiddleware)
 
 app.mount("/static", StaticFiles(directory=str(pathlib.Path(__file__).parent / "static")), name="static")
 

@@ -2,6 +2,8 @@
 middlewares.py — Middlewares HTTP do backend.
 
 Ordem de registro em main.py (do externo para o interno):
+    NPlusOneDetectorMiddleware   — Fase B (C1): detecta loop N+1 de queries
+    SlowRequestMiddleware        — Fase B (C2): warn em request > threshold ms
     RequestLoggingMiddleware     — audit log de POST/PATCH/DELETE
     SecurityMonitorMiddleware    — bloqueia IPs, detecta scan/brute/honeypot
     RequestSizeLimitMiddleware   — rejeita body > 10MB
@@ -16,12 +18,14 @@ então o último adicionado é o mais externo.
 import asyncio
 import base64
 import logging
+import os
 import secrets
 import time as _time
 
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+import db_observability as _obs
 import telegram_bot as tg
 
 logger = logging.getLogger("infra-vision.api")
@@ -275,3 +279,104 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
             if cl and int(cl) > self.MAX_BODY:
                 return JSONResponse({"error": "Request body too large"}, status_code=413)
         return await call_next(request)
+
+
+# ---------------------------------------------------------------------------
+# Fase B (C1): detector de N+1 query
+# ---------------------------------------------------------------------------
+
+# Paths estaticos / health: pular tracking pra reduzir ruido. Aceitam
+# prefix match (ex: /static/foo.css cai em /static).
+_N1_SKIP_PATHS = ("/static", "/favicon", "/health", "/metrics-export")
+
+
+class NPlusOneDetectorMiddleware(BaseHTTPMiddleware):
+    """Inicia/finaliza tracking de queries por request. Loga warning se
+    algum template SQL repetiu acima de N1_DETECTOR_THRESHOLD (default: 10).
+
+    Por que: vimos N+1 silencioso em flows admin que iteram lista de agentes
+    e fazem 1 query por host. Em 100 agentes = 101 round-trips desnecessarios.
+    Sem detector, so aparece quando o p95 da rota explode em prod.
+
+    Este middleware NAO bloqueia request — apenas observa. Custo: 1 hash +
+    1 dict update por query (~50us em load tipico).
+    """
+
+    async def dispatch(self, request, call_next):
+        path = request.url.path
+        if any(path.startswith(p) for p in _N1_SKIP_PATHS):
+            return await call_next(request)
+
+        if not _obs.N1_DETECTOR_ENABLED:
+            return await call_next(request)
+
+        _obs.start_request()
+        try:
+            response = await call_next(request)
+        finally:
+            tracker = _obs.end_request()
+            if tracker is not None and tracker.total > 0:
+                offenders = tracker.report(_obs.N1_DETECTOR_THRESHOLD)
+                if offenders:
+                    template, count = offenders[0]
+                    logger.warning(
+                        "N+1 detectado: %s %s — %d queries do mesmo template "
+                        "(%d total no request) | template=%s",
+                        request.method, path, count, tracker.total, template,
+                    )
+        return response
+
+
+# ---------------------------------------------------------------------------
+# Fase B (C2): threshold global de slow request
+# ---------------------------------------------------------------------------
+
+# Threshold em milissegundos. Default 1000ms = 1s. Configuravel pra apertar
+# em ambiente de prod (e.g. 500ms).
+SLOW_REQUEST_THRESHOLD_MS = int(os.environ.get("SLOW_REQUEST_THRESHOLD_MS", "1000"))
+
+# Paths que naturalmente sao lentos (geracao de PDF, scan de speedtest,
+# WebSocket): isentar pra nao spammar warnings.
+_SLOW_REQUEST_SKIP_PATHS = (
+    "/api/v1/speedtest",
+    "/api/v1/client/report",
+    "/api/v1/reports",
+    "/ws/",
+    "/static",
+    "/favicon",
+    "/health",
+)
+
+
+class SlowRequestMiddleware(BaseHTTPMiddleware):
+    """Mede duracao de cada request e loga warning se exceder threshold.
+
+    Capta regressoes de performance cedo: handler que era 50ms e virou 1.2s
+    apos um refactor aparece no log antes de o p95 da rota explodir.
+    Threshold default 1000ms — apertavel via SLOW_REQUEST_THRESHOLD_MS.
+
+    Inclui tracker.total no log (se N+1 detector ativo) — slow request
+    com muitas queries indica candidato pra batch/JOIN.
+    """
+
+    async def dispatch(self, request, call_next):
+        path = request.url.path
+        if any(path.startswith(p) for p in _SLOW_REQUEST_SKIP_PATHS):
+            return await call_next(request)
+
+        start = _time.monotonic()
+        response = await call_next(request)
+        elapsed_ms = (_time.monotonic() - start) * 1000.0
+
+        if elapsed_ms >= SLOW_REQUEST_THRESHOLD_MS:
+            # Tracker do N+1 detector (mesmo request scope, se ainda nao
+            # foi limpo — middleware ordem matters). Helper get_total e
+            # defensive: retorna 0 se nao houver tracker.
+            tracker = _obs._query_tracker.get()
+            qcount = tracker.total if tracker else 0
+            logger.warning(
+                "Slow request: %s %s -> %d em %.0fms (queries=%d, threshold=%dms)",
+                request.method, path, response.status_code,
+                elapsed_ms, qcount, SLOW_REQUEST_THRESHOLD_MS,
+            )
+        return response
