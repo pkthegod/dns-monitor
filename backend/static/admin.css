@@ -359,3 +359,30 @@ code { font-family: var(--font-mono); color: var(--text-mid); }
   .trace-controls { flex-wrap: wrap; }
   .trace-controls .field { min-width: 100%; }
 }
+
+/* ── LL1: banner "untrusted output" ──
+   Output do agente e dado controlavel se o host for comprometido.
+   Awareness pra operador nao colar em LLM (prompt injection vector). */
+.untrusted-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  margin-bottom: 10px;
+  border: 1px solid var(--orange, #d97706);
+  border-left-width: 3px;
+  background: rgba(217, 119, 6, .08);
+  color: var(--orange, #d97706);
+  font-family: var(--font-mono);
+  font-size: .68rem;
+  letter-spacing: .03em;
+  border-radius: 4px;
+  cursor: help;
+}
+.untrusted-banner::before { content: "⚠"; font-size: .85rem; }
+
+.untrusted-marker {
+  /* Marca inline pra preview de result no historico (curto). */
+  border-bottom: 1px dotted var(--orange, #d97706);
+  cursor: help;
+}
