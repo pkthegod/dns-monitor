@@ -1,403 +1,414 @@
-# DNS Monitor
+# Infra-Vision
 
-Sistema distribuído de monitoramento DNS para redes Linux com Unbound ou Bind9. Coleta métricas de sistema, testa resolução DNS em até 50 máquinas, centraliza os dados em TimescaleDB, exibe dashboards em Grafana e permite **controle remoto dos serviços DNS** diretamente do servidor central.
+Monitoramento distribuído de servidores DNS (Bind9/Unbound) para ISPs e operadores.
+Agentes em Linux coletam métricas, latência DNS e estatísticas de query
+(RCODEs/QPS/cache hits) e empurram pra um backend central, que serve um painel
+admin com RBAC, um portal cliente self-service e dashboards Grafana. Comandos
+remotos (start/stop/diagnóstico/auto-update) chegam ao agente em tempo real
+via NATS JetStream — com HTTP polling como fallback.
 
 ---
 
 ## Arquitetura
 
 ```
-┌─────────────────────────────────┐   HTTP/JSON (push)   ┌──────────────────────────────┐
-│        Máquina monitorada       │ ──────────────────►  │       Servidor central       │
-│                                 │                      │                              │
-│  dns_agent.py                   │ ◄──────────────────  │  FastAPI  (porta 8000)       │
-│  ├─ heartbeat a cada 5 min      │   comandos (poll)    │  TimescaleDB / PostgreSQL 15 │
-│  ├─ check DNS 4×/dia            │                      │  Grafana  (porta 3000)       │
-│  ├─ métricas CPU/RAM/disco/I/O  │                      │  Alertas → Telegram          │
-│  ├─ fingerprint de hardware     │                      │                              │
-│  └─ poll de comandos a cada 12h │                      │  agent_commands (banco)      │
-└─────────────────────────────────┘                      └──────────────────────────────┘
-         (repita para N máquinas)
+┌────────────────────────────┐    NATS push (dns.commands.<host>)     ┌───────────────────────┐
+│   Maquina monitorada       │ ◄─────────────────────────────────────  │   Servidor central    │
+│                            │    HTTP poll fallback (60s adaptativo)  │                       │
+│   dns_agent.py             │                                         │   FastAPI :8000       │
+│   ├─ heartbeat 5min        │ ─── HTTP/JSON (push: metricas) ───────► │   ├─ /admin   (RBAC)  │
+│   ├─ check completo 12x/d  │                                         │   ├─ /client  (portal)│
+│   ├─ quick probe 60s       │                                         │   ├─ /dashboard       │
+│   ├─ dns stats 10min       │                                         │   └─ /speedtest       │
+│   ├─ fingerprint hardware  │ ─── NATS publish (dns.stats.<host>) ──► │                       │
+│   └─ self-update via /opt  │ ─── NATS publish (...ack)         ────► │   TimescaleDB / PG15  │
+└────────────────────────────┘                                         │   NATS JetStream      │
+       (50–100 hosts)                                                  │   Grafana :3000       │
+                                                                       │   Telegram + webhooks │
+                                                                       └───────────────────────┘
 ```
 
-**Stack:**
+**Stack**
 
-| Componente | Tecnologia |
-|---|---|
-| Agente | Python 3.8+, psutil, dnspython, schedule |
-| Backend | FastAPI, asyncpg, APScheduler |
-| Banco | TimescaleDB (PostgreSQL 15) — 8 hypertables + 1 tabela de comandos |
-| Dashboards | Grafana 12, PostgreSQL datasource |
-| Deploy | Docker Compose (1 worker — scheduler único) |
+| Componente   | Tecnologia                                              |
+|--------------|---------------------------------------------------------|
+| Agente       | Python 3.10+, psutil, dnspython, schedule, nats-py      |
+| Backend      | FastAPI, asyncpg, APScheduler, nats-py                  |
+| Banco        | TimescaleDB 2.17 / PostgreSQL 15 — 9 hypertables        |
+| Mensageria   | NATS 2.10 + JetStream (durable consumers)               |
+| Frontend     | HTML + CSS + vanilla JS (sem build step)                |
+| Dashboards   | Grafana 12 (PostgreSQL datasource)                      |
+| Notificações | Telegram + webhooks (Slack / Teams / PagerDuty / JSON)  |
+| Deploy       | Docker Compose (1 worker — scheduler único)             |
 
 ---
 
-## Estrutura do Repositório
+## Estrutura do repositório
 
 ```
-dns-monitor/
+infra-vision/
 ├── README.md
-├── IMPLEMENTACAO.md          ← guia detalhado de deploy
-├── DB_ADMIN.sql              ← referência de administração do banco
-├── .gitignore
-├── test_grafana.py           ← 92 testes dos dashboards
-├── test_payload.py           ← utilitário de diagnóstico de payload
+├── CHANGELOG.md                    histórico de releases
+├── CONTRIBUTING.md                 fluxo de contribuição
+├── DBAAction.sql / DBAUpdate.sql   referência operacional do banco
+├── DBAreference.sql
+├── test_grafana.py                 92 testes dos dashboards
+├── test_payload.py                 utilitario de diagnóstico
 │
 ├── agent/
-│   ├── dns_agent.py          ← agente principal
-│   ├── agent.conf            ← configuração (sem segredos, usa %(VAR)s)
-│   ├── env.example           ← template de segredos
-│   ├── dns_agent.service     ← unit systemd
-│   ├── install_agent.sh      ← instalador (cria sudoers automaticamente)
+│   ├── dns_agent.py                agente principal (auto-contido)
+│   ├── agent.toml                  configuração TOML (sem segredos)
+│   ├── env.example                 template de segredos
+│   ├── dns_agent.service           unit systemd
+│   ├── install_agent.sh            instalador (cria sudoers + dirs)
+│   ├── setup_dns_stats.sh          habilita extended-statistics no Bind9/Unbound
 │   ├── requirements.txt
-│   └── test_agent.py         ← 80 testes do agente
+│   └── test_agent.py               153 testes do agente
 │
 ├── backend/
-│   ├── main.py               ← API FastAPI + endpoints de comandos
-│   ├── db.py                 ← camada asyncpg / TimescaleDB + fingerprint
-│   ├── schemas.sql           ← DDL completo (hypertables + agent_commands)
-│   ├── telegram_bot.py       ← alertas Telegram
-│   ├── docker-compose.yaml
+│   ├── main.py                     bootstrap FastAPI + SecurityHeaders/CSRF/RateLimit
+│   ├── routes_admin.py             rotas /admin (RBAC admin/viewer)
+│   ├── routes_agent.py             rotas /api/v1/* (ingest, commands)
+│   ├── routes_client.py            rotas /client (portal cliente)
+│   ├── ws.py                       WebSocket /ws/live (broadcast real-time)
+│   ├── middlewares.py              CSP, CSRF, rate-limit, security headers
+│   ├── auth.py                     cookies admin/client + role-based RBAC
+│   ├── db.py                       camada asyncpg + TimescaleDB
+│   ├── schemas.sql                 DDL completo + hash-chain do audit_log
+│   ├── nats_client.py              conexão JetStream
+│   ├── nats_handlers.py            handlers (command_ack, dns_stats)
+│   ├── scheduler_jobs.py           jobs: alertas offline, daily report, retention
+│   ├── security.py                 detecção de scans/brute-force + honeypots
+│   ├── webhooks.py                 Slack/Teams/PagerDuty/genérico
+│   ├── email_report.py             relatório mensal por email
+│   ├── telegram_bot.py             alertas Telegram (anti-spam)
+│   ├── static/                     admin.html + client.html + dashboard + speedtest
+│   ├── docker-compose.yaml         backend + db + nats + grafana
 │   ├── Dockerfile
-│   ├── .env.example          ← template de segredos do backend
 │   ├── requirements.txt
-│   └── test_backend.py       ← 70 testes do backend
+│   └── test_backend.py             187 testes
 │
-└── grafana/
-    ├── dashboards/
-    │   ├── overview.json     ← visão geral de todos os agentes
-    │   └── host-detail.json  ← detalhe por host com seletor
-    └── provisioning/
-        ├── datasources/timescaledb.yaml
-        └── dashboards/provider.yaml
+├── docs/security/                  política de disclosure + relatórios
+├── grafana/dashboards/             overview, host-detail, dns-stats
+├── scripts/
+│   ├── backup/snapshot.sh          snapshot replicável cifrado (AES-256)
+│   ├── backup/restore-snapshot.sh
+│   ├── backup/verify-snapshot.sh   validação automatizada
+│   ├── smoke-test-security.sh      testa isolamento multi-tenant
+│   └── update_all_agents.sh
+└── specs/                          specs por feature (007/010/012/013) + roadmap
 ```
 
 ---
 
 ## Pré-requisitos
 
-**Servidor central:**
-
+**Servidor central**
 - Linux (Debian/Ubuntu recomendado)
-- Docker + Docker Compose plugin
-- Porta 8000 (API) e 3000 (Grafana) acessíveis
+- Docker + Compose plugin
+- Portas: 8000 (API), 3000 (Grafana), 4222 (NATS — pode ser exposto via NAT pra agentes externos)
 
-**Cada máquina monitorada:**
-
-- Linux com Unbound, Bind9 ou Named
-- Python 3.8+
-- Acesso HTTP à porta 8000 do servidor central
+**Cada agente**
+- Linux com Bind9, Unbound ou Named
+- Python 3.10+
+- Acesso HTTP à porta 8000 do servidor + (recomendado) NATS:4222 pra comandos em tempo real
 
 ---
 
-## Deploy do Backend
-
-### 1. Clonar e configurar
+## Deploy do backend
 
 ```bash
 git clone https://github.com/pkthegod/dns-monitor.git
 cd dns-monitor/backend
 
 cp .env.example .env
-nano .env
-```
+# Edite .env — senhas SEM @ # / ? %  (postgres parser quebra)
+# Gere secrets fortes com:
+#   python3 -c "import secrets; print(secrets.token_hex(32))"
+# Os 4 secrets críticos: AGENT_TOKEN, ADMIN_SESSION_SECRET,
+# CLIENT_SESSION_SECRET, AUDIT_HMAC_KEY
 
-Preencha o `.env` — **senhas sem `@`, `#`, `/`, `?`, `%`:**
-
-```dotenv
-POSTGRES_USER=dnsmonitor
-POSTGRES_PASSWORD=SenhaSemCaracteresEspeciais
-POSTGRES_DB=dns_monitor
-
-# Gere com: python3 -c "import secrets; print(secrets.token_hex(32))"
-AGENT_TOKEN=cole_o_token_gerado_aqui
-
-GRAFANA_USER=admin
-GRAFANA_PASSWORD=OutraSenhaSemEspeciais
-
-TELEGRAM_BOT_TOKEN=        # opcional
-TELEGRAM_CHAT_ID=          # opcional
-```
-
-### 2. Subir os serviços
-
-```bash
 docker compose build --no-cache backend
 docker compose up -d
 
-# Verificar
 curl http://localhost:8000/health
-# → {"status":"ok","db":"connected"}
+# → {"status":"ok","db":"connected","nats":"connected"}
 ```
 
-### 3. Importar os dashboards no Grafana
-
-```bash
-# Grafana em http://SEU_IP:3000 (admin / GRAFANA_PASSWORD)
-# Importe APÓS o datasource estar provisionado
-
-curl -s -u admin:'SUA_SENHA' \
-  -X POST http://localhost:3000/api/dashboards/import \
-  -H "Content-Type: application/json" \
-  -d "{\"dashboard\": $(cat ../grafana/dashboards/overview.json), \"overwrite\": true, \"folderId\": 0}"
-
-curl -s -u admin:'SUA_SENHA' \
-  -X POST http://localhost:3000/api/dashboards/import \
-  -H "Content-Type: application/json" \
-  -d "{\"dashboard\": $(cat ../grafana/dashboards/host-detail.json), \"overwrite\": true, \"folderId\": 0}"
-```
-
-> **Grafana 12:** se precisar reimportar, remova temporariamente `grafana/provisioning/dashboards/provider.yaml`, reinicie o Grafana, reimporte via API e restaure o arquivo.
+Importação de dashboards no Grafana — ver `grafana/dashboards/` e
+`grafana/provisioning/`.
 
 ---
 
-## Instalação do Agente
-
-### 1. Copiar os arquivos
+## Instalação do agente
 
 ```bash
 scp agent/* usuario@maquina:/tmp/dns-agent/
 ssh usuario@maquina
-```
 
-### 2. Criar o arquivo de segredos
-
-```bash
 sudo mkdir -p /etc/dns-agent
 sudo nano /etc/dns-agent/env
 ```
 
-```bash
-AGENT_HOSTNAME=nome-desta-maquina
-AGENT_TOKEN=mesmo_token_do_backend_env
-AGENT_BACKEND=http://IP_DO_SERVIDOR:8000
+```dotenv
+AGENT_HOSTNAME=NS1_NOME_CLIENTE
+AGENT_TOKEN=mesmo_AGENT_TOKEN_do_backend
+AGENT_BACKEND=http://IP_SERVIDOR:8000
 ```
 
 ```bash
 sudo chmod 640 /etc/dns-agent/env
-sudo chown root:dns-agent /etc/dns-agent/env 2>/dev/null || true
-```
-
-### 3. Instalar
-
-```bash
 sudo bash /tmp/dns-agent/install_agent.sh
 ```
 
-O instalador cria automaticamente:
+O instalador cria:
+- `/opt/dns-agent/` — venv + código (writable pelo user `dns-agent` pra self-update)
+- `/var/lib/dns-agent/` — state (last query stats pra delta)
+- `/var/log/dns-agent/`
+- `/etc/dns-agent/agent.toml` — config TOML
+- `/etc/sudoers.d/dns-agent` — permissões mínimas (`systemctl` específicos)
+- Unit systemd habilitado
 
-- `/opt/dns-agent/` — virtualenv e código
-- `/etc/dns-agent/agent.conf` — configuração
-- `/etc/dns-agent/env` — template de segredos (preencha antes de iniciar)
-- `/etc/sudoers.d/dns-agent` — permissões para controle remoto do DNS
-- Serviço systemd habilitado
+Pra habilitar NATS (recomendado — comandos em tempo real):
+
+```toml
+# /etc/dns-agent/agent.toml
+[nats]
+enabled = true
+url = "nats://IP_PUBLICO_DO_BACKEND:4222"
+```
+
+Pra habilitar extended-statistics no Bind9/Unbound (libera RCODEs/QPS):
 
 ```bash
-sudo systemctl start dns_agent
-sudo journalctl -u dns_agent -f
-# → Payload enviado com sucesso (tipo=heartbeat)
+sudo /opt/dns-agent/setup_dns_stats.sh
 ```
-
-> **Debian/Ubuntu com Bind9:** o serviço real é `named` — o agente resolve isso automaticamente via `SERVICE_ALIASES`.
 
 ---
 
-## Funcionamento do Agente
+## Funcionamento do agente
 
-| Evento | Frequência | O que envia |
-|---|---|---|
-| Heartbeat | A cada 5 min | hostname, timestamp, versão, fingerprint |
-| Check completo | 00:00, 06:00, 12:00, 18:00 | métricas + testes DNS + fingerprint |
-| Poll de comandos | A cada 12h + na inicialização | consulta comandos pendentes no backend |
+| Evento                | Frequência                     | O que faz                                           |
+|-----------------------|--------------------------------|-----------------------------------------------------|
+| Heartbeat             | 5 min                          | hostname + timestamp + versão + fingerprint         |
+| Quick Probe DNS       | 60s                            | resolve 1 domínio, fail-fast (latência online)      |
+| Check completo        | 12×/dia (00:00…22:00 par)      | métricas + DNS multi-domínio + service status       |
+| DNS stats             | 10 min                         | RCODEs/QPS/cache hits via rndc/unbound-control      |
+| Poll de comandos HTTP | 60s (idle 600s após 2 vazios)  | fallback se NATS off                                |
+| NATS subscribe        | real-time                      | `dns.commands.<hostname>` — push instantâneo        |
+| NATS healthcheck      | 60s                            | loga estado da conexão (anti-disconnect silencioso) |
+| Auto-update           | sob demanda (`update_agent`)   | baixa nova versão de `/api/v1/agent/latest`         |
 
-**Métricas coletadas por check:**
-
-- CPU: percentual, contagem de cores, frequência, load average
-- RAM: uso percentual, MB usados/total, swap
-- Disco: uso por partição, alerta ok/warning/critical
-- I/O: bytes e operações de leitura/escrita desde o boot
-- DNS: latência por domínio, IPs resolvidos, sucesso/falha, tentativas
+**Métricas coletadas:** CPU (% + load), RAM (% + swap), disco (por partição,
+ok/warning/critical), I/O (bytes + ops desde boot), DNS (latência + IPs +
+RCODEs por domínio), serviço DNS (active/inactive + versão).
 
 ---
 
-## Controle Remoto de Agentes
+## Comandos remotos
 
-O servidor pode enviar comandos para qualquer agente. O agente consulta o backend a cada 12h e na inicialização — comandos emitidos durante downtime são capturados no próximo poll.
+| Comando        | Efeito                                              | Reversível       |
+|----------------|-----------------------------------------------------|------------------|
+| `restart`      | Reinicia o serviço DNS                              | —                |
+| `stop`         | Para o serviço (mantém habilitado no boot)          | sim — `enable`   |
+| `disable`      | Para + desabilita no boot                           | sim — `enable`   |
+| `enable`       | Habilita + inicia                                   | —                |
+| `purge`        | Remove o pacote do sistema                          | **NÃO**          |
+| `decommission` | Para serviço + remove agente do banco               | **NÃO**          |
+| `run_script`   | Executa diagnóstico (`dns_validate`, `dig_test`...) | —                |
+| `update_agent` | Self-update do agente via `/api/v1/agent/latest`    | reversível por replay |
+| `dnstop`       | Stream de top-talkers                               | —                |
 
-### Comandos disponíveis
+**Segurança operacional:**
+- `purge` exige fluxo two-step com `confirm_token` HMAC válido por 5 min
+- `decommission` registra antes de remover (audit chain imutável)
+- Idempotência anti-replay: comandos já executados via HTTP polling são
+  rejeitados se reaparecerem via NATS pós-reconnect
 
-| Comando | Efeito | Reversível |
-|---|---|---|
-| `stop` | Para o serviço DNS imediatamente | Sim — use `enable` |
-| `disable` | Para e desabilita no boot | Sim — use `enable` |
-| `enable` | Ativa e inicia o serviço | — |
-| `purge` | Remove o pacote do sistema | **Não** |
-
-### Emitir via banco de dados
-
-```sql
--- Parar DNS de um agente
-INSERT INTO agent_commands (hostname, command, issued_by)
-VALUES ('HOSTNAME_AQUI', 'stop', 'admin');
-
--- Reativar
-INSERT INTO agent_commands (hostname, command, issued_by)
-VALUES ('HOSTNAME_AQUI', 'enable', 'admin');
-
--- Acompanhar execução
-SELECT id, command, status, executed_at, result
-FROM agent_commands
-WHERE hostname = 'HOSTNAME_AQUI'
-ORDER BY issued_at DESC;
-```
-
-### Emitir via API
+Emissão via API (admin):
 
 ```bash
-# Stop
-curl -s -X POST http://localhost:8000/commands \
-  -H "Authorization: Bearer SEU_TOKEN" \
+curl -X POST http://localhost:8000/api/v1/commands \
+  -H "Cookie: admin_session=…" \
   -H "Content-Type: application/json" \
-  -d '{"hostname": "HOSTNAME_AQUI", "command": "stop"}'
-
-# Purge — retorna confirm_token obrigatório
-curl -s -X POST http://localhost:8000/commands \
-  -H "Authorization: Bearer SEU_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"hostname": "HOSTNAME_AQUI", "command": "purge"}'
-
-# Histórico de comandos
-curl -s http://localhost:8000/commands/HOSTNAME_AQUI/history \
-  -H "Authorization: Bearer SEU_TOKEN"
+  -d '{"hostname":"NS1_X","command":"restart"}'
 ```
 
-> O agente precisa reiniciar para fazer o poll imediatamente — caso contrário aguarda as próximas 12h.
+Ou pelo painel: `/admin` → menu de ações do agente.
 
 ---
 
-## Fingerprint de Hardware
+## Portais e dashboards
 
-Cada agente gera um SHA256 baseado em hostname + MAC address + `/etc/machine-id`. Esse fingerprint é enviado em todo payload e registrado no banco. Se mudar, o backend gera um `WARNING` nos logs — indicando possível cópia não autorizada ou migração de hardware.
+| URL              | Função                                                                |
+|------------------|-----------------------------------------------------------------------|
+| `/admin/login`   | Login admin (RBAC: `admin` write, `viewer` read-only)                 |
+| `/admin`         | Inventário de agentes, comandos, clientes, admin users                |
+| `/dashboard`     | DNS metrics — agregado de todos os hosts (admin)                      |
+| `/speedtest`     | Resultados de speedtest (admin)                                       |
+| `/client/login`  | Login cliente — auth por hostnames associados                         |
+| `/client`        | Portal self-service: hero status, KPIs, "Testar meu DNS", relatórios  |
+| `/admin/help`    | Documentação operacional                                              |
+| `/client/help`   | FAQ pro cliente final                                                 |
 
-```sql
--- Ver fingerprints registrados
-SELECT hostname, fingerprint, fingerprint_first_seen, fingerprint_last_seen
-FROM agents ORDER BY hostname;
+Frontend é vanilla JS modularizado (extração de `admin.html` em
+`admin-{agents,clients,commands}.js`) — sem build step. WebSocket
+`/ws/live` empurra updates pro painel admin.
 
--- Redefinir após troca de hardware legítima
-UPDATE agents SET fingerprint = NULL, fingerprint_first_seen = NULL,
-    fingerprint_last_seen = NULL WHERE hostname = 'HOSTNAME_AQUI';
+---
+
+## Banco de dados
+
+| Tabela / view          | Tipo       | Chunk | Retenção | Observação                                |
+|------------------------|------------|-------|----------|-------------------------------------------|
+| `agent_heartbeats`     | hypertable | 1h    | 30 d     |                                            |
+| `metrics_cpu`          | hypertable | 6h    | 1 ano    |                                            |
+| `metrics_ram`          | hypertable | 6h    | 1 ano    |                                            |
+| `metrics_disk`         | hypertable | 6h    | 1 ano    |                                            |
+| `metrics_io`           | hypertable | 6h    | 1 ano    |                                            |
+| `dns_checks`           | hypertable | 1 d   | 1 ano    |                                            |
+| `dns_service_status`   | hypertable | 1 d   | 1 ano    |                                            |
+| `speedtest_scans`      | hypertable | 1 d   | 1 ano    |                                            |
+| `dns_query_stats`      | hypertable | 1 d   | 1 ano    | RCODEs/QPS/cache (extended-statistics)    |
+| `agents`               | tabela     | —     | —        | inclui fingerprint + last_seen            |
+| `agent_commands`       | tabela     | —     | —        | + índice único de alertas abertos         |
+| `alerts_log`           | tabela     | —     | —        | dedupe via `idx_alerts_open_unique`       |
+| `audit_log`            | tabela     | —     | —        | hash-chain imutável (prev_hash + row_hash) |
+| `admin_users`          | tabela     | —     | —        | RBAC admin/viewer + senha bcrypt          |
+| `client_users`         | tabela     | —     | —        | hostnames[] associados                    |
+| `daily_reports`        | tabela     | —     | —        | PDF cacheado por cliente/dia              |
+| `speedtest_domains`    | tabela     | —     | —        | resultados por domínio                    |
+
+Compressão automática após 7 dias (~90% de economia em disco).
+
+---
+
+## Segurança
+
+Foco do release v1.5 — auditado em `docs/security/`.
+
+| Camada                    | Controle                                                                                |
+|---------------------------|-----------------------------------------------------------------------------------------|
+| Network                   | Rate-limit global 200 rpm/IP em `/api/*` + retry-after no 429                           |
+| AuthN admin               | Cookies HMAC-SHA256 + rotação sem downtime (`*_SESSION_SECRET_PREV`)                    |
+| AuthZ admin               | RBAC `admin` (mutativo) vs `viewer` (read-only)                                          |
+| AuthN cliente             | Cookies separados; portal só vê hostnames associados (multi-tenant isolation)            |
+| AuthN agente              | Bearer `AGENT_TOKEN` em rotas de ingest                                                  |
+| CSRF                      | Validação de Origin/Referer em POST/PATCH/DELETE com cookie                             |
+| CSP                       | `script-src 'self' 'unsafe-inline'` em transição pra nonce-only (refactor B em curso)   |
+| Headers                   | X-Frame-Options, X-Content-Type-Options, Referrer-Policy, frame-ancestors 'none'         |
+| Race conditions           | `asyncio.Lock` em rate-limiters; `ON CONFLICT DO NOTHING` em alerts; xmax em upsert      |
+| DoS                       | PDF rate-limit (1/10min) + timeout 10s + audit (Fase A4)                                 |
+| Detecção                  | Honeypots (`/wp-admin`, `/.env`, `/.git`...) + auto-block 30 min                         |
+| Audit                     | Hash-chain imutável (SHA-256 + `verify_audit_chain`)                                     |
+| Backup                    | Snapshot AES-256 cifrado + verify automatizado (`pg_restore` no container)              |
+| Disclosure                | `docs/security/disclosure.md` — 48h triage / 30d critical / 90d coordinated             |
+| CI                        | CodeQL + Dependabot (`.github/`)                                                         |
+
+Smoke test de isolamento multi-tenant: `bash scripts/smoke-test-security.sh`.
+
+---
+
+## Alertas
+
+**Telegram** (anti-spam, dedupe por `(hostname, alert_type, severity)` enquanto
+o alerta estiver aberto):
+
+| Condição                  | Severidade   |
+|---------------------------|--------------|
+| CPU ≥ 80% / 95%           | warn / crit  |
+| RAM ≥ 85% / 95%           | warn / crit  |
+| Disco ≥ 80% / 90%         | warn / crit  |
+| Latência DNS ≥ 200/1000ms | warn / crit  |
+| SERVFAIL spike            | critical     |
+| DNS silence               | critical     |
+| NXDOMAIN absurdo          | critical     |
+| Falha resolução / serviço | critical     |
+| Agente offline > 10 min   | critical     |
+
+**Webhooks** (auto-detecta formato pela URL): Slack attachments, Teams
+MessageCard, PagerDuty Events v2, JSON genérico. Configurar no CRUD do
+cliente — disparado automaticamente em alertas critical.
+
+**Relatórios:** PDF mensal cacheado por cliente; daily report agendado às
+23:59. Email mensal opcional (template Tokyo Night).
+
+---
+
+## Backup e restore
+
+```bash
+# Snapshot replicavel cifrado (AES-256-CBC)
+sudo bash scripts/backup/snapshot.sh /caminho/para/output
+
+# Verificacao automatizada — usa pg_restore do container quando local falta
+sudo bash scripts/backup/verify-snapshot.sh /caminho/para/snapshot.tar.gz.enc
+
+# Restore
+sudo bash scripts/backup/restore-snapshot.sh /caminho/para/snapshot.tar.gz.enc
 ```
 
----
-
-## Banco de Dados
-
-| Tabela | Tipo | Chunk | Retenção |
-|---|---|---|---|
-| `agent_heartbeats` | hypertable | 1h | 30 dias |
-| `metrics_cpu` | hypertable | 6h | 1 ano |
-| `metrics_ram` | hypertable | 6h | 1 ano |
-| `metrics_disk` | hypertable | 6h | 1 ano |
-| `metrics_io` | hypertable | 6h | 1 ano |
-| `dns_checks` | hypertable | 1 dia | 1 ano |
-| `dns_service_status` | hypertable | 1 dia | 1 ano |
-| `agents` | tabela | — | — |
-| `alerts_log` | tabela | — | — |
-| `agent_commands` | tabela | — | — |
-
-Compressão automática após 7 dias em todas as hypertables (~90% de redução em disco).
-
----
-
-## Alertas via Telegram
-
-Configure `TELEGRAM_BOT_TOKEN` e `TELEGRAM_CHAT_ID` no `.env` do backend.
-
-| Condição | Severidade |
-|---|---|
-| CPU ≥ 80% | warning |
-| CPU ≥ 95% | critical |
-| RAM ≥ 85% | warning |
-| RAM ≥ 95% | critical |
-| Disco ≥ 80% | warning |
-| Disco ≥ 90% | critical |
-| Latência DNS ≥ 200ms | warning |
-| Latência DNS ≥ 1000ms | critical |
-| Falha na resolução DNS | critical |
-| Serviço DNS inativo | critical |
-| Agente offline > 10 min | critical |
-
-Alertas são deduplicados — o mesmo tipo não repete enquanto o alerta anterior estiver aberto. Relatórios consolidados enviados nos horários configurados (padrão: 00:00, 06:00, 12:00, 18:00).
+Cobre: schemas + dados + secrets do `.env` (cifrados separadamente). Retenção
+manual — defina em cron conforme política.
 
 ---
 
 ## Testes
 
 ```bash
-# Backend (70 testes)
-cd backend
-PYTHONPATH=. pytest test_backend.py -v
+# Backend (187 testes — RBAC, CSP, race conditions, idempotência)
+cd backend && PYTHONPATH=. pytest test_backend.py -v
 
-# Agente (80 testes)
-cd agent
-PYTHONPATH=. pytest test_agent.py -v
+# Agente (153 testes — config, polling adaptativo, NATS replay, healthcheck)
+cd agent && PYTHONPATH=. pytest test_agent.py -v
 
 # Dashboards Grafana (92 testes)
 pytest test_grafana.py -v
 ```
 
-Total: **242 testes** — todos devem passar antes de qualquer deploy.
+**Total: 432 testes** (187 + 153 + 92). Tudo passando antes de qualquer deploy
+em produção. CI roda automaticamente via GitHub Actions (CodeQL).
 
 ---
 
-## Comandos de Operação
+## Operação
 
 ```bash
 # Status geral
-curl -s http://localhost:8000/agents | python3 -m json.tool
 curl -s http://localhost:8000/health
+docker compose ps
 
 # Logs do backend
 docker compose logs -f backend
 
-# Rebuild após mudança de código
+# Banco
+docker exec -it infra_vision_db psql -U dnsmonitor -d dns_monitor
+
+# NATS — listar consumers ativos
+docker compose exec nats nats consumer ls dns-commands
+
+# Drenar fila JetStream de um host (depois de longo offline)
+docker compose exec nats nats consumer rm dns-commands agent-NS1_HOST --force
+
+# Rebuild do backend após mudança de código
 docker compose build --no-cache backend
 docker compose up -d --force-recreate backend
 
-# Banco de dados
-docker exec -it dns_monitor_db psql -U dnsmonitor -d dns_monitor
-
-# Agente (na máquina monitorada)
-sudo systemctl status dns_agent
-sudo journalctl -u dns_agent -f
-sudo systemctl restart dns_agent
+# Agente
+sudo systemctl status dns-agent
+sudo journalctl -u dns-agent -f
+sudo systemctl restart dns-agent
 ```
-
----
-
-## Segurança
-
-| Arquivo | Repositório | Produção |
-|---|---|---|
-| `backend/.env` | ❌ ignorado | `/opt/dns-monitor/backend/.env` |
-| `agent/env` | ❌ ignorado | `/etc/dns-agent/env` (chmod 640) |
-| `agent/agent.conf` | ✅ sem segredos | lê vars do ambiente via `%(VAR)s` |
-| `/etc/sudoers.d/dns-agent` | ❌ gerado pelo installer | apenas comandos systemctl específicos |
-| `backend/.env.example` | ✅ template | referência |
-| `agent/env.example` | ✅ template | referência |
 
 ---
 
 ## Branches
 
-| Branch | Propósito |
-|---|---|
-| `main` | Estável — produção |
-| `dev` | Desenvolvimento — próximas funcionalidades |
+`main` — única branch ativa. Deploys diretos com testes passando. Histórico
+detalhado de releases em `CHANGELOG.md`.
 
 ---
 
 ## Licença
 
-MIT
+MIT — ver `LICENSE`.
