@@ -1734,8 +1734,8 @@ class TestSetupScheduleQuickProbe:
         logger = make_logger()
         da.setup_schedule(cfg, logger)
         # Jobs: 1 check_time + 1 heartbeat + 1 quick_probe + 1 command_poll
-        # + 1 dns_stats (default enabled em [dns_stats]) = 5
-        assert len(sched.get_jobs()) == 5
+        # + 1 dns_stats + 1 nats_healthcheck = 6
+        assert len(sched.get_jobs()) == 6
         sched.clear()
 
     def test_quick_probe_not_scheduled_when_disabled(self):
@@ -1750,8 +1750,8 @@ class TestSetupScheduleQuickProbe:
         logger = make_logger()
         da.setup_schedule(cfg, logger)
         # Sem quick probe: 1 check_time + 1 heartbeat + 1 command_poll
-        # + 1 dns_stats (default enabled) = 4
-        assert len(sched.get_jobs()) == 4
+        # + 1 dns_stats + 1 nats_healthcheck = 5
+        assert len(sched.get_jobs()) == 5
         sched.clear()
 
     def test_quick_probe_interval_minimum_10s(self):
@@ -1765,10 +1765,11 @@ class TestSetupScheduleQuickProbe:
         }})
         logger = make_logger()
         da.setup_schedule(cfg, logger)
-        # Quick probe ainda agendado com 10s (minimo). Total 5 (com dns_stats).
+        # Quick probe ainda agendado com 10s (minimo). Total 6 (com dns_stats
+        # + nats_healthcheck).
         jobs = sched.get_jobs()
         sched.clear()
-        assert len(jobs) == 5
+        assert len(jobs) == 6
 
 
 # ===========================================================================
@@ -1965,6 +1966,192 @@ class TestLoadConfigToml:
         with patch.object(da, "CONFIG_PATHS", [tmp_path / "agent.toml", tmp_path / "agent.conf"]):
             cfg = da.load_config()
         assert isinstance(cfg, da.Config)
+
+
+# ===========================================================================
+# NATS — _is_command_already_executed (idempotencia anti-replay)
+# ===========================================================================
+
+class TestIsCommandAlreadyExecuted:
+    """JetStream redeliver mensagens nao-ACKed pos-reconnect.
+
+    Sem checagem, comandos ja executados via HTTP polling re-rodam — caso
+    real reportado em NS1_AVISOLUCOES (update_agent x3 no backlog).
+    """
+
+    def _resp(self, status_code=200, json_data=None):
+        r = MagicMock()
+        r.status_code = status_code
+        r.json.return_value = json_data if json_data is not None else {}
+        return r
+
+    def test_status_done_retorna_true(self):
+        """Comando ja executado — deve pular execucao."""
+        import dns_agent as da
+        logger = make_logger()
+        with patch("dns_agent.requests.get",
+                   return_value=self._resp(200, {"id": 42, "status": "done"})):
+            assert da._is_command_already_executed(
+                42, "http://b", "tok", 5, logger,
+            ) is True
+
+    def test_status_failed_retorna_true(self):
+        """Comando ja falhou — nao re-executa."""
+        import dns_agent as da
+        logger = make_logger()
+        with patch("dns_agent.requests.get",
+                   return_value=self._resp(200, {"status": "failed"})):
+            assert da._is_command_already_executed(
+                42, "http://b", "tok", 5, logger,
+            ) is True
+
+    def test_status_expired_retorna_true(self):
+        """Expired conta como ja-finalizado — nao re-executa."""
+        import dns_agent as da
+        logger = make_logger()
+        with patch("dns_agent.requests.get",
+                   return_value=self._resp(200, {"status": "expired"})):
+            assert da._is_command_already_executed(
+                42, "http://b", "tok", 5, logger,
+            ) is True
+
+    def test_status_pending_retorna_false(self):
+        """Pending = ainda nao executado — segue pra _execute_command."""
+        import dns_agent as da
+        logger = make_logger()
+        with patch("dns_agent.requests.get",
+                   return_value=self._resp(200, {"status": "pending"})):
+            assert da._is_command_already_executed(
+                42, "http://b", "tok", 5, logger,
+            ) is False
+
+    def test_404_retorna_true_pra_ack_e_drenar(self):
+        """Comando sumiu do DB (purge/cleanup) — ack e tira do JetStream."""
+        import dns_agent as da
+        logger = make_logger()
+        with patch("dns_agent.requests.get", return_value=self._resp(404)):
+            assert da._is_command_already_executed(
+                999, "http://b", "tok", 5, logger,
+            ) is True
+
+    def test_500_retorna_false_pra_executar_por_seguranca(self):
+        """Backend instavel — preferimos exec duplo a perder comando."""
+        import dns_agent as da
+        logger = MagicMock()
+        with patch("dns_agent.requests.get", return_value=self._resp(500)):
+            assert da._is_command_already_executed(
+                42, "http://b", "tok", 5, logger,
+            ) is False
+        logger.warning.assert_called()
+
+    def test_excecao_retorna_false_pra_executar_por_seguranca(self):
+        """ConnectionError/Timeout — assume pending pra nao perder comando."""
+        import dns_agent as da
+        import requests as req
+        logger = MagicMock()
+        with patch("dns_agent.requests.get",
+                   side_effect=req.exceptions.ConnectionError("refused")):
+            assert da._is_command_already_executed(
+                42, "http://b", "tok", 5, logger,
+            ) is False
+        logger.warning.assert_called()
+
+    def test_cmd_id_none_retorna_false(self):
+        """Payload corrompido sem id — defensive."""
+        import dns_agent as da
+        logger = make_logger()
+        with patch("dns_agent.requests.get") as mock_get:
+            assert da._is_command_already_executed(
+                None, "http://b", "tok", 5, logger,
+            ) is False
+        mock_get.assert_not_called()
+
+    def test_resposta_sem_status_retorna_false(self):
+        """JSON sem 'status' — assume pending por seguranca."""
+        import dns_agent as da
+        logger = make_logger()
+        with patch("dns_agent.requests.get",
+                   return_value=self._resp(200, {"id": 42})):
+            assert da._is_command_already_executed(
+                42, "http://b", "tok", 5, logger,
+            ) is False
+
+    def test_url_e_token_corretos_no_request(self):
+        import dns_agent as da
+        logger = make_logger()
+        mock_get = MagicMock(return_value=self._resp(200, {"status": "done"}))
+        with patch("dns_agent.requests.get", mock_get):
+            da._is_command_already_executed(
+                42, "http://b.example", "tok-xyz", 7, logger,
+            )
+        url = mock_get.call_args[0][0]
+        assert url == "http://b.example/api/v1/commands/42/status"
+        headers = mock_get.call_args[1]["headers"]
+        assert headers["Authorization"] == "Bearer tok-xyz"
+        assert mock_get.call_args[1]["timeout"] == 7
+
+
+# ===========================================================================
+# NATS — nats_healthcheck (visibilidade da conexao)
+# ===========================================================================
+
+class TestNatsHealthcheck:
+    """Healthcheck periodico — sem isso, disconnects passam batido no journalctl
+    (foi exatamente o que aconteceu com NS1_AVISOLUCOES).
+    """
+
+    def test_nats_desabilitado_retorna_silenciosamente(self):
+        import dns_agent as da
+        logger = MagicMock()
+        with patch.object(da, "_nats_connected", False):
+            da.nats_healthcheck(make_cfg(), logger)
+        logger.warning.assert_not_called()
+        logger.error.assert_not_called()
+
+    def test_cliente_nao_inicializado_loga_warning(self):
+        import dns_agent as da
+        logger = MagicMock()
+        with patch.object(da, "_nats_connected", True), \
+             patch.object(da, "_nats_client", None):
+            da.nats_healthcheck(make_cfg(), logger)
+        logger.warning.assert_called()
+        assert "nao inicializado" in str(logger.warning.call_args)
+
+    def test_conectado_loga_debug(self):
+        import dns_agent as da
+        fake_client = MagicMock()
+        fake_client.is_connected = True
+        logger = MagicMock()
+        with patch.object(da, "_nats_connected", True), \
+             patch.object(da, "_nats_client", fake_client):
+            da.nats_healthcheck(make_cfg(), logger)
+        logger.debug.assert_called()
+        logger.warning.assert_not_called()
+
+    def test_desconectado_loga_warning(self):
+        """Caso central: NATS desconectou silenciosamente, healthcheck DEVE alertar."""
+        import dns_agent as da
+        fake_client = MagicMock()
+        fake_client.is_connected = False
+        logger = MagicMock()
+        with patch.object(da, "_nats_connected", True), \
+             patch.object(da, "_nats_client", fake_client):
+            da.nats_healthcheck(make_cfg(), logger)
+        logger.warning.assert_called()
+        assert "DESCONECTADO" in str(logger.warning.call_args)
+
+    def test_excecao_no_is_connected_loga_warning(self):
+        """is_connected pode raise se cliente em estado quebrado."""
+        import dns_agent as da
+        fake_client = MagicMock()
+        type(fake_client).is_connected = property(
+            lambda self: (_ for _ in ()).throw(RuntimeError("broken"))
+        )
+        logger = MagicMock()
+        with patch.object(da, "_nats_connected", True), \
+             patch.object(da, "_nats_client", fake_client):
+            da.nats_healthcheck(make_cfg(), logger)
+        logger.warning.assert_called()
 
 
 # ===========================================================================

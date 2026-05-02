@@ -2118,6 +2118,11 @@ def setup_schedule(cfg: Config, logger: logging.Logger) -> None:
     schedule.every(cmd_interval).seconds.do(poll_commands, cfg=cfg, logger=logger)
     logger.info("Polling de comandos agendado a cada %ds (adaptativo)", cmd_interval)
 
+    # Healthcheck NATS — visibilidade do estado da conexao por minuto.
+    # Roda incondicionalmente; se NATS desabilitado, a funcao retorna early.
+    schedule.every(60).seconds.do(nats_healthcheck, cfg=cfg, logger=logger)
+    logger.info("Healthcheck NATS agendado a cada 60s")
+
     # Stats DNS — RCODEs/QPS via rndc-stats (Bind) ou unbound-control (Unbound).
     # Default 600s (10min). Configuravel per-agente; backend pode mandar via
     # set_stats_interval (futuro) ou via [dns_stats] interval no agent.toml.
@@ -2137,10 +2142,59 @@ def setup_schedule(cfg: Config, logger: logging.Logger) -> None:
 # ---------------------------------------------------------------------------
 
 _nats_connected = False
+_nats_client = None  # nats.aio.client.Client — exposto pra healthcheck
+
+
+def _is_command_already_executed(
+    cmd_id, backend_url: str, token: str, timeout_s: int,
+    logger: logging.Logger,
+) -> bool:
+    """Checa via backend se um comando ja foi executado (status != pending).
+
+    Por que existe: JetStream redeliver mensagens nao-ACKed quando o agente
+    reconecta. Se o agente passou um tempo off-NATS, comandos ja executados
+    via HTTP polling reaparecem no subscribe — sem essa checagem, update_agent
+    e purge re-rodariam, podendo entrar em loop de restart.
+
+    Retorna True se status confirmadamente != 'pending'. False quando: status
+    e 'pending', backend retornou erro, ou nao deu pra checar (preferimos
+    execucao duplicada a perder um comando legitimo).
+    """
+    if cmd_id is None:
+        return False
+    try:
+        resp = requests.get(
+            f"{backend_url}/api/v1/commands/{cmd_id}/status",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=timeout_s,
+        )
+        if resp.status_code == 404:
+            # Comando sumiu (purge/cleanup). Trata como ja-executado pra ack
+            # a mensagem e tirar do JetStream.
+            logger.info(
+                "NATS: comando id=%s nao existe mais no backend — ack+skip",
+                cmd_id,
+            )
+            return True
+        if resp.status_code != 200:
+            logger.warning(
+                "NATS: status check id=%s retornou HTTP %d — executando por seguranca",
+                cmd_id, resp.status_code,
+            )
+            return False
+        current = (resp.json() or {}).get("status")
+        return bool(current) and current != "pending"
+    except Exception as exc:
+        logger.warning(
+            "NATS: nao deu pra checar status do id=%s (%s) — executando por seguranca",
+            cmd_id, exc,
+        )
+        return False
+
 
 def _start_nats(cfg: Config, logger: logging.Logger) -> bool:
     """Conecta ao NATS e subscreve em comandos. Retorna True se sucesso."""
-    global _nats_connected
+    global _nats_connected, _nats_client
     if not cfg.getboolean("nats", "enabled", fallback=False):
         logger.info("NATS desabilitado — usando HTTP polling")
         return False
@@ -2160,10 +2214,30 @@ def _start_nats(cfg: Config, logger: logging.Logger) -> bool:
         nats_user = cfg.get("nats", "user", fallback="").strip()
         nats_pass = cfg.get("nats", "password", fallback="").strip()
 
+        # Callbacks de visibilidade — sem isso o nats-py reconnect roda em
+        # silencio e disconnects passam batidos no journalctl (foi exatamente
+        # o que aconteceu com NS1_AVISOLUCOES: agente off-NATS por horas e
+        # nenhum log de aviso).
+        async def _on_disconnected():
+            logger.warning("NATS: desconectado do servidor")
+
+        async def _on_reconnected():
+            logger.info("NATS: reconectado ao servidor")
+
+        async def _on_error(err):
+            logger.error("NATS: erro de conexao: %s", err)
+
+        async def _on_closed():
+            logger.warning("NATS: conexao fechada permanentemente")
+
         async def _run():
             connect_opts = dict(
                 servers=nats_url, name=f"dns-agent-{hostname}",
                 reconnect_time_wait=5, max_reconnect_attempts=-1,
+                disconnected_cb=_on_disconnected,
+                reconnected_cb=_on_reconnected,
+                error_cb=_on_error,
+                closed_cb=_on_closed,
             )
             if nats_user and nats_pass:
                 connect_opts["user"] = nats_user
@@ -2179,6 +2253,19 @@ def _start_nats(cfg: Config, logger: logging.Logger) -> bool:
                     command = data.get("command", "")
                     confirm = data.get("confirm_token")
                     params  = data.get("params")
+
+                    # Guard contra replay pos-reconnect — JetStream redeliver
+                    # mensagens nao-ACKed quando a conexao volta. Sem isso,
+                    # comandos ja executados via HTTP polling re-rodam.
+                    if _is_command_already_executed(
+                        cmd_id, backend_url, token, timeout_s, logger,
+                    ):
+                        logger.info(
+                            "NATS: comando id=%s ja executado — ack+skip (replay)",
+                            cmd_id,
+                        )
+                        await msg.ack()
+                        return
 
                     logger.warning("NATS: comando recebido id=%s: %s", cmd_id, command)
                     status, result = _execute_command(command, confirm, cfg, logger, params)
@@ -2215,6 +2302,7 @@ def _start_nats(cfg: Config, logger: logging.Logger) -> bool:
             return nc, loop
 
         nc, _ = loop.run_until_complete(_run())
+        _nats_client = nc  # exposto pro healthcheck periodico
 
         # Roda o event loop NATS numa thread separada
         import threading
@@ -2228,7 +2316,36 @@ def _start_nats(cfg: Config, logger: logging.Logger) -> bool:
     except Exception as exc:
         logger.warning("NATS falhou (%s) — fallback HTTP polling", exc)
         _nats_connected = False
+        _nats_client = None
         return False
+
+
+def nats_healthcheck(cfg, logger: logging.Logger) -> None:
+    """Periodic healthcheck — loga estado da conexao NATS.
+
+    Sem forced reconnect (mexer no event loop em outra thread e quebradico);
+    confia no auto-reconnect do nats-py (max_reconnect_attempts=-1) + nos
+    callbacks _on_disconnected/_on_reconnected pra visibilidade. O healthcheck
+    serve pra correlacionar perda de delivery com momento do disconnect e pra
+    garantir que SEMPRE tem ao menos um log de estado por minuto.
+    """
+    if not _nats_connected:
+        return  # NATS desabilitado por config — nada a checar
+    if _nats_client is None:
+        logger.warning("NATS healthcheck: cliente nao inicializado")
+        return
+    try:
+        connected = _nats_client.is_connected
+    except Exception as exc:
+        logger.warning("NATS healthcheck: erro ao consultar is_connected: %s", exc)
+        return
+    if connected:
+        logger.debug("NATS healthcheck: conectado")
+    else:
+        logger.warning(
+            "NATS healthcheck: DESCONECTADO — auto-reconnect em curso, "
+            "se persistir reinicie o agente"
+        )
 
 
 # ---------------------------------------------------------------------------
