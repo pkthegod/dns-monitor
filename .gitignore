@@ -78,8 +78,14 @@ desktop.ini
 *.tmp
 *.temp
 /tmp/
+# Artefato do auto-update do agente (download intermediario antes do swap atomico).
+# Glob *.tmp NAO cobre porque a extensao real e .update_tmp.
+*.update_tmp
 
 # ── Outros ───────────────────────────────────────────────────────────────────
 DBA*.sql
 runtests.txt
 updatedash.txt
+# Dataset de mock pra desenvolvimento local (nao versionar — pode conter
+# hostnames/dados de cliente reais usados em reproducao de bug).
+backend/mock_data.sql
