@@ -269,7 +269,9 @@ body { padding: 20px 24px 40px; font-size: 13px; }
 code { font-family: var(--font-mono); color: var(--text-mid); }
 
 /* ── Trace modal ── */
-.modal-trace { max-width: 740px; }
+/* Antes 740px — apertado pro mapa 3D (globo precisa de espaco horizontal).
+   880px ainda cabe em viewport >= 920px confortavelmente. */
+.modal-trace { max-width: 880px; }
 .trace-controls { display: flex; gap: 8px; align-items: flex-end; margin-bottom: 16px; flex-wrap: wrap; }
 .trace-controls .field { margin-bottom: 0; flex: 1; min-width: 160px; }
 .trace-controls .field.resolver-field { max-width: 160px; }

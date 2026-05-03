@@ -301,14 +301,23 @@
     if (!container.style.height) {
       container.style.height = '480px';
     }
-    // Globe.gl mede o container pra setar canvas size; precisa estar visivel.
-    // Caller garante isso via .style.display = '' antes de chamar.
+    // Globe.gl mede container.offsetWidth/Height pra setar canvas size.
+    // Bug visto em prod (2026-05-03): se panel acabou de virar display:'',
+    // o browser ainda nao fez reflow no momento do init -> offsetWidth fica
+    // 0 ou stale -> canvas WebGL vaza pra fora do container e overflow:hidden
+    // clipa metade do globo. Fix: medir EXPLICITAMENTE clientWidth/Height e
+    // passar via API .width()/.height(). Caller deve usar requestAnimationFrame
+    // pra garantir que esse codigo so roda apos reflow.
+    const w0 = container.clientWidth || 600;
+    const h0 = container.clientHeight || 480;
 
     const points = buildPoints(items, hops.length);
     const arcs = buildArcs(items);
 
     const world = Globe()
       (container)
+      .width(w0)
+      .height(h0)
       .globeImageUrl(pickGlobeImage())
       .bumpImageUrl(GLOBE_TEXTURES.bump)
       .backgroundColor('rgba(0,0,0,0)')
@@ -361,6 +370,22 @@
       controls.addEventListener('start', stopRotate, { once: true });
     }
 
+    // ResizeObserver: ajusta canvas se modal/viewport redimensiona.
+    // Sem isso, redimensionar a janela com mapa aberto deixa globo deslocado.
+    let ro = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(entries => {
+        for (const entry of entries) {
+          const cr = entry.contentRect;
+          if (cr.width > 0 && cr.height > 0) {
+            world.width(cr.width).height(cr.height);
+          }
+        }
+      });
+      ro.observe(container);
+    }
+    world._resizeObserver = ro;
+
     container._traceGlobe = world;
     return world;
   }
@@ -385,6 +410,10 @@
     if (container._traceGlobe) {
       const w = container._traceGlobe;
       try {
+        if (w._resizeObserver) {
+          w._resizeObserver.disconnect();
+          w._resizeObserver = null;
+        }
         if (w.controls && typeof w.controls === 'function') {
           const c = w.controls();
           if (c && c.dispose) c.dispose();

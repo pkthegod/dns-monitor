@@ -391,16 +391,23 @@ function attachTraceTabs(data, geoMap) {
       document.querySelectorAll('.trace-area .trace-tab-panel').forEach(p => {
         p.style.display = p.getAttribute('data-panel') === tab ? '' : 'none';
       });
-      // Lazy-init dos mapas quando aba ativada pela primeira vez
+      // Lazy-init dos mapas quando aba ativada pela primeira vez.
+      // Defer com rAF: o panel acabou de virar display:'' nesta linha; sem
+      // wait, container.clientWidth ainda e 0 (browser nao reflowou) e o
+      // canvas WebGL/Leaflet nasce com tamanho errado, vazando pra fora.
       if (tab === 'map2d') {
         const container = document.getElementById('trace-map-2d');
         if (container && window.TraceMap && !container._traceMap) {
-          window.TraceMap.render2D(container, data.trace || [], geoMap || {});
+          requestAnimationFrame(() => {
+            window.TraceMap.render2D(container, data.trace || [], geoMap || {});
+          });
         }
       } else if (tab === 'map3d') {
         const container = document.getElementById('trace-map-3d');
         if (container && window.TraceMap && !container._traceGlobe) {
-          window.TraceMap.render3D(container, data.trace || [], geoMap || {});
+          requestAnimationFrame(() => {
+            window.TraceMap.render3D(container, data.trace || [], geoMap || {});
+          });
         }
       }
     });
