@@ -19,6 +19,7 @@ from auth import (
     _hash_password, _verify_password,
     _sign_client_cookie, _verify_client_cookie,
     _CLIENT_SESSION_TTL,
+    _real_client_ip,
 )
 
 try:
@@ -130,7 +131,7 @@ async def client_login_page(request: Request) -> HTMLResponse:
 
 
 async def client_login_post(request: Request):
-    ip = request.client.host if request.client else "unknown"
+    ip = _real_client_ip(request)
     if await _check_rate_limit(ip):
         return RedirectResponse("/client/login?error=locked", status_code=303)
 
@@ -190,7 +191,7 @@ async def client_dns_test(request: Request) -> JSONResponse:
     if not user or not user["active"]:
         raise HTTPException(status_code=403)
 
-    ip = request.client.host if request.client else "unknown"
+    ip = _real_client_ip(request)
     rate_key = f"dnstest:{client_user}"
     if await _check_cooldown(rate_key, 30):
         return JSONResponse(
@@ -229,7 +230,7 @@ async def client_dns_trace(request: Request) -> JSONResponse:
     if not user or not user["active"]:
         raise HTTPException(status_code=403)
 
-    ip = request.client.host if request.client else "unknown"
+    ip = _real_client_ip(request)
     rate_key = f"dnstrace:{client_user}"
     if await _check_cooldown(rate_key, 30):
         return JSONResponse(

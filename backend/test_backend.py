@@ -3611,6 +3611,332 @@ class TestSlowRequestMiddleware:
 
 
 # ===========================================================================
+# Onda 1 P1 — _real_client_ip: header trust gating
+# ===========================================================================
+
+class TestRealClientIp:
+    """Onda 1 P1: IP real respeita TRUSTED_PROXIES.
+
+    Bug pre-fix: rate-limit, security monitor e audit usavam request.client.host,
+    que com nginx/CF na frente vinha sempre como "IP do proxy" — todo trafego
+    parecia vir de 1 IP, burlando deteccao por IP.
+
+    Fix: _real_client_ip(request) confia em CF-Connecting-IP / X-Forwarded-For
+    APENAS se request.client.host esta em TRUSTED_PROXIES; senao, ignora os
+    headers (impede atacante setar X-Forwarded-For: 1.2.3.4 direto).
+    """
+
+    def _make_request(self, direct_ip="127.0.0.1", headers=None):
+        request = MagicMock()
+        request.client = MagicMock(host=direct_ip)
+        request.headers = headers or {}
+        # MagicMock retorna MagicMock pra .get; force dict-style get
+        if isinstance(request.headers, dict):
+            real_headers = request.headers
+            request.headers = MagicMock()
+            request.headers.get = lambda k, d="": real_headers.get(k.lower(), d)
+        return request
+
+    def test_sem_trusted_proxies_retorna_direct(self):
+        """Compat: TRUSTED_PROXIES vazio = comportamento legado."""
+        import importlib
+        with patch.dict(os.environ, {"TRUSTED_PROXIES": ""}, clear=False):
+            import auth
+            importlib.reload(auth)
+            req = self._make_request("9.9.9.9", {
+                "cf-connecting-ip": "1.2.3.4",
+                "x-forwarded-for": "5.6.7.8",
+            })
+            assert auth._real_client_ip(req) == "9.9.9.9"
+
+    def test_com_trusted_proxy_respeita_cf_connecting_ip(self):
+        """CF Origin: CF-Connecting-IP carrega o IP real."""
+        import importlib
+        with patch.dict(os.environ, {"TRUSTED_PROXIES": "127.0.0.1"}, clear=False):
+            import auth
+            importlib.reload(auth)
+            req = self._make_request("127.0.0.1", {
+                "cf-connecting-ip": "203.0.113.45",
+            })
+            assert auth._real_client_ip(req) == "203.0.113.45"
+
+    def test_com_trusted_proxy_respeita_xff_left_most(self):
+        """nginx: X-Forwarded-For = 'cliente, hop1, hop2' — pega o primeiro."""
+        import importlib
+        with patch.dict(os.environ, {"TRUSTED_PROXIES": "127.0.0.1"}, clear=False):
+            import auth
+            importlib.reload(auth)
+            req = self._make_request("127.0.0.1", {
+                "x-forwarded-for": "203.0.113.45, 10.0.0.5",
+            })
+            assert auth._real_client_ip(req) == "203.0.113.45"
+
+    def test_cf_tem_prioridade_sobre_xff(self):
+        """Quando ambos vem (CF na frente do nginx), CF-Connecting-IP ganha."""
+        import importlib
+        with patch.dict(os.environ, {"TRUSTED_PROXIES": "127.0.0.1"}, clear=False):
+            import auth
+            importlib.reload(auth)
+            req = self._make_request("127.0.0.1", {
+                "cf-connecting-ip": "203.0.113.45",
+                "x-forwarded-for": "5.5.5.5, 10.0.0.5",
+            })
+            assert auth._real_client_ip(req) == "203.0.113.45"
+
+    def test_proxy_nao_confiavel_ignora_headers_spoofados(self):
+        """SEC: atacante envia direto pro backend setando XFF — ignora.
+        request.client.host nao bate em TRUSTED_PROXIES => headers sao no-op."""
+        import importlib
+        with patch.dict(os.environ, {"TRUSTED_PROXIES": "127.0.0.1"}, clear=False):
+            import auth
+            importlib.reload(auth)
+            req = self._make_request("8.8.8.8", {
+                "cf-connecting-ip": "1.1.1.1",
+                "x-forwarded-for": "2.2.2.2",
+            })
+            # Direct e o atacante; headers ignorados
+            assert auth._real_client_ip(req) == "8.8.8.8"
+
+    def test_ip_malformado_em_cf_cai_pra_xff(self):
+        """Header com lixo nao crasha; cai pro proximo fallback."""
+        import importlib
+        with patch.dict(os.environ, {"TRUSTED_PROXIES": "127.0.0.1"}, clear=False):
+            import auth
+            importlib.reload(auth)
+            req = self._make_request("127.0.0.1", {
+                "cf-connecting-ip": "not-an-ip",
+                "x-forwarded-for": "203.0.113.45",
+            })
+            assert auth._real_client_ip(req) == "203.0.113.45"
+
+    def test_cidr_em_trusted_proxies(self):
+        """TRUSTED_PROXIES aceita CIDR (rede docker bridge)."""
+        import importlib
+        with patch.dict(os.environ, {"TRUSTED_PROXIES": "172.20.0.0/24"}, clear=False):
+            import auth
+            importlib.reload(auth)
+            req = self._make_request("172.20.0.5", {
+                "x-forwarded-for": "203.0.113.45",
+            })
+            assert auth._real_client_ip(req) == "203.0.113.45"
+
+
+# ===========================================================================
+# Onda 1 P2 — CSRF Origin/Referer match exato (nao endsWith)
+# ===========================================================================
+
+class TestCSRFOriginExact:
+    """Onda 1 P2: CSRF compara hostname EXATO via urlparse, nao endsWith.
+
+    Bug pre-fix (middlewares.py:122): origin.endswith(host) aceitava sufixos:
+    com host='exemplo.com', 'https://malicioso-exemplo.com' passava porque
+    a string termina em 'exemplo.com'. Atacante registra dominio sufixo e
+    monta CSRF.
+    """
+
+    def _run_csrf(self, headers, method="POST", expected_status=None):
+        from middlewares import CSRFMiddleware
+
+        request = MagicMock()
+        request.method = method
+        # headers e dict; MagicMock precisa de .get callable
+        request.headers = MagicMock()
+        request.headers.get = lambda k, d="": headers.get(k.lower(), d)
+
+        async def fake_call_next(req):
+            from fastapi import Response
+            return Response(content="ok")
+
+        mw = CSRFMiddleware(app=None)
+        return asyncio.run(mw.dispatch(request, fake_call_next))
+
+    def test_origin_exato_passa(self):
+        """Origin = host => match exato => passa."""
+        resp = self._run_csrf({
+            "host": "nsmonitor.procyontecnologia.net",
+            "origin": "https://nsmonitor.procyontecnologia.net",
+        })
+        assert resp.status_code == 200
+
+    def test_origin_sufixo_malicioso_bloqueado(self):
+        """Bug fix: 'malicioso-nsmonitor.procyontecnologia.net' NAO deve passar."""
+        resp = self._run_csrf({
+            "host": "nsmonitor.procyontecnologia.net",
+            "origin": "https://malicioso-nsmonitor.procyontecnologia.net",
+        })
+        assert resp.status_code == 403, \
+            "Bug do endsWith: sufixo malicioso passando como origem valida"
+
+    def test_origin_subdominio_bloqueado(self):
+        """Subdominio nao listado em ALLOWED_ORIGINS => bloqueia."""
+        resp = self._run_csrf({
+            "host": "nsmonitor.procyontecnologia.net",
+            "origin": "https://evil.nsmonitor.procyontecnologia.net",
+        })
+        assert resp.status_code == 403
+
+    def test_referer_exato_passa(self):
+        """Sem origin, valida via referer."""
+        resp = self._run_csrf({
+            "host": "nsmonitor.procyontecnologia.net",
+            "referer": "https://nsmonitor.procyontecnologia.net/admin",
+        })
+        assert resp.status_code == 200
+
+    def test_referer_sufixo_malicioso_bloqueado(self):
+        """Mesmo bug aplica em referer."""
+        resp = self._run_csrf({
+            "host": "nsmonitor.procyontecnologia.net",
+            "referer": "https://malicioso-nsmonitor.procyontecnologia.net/x",
+        })
+        assert resp.status_code == 403
+
+    def test_origin_em_allowed_origins_passa(self):
+        """ALLOWED_ORIGINS multi-domain: hosts extras passam."""
+        import importlib
+        with patch.dict(os.environ, {
+            "ALLOWED_ORIGINS": "outro.dominio.com,terceiro.com",
+        }, clear=False):
+            import middlewares
+            importlib.reload(middlewares)
+            from middlewares import CSRFMiddleware
+
+            async def fake_call_next(req):
+                from fastapi import Response
+                return Response(content="ok")
+
+            request = MagicMock()
+            request.method = "POST"
+            headers = {
+                "host": "nsmonitor.procyontecnologia.net",
+                "origin": "https://outro.dominio.com",
+            }
+            request.headers = MagicMock()
+            request.headers.get = lambda k, d="": headers.get(k.lower(), d)
+
+            mw = CSRFMiddleware(app=None)
+            resp = asyncio.run(mw.dispatch(request, fake_call_next))
+            assert resp.status_code == 200
+
+    def test_bearer_skipa_csrf(self):
+        """Agentes com Bearer token sao isentos."""
+        resp = self._run_csrf({
+            "host": "nsmonitor.procyontecnologia.net",
+            "origin": "https://malicioso.example.com",
+            "authorization": "Bearer xyz",
+        })
+        assert resp.status_code == 200
+
+    def test_get_nao_aplica_csrf(self):
+        """CSRF so aplica em mutativos."""
+        resp = self._run_csrf({
+            "host": "nsmonitor.procyontecnologia.net",
+            "origin": "https://qualquercoisa.com",
+        }, method="GET")
+        assert resp.status_code == 200
+
+
+# ===========================================================================
+# Onda 1 P3 — hard-fail Bearer admin em prod sem whitelist
+# ===========================================================================
+
+class TestAdminBearerHardFail:
+    """Onda 1 P3: INFRA_VISION_ENV=production exige uma decisao explicita
+    sobre o Bearer admin fallback.
+
+    Sem fix: AGENT_TOKEN (compartilhado com todo agente) liga acesso admin de
+    qualquer IP. Agente comprometido = admin global.
+
+    Com fix: prod exige ADMIN_BEARER_ALLOWED_IPS OU ADMIN_BEARER_DISABLED=true.
+    """
+
+    # Secrets validos (>= 32 bytes) pra _load_secret nao falhar em prod —
+    # esses testes focam no Bearer fallback, nao na validacao de secret.
+    _PROD_SECRETS = {
+        "ADMIN_SESSION_SECRET": "x" * 64,
+        "CLIENT_SESSION_SECRET": "y" * 64,
+    }
+
+    def test_prod_sem_whitelist_nem_disabled_falha_no_startup(self):
+        """import auth com prod=true e ambas vazias => RuntimeError."""
+        import importlib
+        with patch.dict(os.environ, {
+            "INFRA_VISION_ENV": "production",
+            "ADMIN_BEARER_ALLOWED_IPS": "",
+            "ADMIN_BEARER_DISABLED": "",
+            **self._PROD_SECRETS,
+        }, clear=False):
+            import auth
+            with pytest.raises(RuntimeError, match="ADMIN_BEARER"):
+                importlib.reload(auth)
+
+    def test_prod_com_disabled_true_carrega_ok(self):
+        """ADMIN_BEARER_DISABLED=true em prod e valido."""
+        import importlib
+        with patch.dict(os.environ, {
+            "INFRA_VISION_ENV": "production",
+            "ADMIN_BEARER_ALLOWED_IPS": "",
+            "ADMIN_BEARER_DISABLED": "true",
+            **self._PROD_SECRETS,
+        }, clear=False):
+            import auth
+            importlib.reload(auth)
+            assert auth._ADMIN_BEARER_DISABLED is True
+
+    def test_prod_com_whitelist_carrega_ok(self):
+        """ADMIN_BEARER_ALLOWED_IPS preenchido em prod e valido."""
+        import importlib
+        with patch.dict(os.environ, {
+            "INFRA_VISION_ENV": "production",
+            "ADMIN_BEARER_ALLOWED_IPS": "10.0.0.0/24",
+            "ADMIN_BEARER_DISABLED": "",
+            **self._PROD_SECRETS,
+        }, clear=False):
+            import auth
+            importlib.reload(auth)
+            assert auth._ADMIN_BEARER_DISABLED is False
+            assert len(auth._ADMIN_BEARER_ALLOWED) == 1
+
+    def test_dev_sem_whitelist_nem_disabled_carrega_ok(self):
+        """Em dev, comportamento legado mantido (compat)."""
+        import importlib
+        with patch.dict(os.environ, {
+            "INFRA_VISION_ENV": "",
+            "ADMIN_BEARER_ALLOWED_IPS": "",
+            "ADMIN_BEARER_DISABLED": "",
+        }, clear=False):
+            import auth
+            importlib.reload(auth)
+            assert auth._ADMIN_BEARER_DISABLED is False
+            assert auth._ADMIN_BEARER_ALLOWED == []
+
+    def test_require_admin_com_disabled_rejeita_bearer_valido(self):
+        """Bearer com token correto + ADMIN_BEARER_DISABLED=true => 403."""
+        import importlib
+        with patch.dict(os.environ, {
+            "INFRA_VISION_ENV": "",  # nao precisa ser prod pra testar a logica
+            "ADMIN_BEARER_DISABLED": "true",
+            "AGENT_TOKEN": "test-token-12345",
+        }, clear=False):
+            import auth
+            importlib.reload(auth)
+
+            from fastapi import HTTPException
+
+            request = MagicMock()
+            request.cookies = {}
+            request.client = MagicMock(host="10.0.0.5")
+            headers = {"authorization": "Bearer test-token-12345"}
+            request.headers = MagicMock()
+            request.headers.get = lambda k, d="": headers.get(k.lower(), d)
+
+            with pytest.raises(HTTPException) as exc:
+                asyncio.run(auth.require_admin(request))
+            assert exc.value.status_code == 403
+            assert "desativado" in exc.value.detail.lower()
+
+
+# ===========================================================================
 # Entry point
 # ===========================================================================
 

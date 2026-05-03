@@ -21,14 +21,53 @@ import logging
 import os
 import secrets
 import time as _time
+from urllib.parse import urlparse
 
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 import db_observability as _obs
 import telegram_bot as tg
+from auth import _real_client_ip
 
 logger = logging.getLogger("infra-vision.api")
+
+
+# SEC (Onda 1 P2): origens autorizadas em CSRF. Sem ALLOWED_ORIGINS configurado,
+# so aceita o proprio Host da request (comportamento legado, mas via comparacao
+# exata em vez de endsWith). Aceita lista separada por virgula:
+#   ALLOWED_ORIGINS=nsmonitor.procyontecnologia.net,localhost:8000
+# Hostnames sem schema, com porta opcional (porta sera ignorada na comparacao).
+_ALLOWED_ORIGINS_RAW = os.environ.get("ALLOWED_ORIGINS", "").strip()
+_ALLOWED_ORIGINS = {
+    h.strip().lower().split(":")[0]
+    for h in _ALLOWED_ORIGINS_RAW.split(",")
+    if h.strip()
+}
+
+
+def _origin_matches(origin_or_referer: str, host_header: str) -> bool:
+    """True se origin/referer aponta pra host autorizado.
+
+    Comparacao por hostname EXATO (nao endsWith) — fix do bug onde
+    'malicioso-exemplo.com' passava como sufixo de 'exemplo.com'.
+
+    host_header e o cabecalho Host da request (autoritativo do servidor).
+    Tambem aceita qualquer host em ALLOWED_ORIGINS (multi-domain).
+    """
+    if not origin_or_referer:
+        return False
+    try:
+        parsed = urlparse(origin_or_referer)
+    except Exception:
+        return False
+    origin_host = (parsed.hostname or "").lower()
+    if not origin_host:
+        return False
+    expected = (host_header or "").lower().split(":")[0]
+    if origin_host == expected:
+        return True
+    return origin_host in _ALLOWED_ORIGINS
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +108,7 @@ class APIRateLimitMiddleware(BaseHTTPMiddleware):
         if not request.url.path.startswith(("/api/", "/admin/login", "/client/login")):
             return await call_next(request)
 
-        ip = request.client.host if request.client else "unknown"
+        ip = _real_client_ip(request)
 
         # Whitelisted IPs skip rate limiting (same list as security module)
         import security
@@ -105,7 +144,13 @@ class APIRateLimitMiddleware(BaseHTTPMiddleware):
 
 class CSRFMiddleware(BaseHTTPMiddleware):
     """Valida Origin/Referer em requests mutativos (POST/PATCH/DELETE).
-    Requests com Bearer token (agentes) sao isentos — CSRF so afeta cookies."""
+    Requests com Bearer token (agentes) sao isentos — CSRF so afeta cookies.
+
+    SEC (Onda 1 P2): valida via comparacao EXATA de hostname (urlparse), nao
+    endsWith. Bug anterior: host='exemplo.com' aceitava origin='https://malicioso-
+    exemplo.com' porque a string terminava em 'exemplo.com'. Fix: extrai hostname
+    do origin/referer e exige match exato OU presenca em ALLOWED_ORIGINS.
+    """
     async def dispatch(self, request, call_next):
         if request.method in ("POST", "PATCH", "DELETE"):
             # Agentes usam Bearer token, nao cookies — isentos de CSRF
@@ -117,15 +162,12 @@ class CSRFMiddleware(BaseHTTPMiddleware):
             referer = request.headers.get("referer", "")
             host = request.headers.get("host", "")
 
-            # Valida que origin/referer pertence ao mesmo host
             if origin:
-                if not origin.endswith(host) and not origin.endswith(host.split(":")[0]):
+                if not _origin_matches(origin, host):
                     logger.warning("CSRF bloqueado: origin=%s host=%s", origin, host)
                     return JSONResponse({"error": "CSRF validation failed"}, status_code=403)
             elif referer:
-                from urllib.parse import urlparse
-                ref_host = urlparse(referer).netloc
-                if ref_host != host and ref_host.split(":")[0] != host.split(":")[0]:
+                if not _origin_matches(referer, host):
                     logger.warning("CSRF bloqueado: referer=%s host=%s", referer, host)
                     return JSONResponse({"error": "CSRF validation failed"}, status_code=403)
             # Se nenhum header presente: requests de form POST do browser SEMPRE enviam origin/referer
@@ -143,7 +185,7 @@ class SecurityMonitorMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         import security
 
-        ip = request.client.host if request.client else "unknown"
+        ip = _real_client_ip(request)
         path = request.url.path
 
         # IP bloqueado?
@@ -203,7 +245,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         response = await call_next(request)
         if request.method in ("POST", "PATCH", "DELETE") and request.url.path.startswith("/api/"):
-            ip = request.client.host if request.client else "-"
+            ip = _real_client_ip(request)
             logger.info("AUDIT %s %s %s -> %d", request.method, request.url.path, ip, response.status_code)
         return response
 

@@ -102,6 +102,13 @@ services:
       SECURITY_ENABLED: ${SECURITY_ENABLED:-true}
       SECURITY_WHITELIST: ${SECURITY_WHITELIST:-}
       ADMIN_BEARER_ALLOWED_IPS: ${ADMIN_BEARER_ALLOWED_IPS:-}
+      ADMIN_BEARER_DISABLED: ${ADMIN_BEARER_DISABLED:-}
+      INFRA_VISION_ENV: ${INFRA_VISION_ENV:-}
+      # Onda 1 P1: proxy reverso (nginx + Cloudflare)
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
+      # Onda 1 P2: hosts autorizados em CSRF (sem schema, separados por virgula)
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
     volumes:
       # SEC/OPS: bind mount de DIRETORIO (nao de arquivo unico).
       # Bind mount de file unico amarra no inode original — quando `cp -a`

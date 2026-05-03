@@ -52,6 +52,24 @@ def _parse_ip_whitelist(raw: str) -> list:
 
 _ADMIN_BEARER_ALLOWED = _parse_ip_whitelist(_ADMIN_BEARER_RAW)
 
+# SEC (Onda 1 P3): em INFRA_VISION_ENV=production o fallback Bearer admin DEVE
+# estar gateado por ADMIN_BEARER_ALLOWED_IPS OU explicitamente desabilitado via
+# ADMIN_BEARER_DISABLED=true. Sem isso, qualquer IP com AGENT_TOKEN vira admin —
+# e AGENT_TOKEN esta em todos os agentes, entao um agente comprometido = admin
+# global. Hard-fail no startup forca decisao consciente.
+_PROD = os.environ.get("INFRA_VISION_ENV", "").lower() == "production"
+_ADMIN_BEARER_DISABLED = os.environ.get(
+    "ADMIN_BEARER_DISABLED", ""
+).lower() in ("true", "1", "yes")
+
+if _PROD and not _ADMIN_BEARER_ALLOWED and not _ADMIN_BEARER_DISABLED:
+    raise RuntimeError(
+        "INFRA_VISION_ENV=production exige ADMIN_BEARER_ALLOWED_IPS "
+        "(range autorizado, ex: 10.0.0.0/24) OU ADMIN_BEARER_DISABLED=true "
+        "(rejeita todo Bearer admin). Sem nenhum dos dois, qualquer IP com "
+        "AGENT_TOKEN vira admin — surface de privilege escalation."
+    )
+
 
 def _ip_in_admin_bearer_whitelist(ip_str: str) -> bool:
     """Retorna True se a whitelist esta vazia (legado) OU se o IP bate."""
@@ -68,6 +86,78 @@ def _ip_in_admin_bearer_whitelist(ip_str: str) -> bool:
         elif ip == entry:
             return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Trusted proxy + IP real do cliente
+# ---------------------------------------------------------------------------
+# SEC (Onda 1 P1): rate-limit, security monitor e audit precisam do IP REAL
+# do cliente, nao do nginx/CF imediato. Antes, request.client.host retornava
+# IP do proxy => todo trafego "vinha de 1 IP" e burlava rate-limit + escondia
+# atacante real no audit_log.
+#
+# Header trust gating: so confiamos em CF-Connecting-IP / X-Forwarded-For se
+# o hop imediato (request.client.host) bater em TRUSTED_PROXIES. Sem isso,
+# atacante setaria X-Forwarded-For: 1.2.3.4 direto e burlaria.
+#
+# TRUSTED_PROXIES aceita IPs e CIDRs separados por virgula. Tipico:
+#   - Docker bridge gateway (172.20.0.1) se nginx e outro container
+#   - 127.0.0.1 se nginx roda no host e backend escuta em 8000
+
+_TRUSTED_PROXIES_RAW = os.environ.get("TRUSTED_PROXIES", "").strip()
+_TRUSTED_PROXIES = _parse_ip_whitelist(_TRUSTED_PROXIES_RAW)
+
+
+def _ip_in_trusted_proxies(ip_str: str) -> bool:
+    """True se IP esta em TRUSTED_PROXIES (lista vazia = ninguem confiavel)."""
+    if not _TRUSTED_PROXIES:
+        return False
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    for entry in _TRUSTED_PROXIES:
+        if isinstance(entry, (ipaddress.IPv4Network, ipaddress.IPv6Network)):
+            if ip in entry:
+                return True
+        elif ip == entry:
+            return True
+    return False
+
+
+def _real_client_ip(request) -> str:
+    """Retorna IP real do cliente respeitando proxies confiaveis.
+
+    Logica:
+      1. direct = request.client.host (IP do hop imediato)
+      2. Se direct nao esta em TRUSTED_PROXIES -> retorna direct
+         (atacante poderia ter forjado X-Forwarded-For; ignora)
+      3. Senao tenta CF-Connecting-IP (Cloudflare proxied), depois
+         X-Forwarded-For[0] (left-most do XFF chain)
+      4. Se nenhum header valido -> volta pra direct
+
+    Compat: TRUSTED_PROXIES vazio = comportamento legado (sempre retorna
+    request.client.host). Migrate sem precisar reconfigurar nada.
+    """
+    direct = request.client.host if request.client else "unknown"
+    if not _ip_in_trusted_proxies(direct):
+        return direct
+    cf = request.headers.get("cf-connecting-ip", "").strip()
+    if cf:
+        try:
+            ipaddress.ip_address(cf)
+            return cf
+        except ValueError:
+            pass
+    xff = request.headers.get("x-forwarded-for", "").strip()
+    if xff:
+        first = xff.split(",")[0].strip()
+        try:
+            ipaddress.ip_address(first)
+            return first
+        except ValueError:
+            pass
+    return direct
 
 
 async def require_token(request: Request) -> None:
@@ -108,13 +198,21 @@ async def require_admin(request: Request) -> dict:
 
     # Fallback Bearer — apenas para tooling/curl administrativo.
     # Frontend nunca deve enviar Bearer (usa cookie via credentials=same-origin).
-    # SEC (M8): se ADMIN_BEARER_ALLOWED_IPS estiver definido, restringe origem
-    # ao range pre-aprovado. Mitiga vazamento de AGENT_TOKEN (que tambem da
-    # acesso de admin neste fallback) — atacante precisa estar tambem na rede.
+    # SEC (M8 + Onda 1 P3): triagem em 3 niveis:
+    #  1. ADMIN_BEARER_DISABLED=true -> rejeita TUDO (recomendado em prod com
+    #     operadores que so usam cookie via /admin/login)
+    #  2. ADMIN_BEARER_ALLOWED_IPS set -> aceita so IPs pre-aprovados
+    #  3. Sem nenhum dos dois (legado dev) -> aceita de qualquer IP
+    # Em prod, item 1 ou 2 e exigido no startup (ver _PROD check acima).
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer ") and AGENT_TOKEN and \
        hmac.compare_digest(auth[7:].encode(), AGENT_TOKEN.encode()):
-        ip = request.client.host if request.client else "unknown"
+        if _ADMIN_BEARER_DISABLED:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Bearer admin desativado neste ambiente (use cookie de sessao)",
+            )
+        ip = _real_client_ip(request)
         if not _ip_in_admin_bearer_whitelist(ip):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

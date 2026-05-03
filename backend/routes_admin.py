@@ -35,6 +35,7 @@ from auth import (
     _hash_password, _verify_password,
     _sign_admin_cookie, _verify_admin_cookie, _verify_client_cookie,
     _ADMIN_SESSION_TTL,
+    _real_client_ip,
 )
 
 logger = logging.getLogger("infra-vision.api")
@@ -67,7 +68,7 @@ async def admin_login_page(request: Request) -> HTMLResponse:
 
 async def admin_login_post(request: Request):
     """Valida credenciais contra DB primeiro, depois fallback para env vars."""
-    ip = request.client.host if request.client else "unknown"
+    ip = _real_client_ip(request)
     if await _check_rate_limit(ip):
         return RedirectResponse("/admin/login?error=locked", status_code=303)
 
@@ -144,7 +145,7 @@ async def session_whoami(request: Request) -> JSONResponse:
 # Rota legada: mantida APENAS para detectar uso indevido e quebrar com erro claro.
 # Frontends antigos que ainda chamem /session/token recebem 410 e log de warning.
 async def session_token_deprecated(request: Request) -> JSONResponse:
-    ip = request.client.host if request.client else "?"
+    ip = _real_client_ip(request)
     logger.warning("DEPRECATED: /session/token chamado de %s — atualizar frontend para /session/whoami", ip)
     raise HTTPException(
         status_code=410,  # Gone
