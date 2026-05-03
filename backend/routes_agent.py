@@ -79,7 +79,8 @@ from auth import (
     _verify_admin_cookie, _verify_client_cookie,
     _real_client_ip,
 )
-from models import AgentPayload, AgentMetaUpdate, SpeedtestPayload
+from models import AgentPayload, AgentMetaUpdate, SpeedtestPayload, DnsStatsPayload
+from pydantic import ValidationError
 from ws import ws_manager
 
 try:
@@ -493,9 +494,21 @@ async def receive_dns_stats(hostname: str, request: Request) -> JSONResponse:
     if not _re.match(r'^[a-zA-Z0-9._-]{1,128}$', hostname):
         return JSONResponse({"error": "hostname invalido"}, status_code=422)
     try:
-        data = await request.json()
+        raw = await request.json()
     except Exception as exc:
         return JSONResponse({"error": f"JSON invalido: {exc}"}, status_code=422)
+    # SEC (Onda 2 SEC-2.1): valida schema antes de tocar no DB ou disparar
+    # alertas. Antes, dict cru chegava em insert_dns_query_stats que fazia
+    # int(.get(...,0)) — strings malucas viravam zeros silenciosamente; numeros
+    # negativos passavam; alertas eram disparados com base em dado invalido.
+    try:
+        payload = DnsStatsPayload.model_validate(raw)
+    except ValidationError as exc:
+        return JSONResponse(
+            {"error": "Payload de stats invalido", "detail": str(exc)[:500]},
+            status_code=422,
+        )
+    data = payload.model_dump()
     try:
         await _m.db.insert_dns_query_stats(hostname, data)
         await _evaluate_dns_stats_alerts(hostname, data)

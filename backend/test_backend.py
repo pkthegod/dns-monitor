@@ -3937,6 +3937,214 @@ class TestAdminBearerHardFail:
 
 
 # ===========================================================================
+# Onda 2 SEC-2.1 — Pydantic schemas pros handlers NATS / HTTP stats
+# ===========================================================================
+
+class TestDnsStatsPayloadValidation:
+    """Onda 2 SEC-2.1: payloads de dns.stats validados via DnsStatsPayload.
+
+    Bug pre-fix: nats_handlers.handle_dns_stats e routes_agent.receive_dns_stats
+    aceitavam dict cru. Atacante NATS-autenticado (ou agente com bug) podia
+    injetar SERVFAIL=999999 -> _evaluate_dns_stats_alerts disparava 'SERVFAIL
+    spike' falso pra hostname-alvo + acionava webhooks de cliente.
+
+    Fix: DnsStatsPayload em models.py com:
+      - source: pattern restrito (bind9|unbound|unknown)
+      - counters: int >=0, cap 2_000_000_000
+      - period_seconds: 1..86400
+      - cache_hit_pct: 0..100
+    """
+
+    def test_payload_valido_passa(self):
+        from models import DnsStatsPayload
+        p = DnsStatsPayload.model_validate({
+            "ts": "2026-05-03T10:00:00+00:00",
+            "period_seconds": 600,
+            "source": "unbound",
+            "noerror": 1000, "nxdomain": 50, "servfail": 5,
+            "queries_total": 1055, "qps_avg": 1.76,
+            "cache_hits": 800, "cache_misses": 255, "cache_hit_pct": 75.8,
+        })
+        assert p.source == "unbound"
+        assert p.queries_total == 1055
+        assert p.cache_hit_pct == 75.8
+
+    def test_source_invalida_rejeita(self):
+        from models import DnsStatsPayload
+        with pytest.raises(Exception):  # ValidationError
+            DnsStatsPayload.model_validate({"source": "powerdns"})
+
+    def test_counter_negativo_rejeita(self):
+        from models import DnsStatsPayload
+        with pytest.raises(Exception):
+            DnsStatsPayload.model_validate({"servfail": -1})
+
+    def test_counter_absurdo_rejeita(self):
+        """Cap em 2 bi previne overflow de int + alertas baseados em lixo."""
+        from models import DnsStatsPayload
+        with pytest.raises(Exception):
+            DnsStatsPayload.model_validate({"queries_total": 999_999_999_999})
+
+    def test_cache_hit_pct_acima_100_rejeita(self):
+        from models import DnsStatsPayload
+        with pytest.raises(Exception):
+            DnsStatsPayload.model_validate({"cache_hit_pct": 150})
+
+    def test_period_zero_rejeita(self):
+        from models import DnsStatsPayload
+        with pytest.raises(Exception):
+            DnsStatsPayload.model_validate({"period_seconds": 0})
+
+    def test_defaults_zerados_validos(self):
+        """Stats inicial (todos counters zero) e legitimo — agente pos-baseline."""
+        from models import DnsStatsPayload
+        p = DnsStatsPayload.model_validate({})
+        assert p.noerror == 0
+        assert p.queries_total == 0
+        assert p.source == "unknown"
+
+
+class TestCommandAckPayloadValidation:
+    """Onda 2 SEC-2.1: ack de comando validado.
+
+    Bug pre-fix: command_id era data.get("command_id") sem checar tipo.
+    Atacante NATS injetava {"command_id": "../../../etc/passwd", ...}
+    e mark_command_done crashava silenciosamente OU pior, caso vise outro
+    int valido (alvo de outro tenant).
+    """
+
+    def test_ack_valido(self):
+        from models import CommandAckPayload
+        p = CommandAckPayload.model_validate({
+            "command_id": 42,
+            "status": "done",
+            "result": "ok",
+        })
+        assert p.command_id == 42
+
+    def test_ack_status_invalido_rejeita(self):
+        from models import CommandAckPayload
+        with pytest.raises(Exception):
+            CommandAckPayload.model_validate({"command_id": 1, "status": "running"})
+
+    def test_ack_command_id_nao_int_rejeita(self):
+        from models import CommandAckPayload
+        with pytest.raises(Exception):
+            CommandAckPayload.model_validate({"command_id": "abc"})
+
+    def test_ack_command_id_zero_rejeita(self):
+        """ge=1 — IDs do DB comecam em 1."""
+        from models import CommandAckPayload
+        with pytest.raises(Exception):
+            CommandAckPayload.model_validate({"command_id": 0})
+
+    def test_ack_result_truncado(self):
+        """Result tem cap 10KB anti-DoS (evita 1MB de log poluindo Telegram)."""
+        from models import CommandAckPayload
+        with pytest.raises(Exception):
+            CommandAckPayload.model_validate({
+                "command_id": 1,
+                "result": "x" * 10_001,
+            })
+
+
+class TestNatsHandlersValidation:
+    """Onda 2 SEC-2.1: handlers NATS rejeitam payloads invalidos com ack+log
+    (sem crash, sem efeito colateral no DB)."""
+
+    def _make_msg(self, subject, data_bytes):
+        msg = MagicMock()
+        msg.subject = subject
+        msg.data = data_bytes
+        msg.ack = AsyncMock()
+        return msg
+
+    def test_payload_size_excede_cap_descarta(self):
+        """SEC: blob > 8KB descartado antes do parse JSON."""
+        import asyncio
+        from nats_handlers import handle_command_ack
+        msg = self._make_msg(
+            "dns.commands.test.ack",
+            b'{"command_id": 1, "result": "' + b"x" * 10_000 + b'"}',
+        )
+        with patch("nats_handlers.db") as mock_db, \
+             patch("nats_handlers.logger") as mock_log:
+            asyncio.run(handle_command_ack(msg))
+        msg.ack.assert_called_once()  # ACK pra nao redeliver
+        mock_db.mark_command_done.assert_not_called()  # DB NUNCA tocado
+        assert any("limite" in str(c).lower() for c in mock_log.warning.call_args_list)
+
+    def test_json_invalido_descarta(self):
+        import asyncio
+        from nats_handlers import handle_command_ack
+        msg = self._make_msg("dns.commands.test.ack", b"{not valid json")
+        with patch("nats_handlers.db") as mock_db:
+            asyncio.run(handle_command_ack(msg))
+        msg.ack.assert_called_once()
+        mock_db.mark_command_done.assert_not_called()
+
+    def test_schema_violation_descarta_ack(self):
+        """Payload sintaticamente OK mas semanticamente invalido => ACK + skip."""
+        import asyncio
+        from nats_handlers import handle_command_ack
+        msg = self._make_msg(
+            "dns.commands.test.ack",
+            b'{"command_id": "nao-eh-int", "status": "done"}',
+        )
+        with patch("nats_handlers.db") as mock_db:
+            asyncio.run(handle_command_ack(msg))
+        msg.ack.assert_called_once()
+        mock_db.mark_command_done.assert_not_called()
+
+    def test_dns_stats_servfail_negativo_rejeitado(self):
+        """Counter negativo = atacante tentando inflar/zerar metrica =>
+        alerta NUNCA dispara, DB NUNCA escrito."""
+        import asyncio
+        from nats_handlers import handle_dns_stats
+        msg = self._make_msg(
+            "dns.stats.NS1_TEST",
+            b'{"servfail": -100, "queries_total": 1000}',
+        )
+        with patch("nats_handlers.db") as mock_db:
+            asyncio.run(handle_dns_stats(msg))
+        msg.ack.assert_called_once()
+        mock_db.insert_dns_query_stats.assert_not_called()
+
+    def test_dns_stats_valido_chega_no_db(self):
+        """Path feliz: payload valido => insert_dns_query_stats e _evaluate."""
+        import asyncio
+        from nats_handlers import handle_dns_stats
+
+        msg = self._make_msg(
+            "dns.stats.NS1_TEST",
+            b'{"period_seconds": 600, "source": "unbound", '
+            b'"noerror": 100, "nxdomain": 5, "servfail": 1, '
+            b'"queries_total": 106, "qps_avg": 0.18}',
+        )
+
+        with patch("nats_handlers.db") as mock_db, \
+             patch("routes_agent._evaluate_dns_stats_alerts", AsyncMock()) as mock_eval:
+            mock_db.insert_dns_query_stats = AsyncMock()
+            asyncio.run(handle_dns_stats(msg))
+
+        msg.ack.assert_called_once()
+        mock_db.insert_dns_query_stats.assert_called_once()
+        # Hostname extraido do subject
+        call_args = mock_db.insert_dns_query_stats.call_args
+        assert call_args[0][0] == "NS1_TEST"
+
+    def test_dns_stats_subject_sem_hostname_descarta(self):
+        """Subject malformado => descarta sem tocar DB."""
+        import asyncio
+        from nats_handlers import handle_dns_stats
+        msg = self._make_msg("dns.stats", b'{}')
+        with patch("nats_handlers.db") as mock_db:
+            asyncio.run(handle_dns_stats(msg))
+        msg.ack.assert_called_once()
+        mock_db.insert_dns_query_stats.assert_not_called()
+
+
+# ===========================================================================
 # Entry point
 # ===========================================================================
 
