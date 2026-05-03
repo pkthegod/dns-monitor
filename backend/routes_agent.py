@@ -75,7 +75,7 @@ def _verify_purge_token(hostname: str, token: str) -> bool:
 import telegram_bot as tg
 from auth import (
     AGENT_TOKEN,
-    require_token, require_admin, require_admin_role,
+    require_token, require_admin, require_admin_role, require_admin_or_client,
     _verify_admin_cookie, _verify_client_cookie,
     _real_client_ip,
 )
@@ -640,8 +640,14 @@ async def agent_latest_download(request: Request):
 # /tools/geolocate
 # ---------------------------------------------------------------------------
 
-@agent_v1.post("/tools/geolocate", dependencies=[Depends(require_admin_role)], tags=["tools"])
+@agent_v1.post("/tools/geolocate", dependencies=[Depends(require_admin_or_client)], tags=["tools"])
 async def geolocate_ips(request: Request) -> JSONResponse:
+    """Lookup IP via ip-api.com — admin OU cliente autenticado.
+
+    SEC: IPs do trace sao publicos (servers DNS), nenhum dado sensivel.
+    Cliente precisa pra mostrar mapa de saltos no portal — paridade com admin.
+    Rate limit do middleware /api/ ja protege contra bombing (~120 req/min/IP).
+    """
     body = await request.json()
     ips  = list(dict.fromkeys(str(ip) for ip in body.get("ips", []) if ip))[:100]
     if not ips:

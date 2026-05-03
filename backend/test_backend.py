@@ -4145,6 +4145,85 @@ class TestNatsHandlersValidation:
 
 
 # ===========================================================================
+# Onda E — geolocate aceita admin OR cliente (require_admin_or_client)
+# ===========================================================================
+
+class TestRequireAdminOrClient:
+    """Onda E: cliente do portal precisa chamar /tools/geolocate pra mostrar
+    mapa de saltos do dig_trace. Antes era admin-only."""
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def test_admin_cookie_passa(self):
+        """Cookie admin valido -> retorna dict do admin."""
+        import auth
+        request = MagicMock()
+        info = {"username": "admin", "role": "admin"}
+        async def run():
+            with patch("auth._verify_admin_cookie", return_value=info):
+                request.cookies = {"admin_session": "valid"}
+                return await auth.require_admin_or_client(request)
+        result = self._run(run())
+        assert result["username"] == "admin"
+        assert result["role"] == "admin"
+
+    def test_client_cookie_passa(self):
+        """Cookie cliente valido (sem admin) -> retorna dict do cliente."""
+        import auth, db
+        async def run():
+            request = MagicMock()
+            request.cookies = {"client_session": "valid-client-cookie"}
+            request.headers = MagicMock()
+            request.headers.get = lambda k, d="": ""
+            with patch("auth._verify_admin_cookie", return_value=None), \
+                 patch("auth._verify_client_cookie", return_value="cliente1"), \
+                 patch("db.get_client", AsyncMock(return_value={
+                     "username": "cliente1", "active": True,
+                     "hostnames": ["NS1_X"],
+                 })):
+                return await auth.require_admin_or_client(request)
+        user = self._run(run())
+        assert user["username"] == "cliente1"
+        assert user["active"] is True
+
+    def test_nem_admin_nem_client_403(self):
+        """Sem cookie valido em nenhum dos dois -> 403."""
+        import auth
+        from fastapi import HTTPException
+        async def run():
+            request = MagicMock()
+            request.cookies = {}
+            request.headers = MagicMock()
+            request.headers.get = lambda k, d="": ""
+            with patch("auth._verify_admin_cookie", return_value=None), \
+                 patch("auth._verify_client_cookie", return_value=None):
+                return await auth.require_admin_or_client(request)
+        with pytest.raises(HTTPException) as exc:
+            self._run(run())
+        assert exc.value.status_code == 403
+
+    def test_client_inativo_403(self):
+        """Cookie cliente valido mas active=False -> 403 (consistente com require_client)."""
+        import auth
+        from fastapi import HTTPException
+        async def run():
+            request = MagicMock()
+            request.cookies = {"client_session": "ok"}
+            request.headers = MagicMock()
+            request.headers.get = lambda k, d="": ""
+            with patch("auth._verify_admin_cookie", return_value=None), \
+                 patch("auth._verify_client_cookie", return_value="cliente1"), \
+                 patch("db.get_client", AsyncMock(return_value={
+                     "username": "cliente1", "active": False, "hostnames": [],
+                 })):
+                return await auth.require_admin_or_client(request)
+        with pytest.raises(HTTPException) as exc:
+            self._run(run())
+        assert exc.value.status_code == 403
+
+
+# ===========================================================================
 # Entry point
 # ===========================================================================
 

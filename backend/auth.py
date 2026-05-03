@@ -238,6 +238,24 @@ async def require_admin_role(request: Request) -> dict:
     return info
 
 
+async def require_admin_or_client(request: Request) -> dict:
+    """Aceita admin OU cliente autenticado. Retorna dict da identidade ativa.
+
+    SEC: usado em endpoints com dado nao-sensivel que ambos os roles precisam
+    consultar (ex: /tools/geolocate — IPs publicos do trace, sem informacao
+    privada). Rate limit em /api/* middleware ja protege contra bombing.
+
+    Tenta admin primeiro (cookie OU Bearer permitido); cai pra cliente se
+    nenhum match. 403 se nenhum dos dois.
+    """
+    try:
+        return await require_admin(request)
+    except HTTPException:
+        pass
+    # Fallback: cliente — funcao abaixo levanta 403 se nem cookie cliente valido
+    return await require_client(request)
+
+
 async def require_client(request: Request) -> dict:
     """Exige client_session cookie + cliente ativo. Retorna dict do cliente
     (com 'username', 'hostnames', 'active', etc.) para o handler usar no filtro.

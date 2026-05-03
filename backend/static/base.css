@@ -733,4 +733,118 @@ html[data-theme="light"] .kpi::after { background: linear-gradient(90deg, transp
   .modal-backdrop { align-items: flex-start; padding-top: 5vh; }
   .section-title { flex-wrap: wrap; gap: 6px; }
   input, select, textarea { font-size: 16px !important; }
+  /* Esconde mapa 3D em mobile — WebGL gasta GPU + viewport apertado.
+     Mapa 2D continua disponivel; aba 3D some pra evitar UX ruim. */
+  .trace-tab[data-tab="map3d"] { display: none; }
+  .trace-tab-panel[data-panel="map3d"] { display: none !important; }
+  .trace-map-container { height: 360px; }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   TRACE TABS + MAPA (compartilhado /admin e /client) — Onda E 2026-05-03
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.trace-tabs {
+  display: flex; gap: 4px; margin-bottom: 12px;
+  border-bottom: 1px solid var(--border); padding-bottom: 0;
+}
+.trace-tab {
+  background: transparent; color: var(--text-mid); border: none;
+  border-bottom: 2px solid transparent; border-radius: 0;
+  padding: 8px 14px; font-size: .72rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .06em;
+  cursor: pointer; transition: color .12s, border-color .12s;
+  font-family: var(--font-mono);
+}
+.trace-tab:hover { color: var(--text); }
+.trace-tab-active { color: var(--accent); border-bottom-color: var(--accent); }
+.trace-tab-disabled { color: var(--text-dim); cursor: not-allowed; opacity: .5; }
+.trace-tab-disabled:hover { color: var(--text-dim); }
+
+/* Container do mapa — Leaflet calcula tile sizes pelo offsetHeight, precisa
+   de altura definida ANTES do init (caller passa via render2D ou inline). */
+.trace-map-container {
+  height: 480px; width: 100%;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg-input);
+}
+.trace-map-legend {
+  display: flex; gap: 14px; flex-wrap: wrap;
+  margin-top: 10px; padding: 8px 12px;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 5px; font-size: .68rem;
+  color: var(--text-mid); font-family: var(--font-mono);
+}
+.trace-map-legend span { display: flex; align-items: center; gap: 5px; }
+.trace-legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.trace-map-hint { margin-left: auto; color: var(--text-dim); font-style: italic; }
+.trace-map-empty {
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 8px; height: 200px;
+  color: var(--text-mid); text-align: center; padding: 20px;
+}
+.trace-map-empty-title { font-weight: 600; font-size: .85rem; }
+.trace-map-empty-hint { font-size: .72rem; color: var(--text-dim); max-width: 420px; }
+
+/* Markers customizados (divIcon do Leaflet — bolha numerada por hop) */
+.trace-marker { background: transparent; border: none; }
+.trace-marker-bubble {
+  width: 28px; height: 28px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  color: #11151c; font-size: .72rem; font-weight: 800;
+  border: 2px solid; box-shadow: 0 2px 8px rgba(0,0,0,.4);
+  font-family: var(--font-mono); transition: transform .15s ease;
+}
+.trace-marker:hover .trace-marker-bubble { transform: scale(1.15); box-shadow: 0 3px 12px rgba(0,0,0,.55); }
+
+/* Leaflet popups — override pra combinar com tema */
+.leaflet-popup-content-wrapper {
+  background: var(--bg-card); color: var(--text);
+  border: 1px solid var(--border-hi); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.45);
+}
+.leaflet-popup-tip { background: var(--bg-card); border: 1px solid var(--border-hi); }
+.leaflet-popup-content { margin: 12px 14px; line-height: 1.5; }
+.leaflet-container a.leaflet-popup-close-button { color: var(--text-mid); }
+.leaflet-container { background: var(--bg-input); font-family: inherit; }
+.leaflet-control-attribution {
+  background: rgba(0, 0, 0, .55) !important;
+  color: var(--text-dim) !important; font-size: .58rem !important;
+}
+.leaflet-control-attribution a { color: var(--text-mid) !important; }
+.leaflet-control-zoom a {
+  background: var(--bg-card) !important; color: var(--text) !important;
+  border-color: var(--border) !important;
+}
+.leaflet-control-zoom a:hover { background: var(--bg-card-h) !important; }
+
+.trace-popup-title { font-weight: 700; font-size: .78rem; letter-spacing: .04em; text-transform: uppercase; }
+.trace-popup-ip    { margin-top: 6px; font-family: var(--font-mono); font-weight: 600; font-size: .8rem; color: var(--text); }
+.trace-popup-name  { font-family: var(--font-mono); font-size: .68rem; color: var(--text-dim); margin-top: 2px; }
+.trace-popup-zone  { margin-top: 6px; font-size: .7rem; color: var(--text-mid); }
+.trace-popup-zone span { color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; font-size: .62rem; margin-right: 4px; }
+.trace-popup-geo   { margin-top: 6px; font-size: .72rem; color: var(--text-mid); }
+.trace-popup-isp   { font-size: .65rem; color: var(--text-dim); margin-top: 2px; }
+.trace-popup-lat   { margin-top: 8px; font-weight: 700; font-size: .8rem; font-family: var(--font-mono); }
+
+/* Globe 3D (Globe.gl / Three.js) */
+.trace-map-container-3d {
+  background: radial-gradient(ellipse at center,
+    color-mix(in srgb, var(--accent) 8%, var(--bg)) 0%, var(--bg) 70%);
+  position: relative; overflow: hidden;
+}
+.trace-map-container-3d canvas { display: block; outline: none; }
+.scene-tooltip {
+  pointer-events: none;
+  background: var(--bg-card) !important; color: var(--text) !important;
+  border: 1px solid var(--border-hi); border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0,0,0,.55);
+  padding: 0 !important; font-family: var(--font-mono) !important;
+  z-index: 600;
+}
+.globe-tooltip { padding: 10px 12px; line-height: 1.4; }
+.globe-tooltip-title { font-weight: 700; font-size: .72rem; letter-spacing: .04em; text-transform: uppercase; }
+.globe-tooltip-ip    { margin-top: 4px; font-weight: 600; font-size: .78rem; color: var(--text); }
+.globe-tooltip-geo   { margin-top: 4px; font-size: .68rem; color: var(--text-mid); }
+.globe-tooltip-isp   { font-size: .62rem; color: var(--text-dim); margin-top: 2px; }
+.globe-tooltip-lat   { margin-top: 6px; font-weight: 700; font-size: .76rem; }
