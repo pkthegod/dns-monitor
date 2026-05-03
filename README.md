@@ -12,7 +12,7 @@ via NATS JetStream — com HTTP polling como fallback.
 ## Arquitetura
 
 ```
-┌────────────────────────────┐    NATS push (dns.commands.<host>)     ┌───────────────────────┐
+┌────────────────────────────┐    NATS push (dns.commands.<host>)      ┌───────────────────────┐
 │   Maquina monitorada       │ ◄─────────────────────────────────────  │   Servidor central    │
 │                            │    HTTP poll fallback (60s adaptativo)  │                       │
 │   dns_agent.py             │                                         │   FastAPI :8000       │
