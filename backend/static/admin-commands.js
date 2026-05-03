@@ -262,6 +262,12 @@ function openTraceModal(hostname) {
 function closeTraceModal() {
   document.getElementById('trace-modal').classList.remove('open');
   if (tracePollTimer) { clearInterval(tracePollTimer); tracePollTimer = null; }
+  // Cleanup do mapa pra evitar leak de listeners + timeouts pendentes
+  // se usuario fechar antes da animacao terminar.
+  const mapContainer = document.getElementById('trace-map-2d');
+  if (mapContainer && window.TraceMap) {
+    window.TraceMap.destroy(mapContainer);
+  }
   traceHostname = null;
 }
 
@@ -355,6 +361,7 @@ async function renderTraceResult(cmd) {
 
   // Show skeleton while fetching geo
   area.innerHTML = buildTraceHtml(data, {});
+  attachTraceTabs(data, {});
   document.querySelectorAll('.trace-geo-loading').forEach(el => el.textContent = 'obtendo geo…');
 
   let geoMap = {};
@@ -362,6 +369,35 @@ async function renderTraceResult(cmd) {
 
   // Re-render with geo data
   area.innerHTML = buildTraceHtml(data, geoMap);
+  attachTraceTabs(data, geoMap);
+}
+
+// Conecta handlers das abas Lista/Mapa 2D no container do trace.
+// Lazy: o mapa Leaflet so e instanciado quando a aba "Mapa 2D" e ativada
+// pela primeira vez (poupa render de mapa que talvez nao seja visualizado).
+function attachTraceTabs(data, geoMap) {
+  const tabs = document.querySelectorAll('.trace-area .trace-tab');
+  if (!tabs.length) return;
+  tabs.forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.classList.contains('trace-tab-disabled')) return;
+      const tab = btn.getAttribute('data-tab');
+      // Marca aba ativa
+      document.querySelectorAll('.trace-area .trace-tab').forEach(b => b.classList.remove('trace-tab-active'));
+      btn.classList.add('trace-tab-active');
+      // Mostra panel correspondente
+      document.querySelectorAll('.trace-area .trace-tab-panel').forEach(p => {
+        p.style.display = p.getAttribute('data-panel') === tab ? '' : 'none';
+      });
+      // Lazy-init do mapa quando aba 2D e ativada pela primeira vez
+      if (tab === 'map2d') {
+        const container = document.getElementById('trace-map-2d');
+        if (container && window.TraceMap && !container._traceMap) {
+          window.TraceMap.render2D(container, data.trace || [], geoMap || {});
+        }
+      }
+    });
+  });
 }
 
 function buildTraceHtml(data, geoMap) {
@@ -394,8 +430,17 @@ function buildTraceHtml(data, geoMap) {
     return z.length <= 1 ? ['TLD', 'type-tld'] : ['AUTH', 'type-auth'];
   }
 
-  // Source node
-  let html = `<div class="trace-area">${untrustedBanner()}${qSumHtml}<div class="trace-path">`;
+  // Tabs Lista / Mapa 2D — Mapa 3D em breve (Onda D)
+  const tabsHtml = `
+    <div class="trace-tabs" role="tablist">
+      <button class="trace-tab trace-tab-active" data-tab="list" role="tab" aria-selected="true">Lista</button>
+      <button class="trace-tab" data-tab="map2d" role="tab" aria-selected="false">Mapa 2D</button>
+      <button class="trace-tab trace-tab-disabled" data-tab="map3d" title="Em breve" aria-disabled="true">Mapa 3D</button>
+    </div>`;
+
+  // Source node — fica dentro do panel "list"
+  let html = `<div class="trace-area">${untrustedBanner()}${qSumHtml}${tabsHtml}`;
+  html += `<div class="trace-tab-panel" data-panel="list"><div class="trace-path">`;
   html += `
     <div class="trace-node trace-node-source">
       <div class="trace-node-header">
@@ -476,7 +521,22 @@ function buildTraceHtml(data, geoMap) {
     </div>`;
   }
 
-  html += `</div></div>`;
+  html += `</div></div>`;  // fecha .trace-path e panel "list"
+
+  // Panel "map2d" — container vazio; Leaflet renderiza no click da aba
+  html += `
+    <div class="trace-tab-panel" data-panel="map2d" style="display:none">
+      <div class="trace-map-container" id="trace-map-2d"></div>
+      <div class="trace-map-legend">
+        <span><i class="trace-legend-dot" style="background:#9ece6a"></i>&lt;50ms</span>
+        <span><i class="trace-legend-dot" style="background:#7aa2f7"></i>&lt;200ms</span>
+        <span><i class="trace-legend-dot" style="background:#e0af68"></i>&lt;500ms</span>
+        <span><i class="trace-legend-dot" style="background:#f7768e"></i>&ge;500ms</span>
+        <span class="trace-map-hint">Clique nos marcadores pra ver detalhes</span>
+      </div>
+    </div>`;
+
+  html += `</div>`;  // fecha .trace-area
   return html;
 }
 

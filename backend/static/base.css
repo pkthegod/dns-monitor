@@ -629,6 +629,9 @@ html[data-theme="light"] .toast { border: 1px solid var(--border); border-left: 
   box-shadow: var(--shadow-modal);
   transform: scale(.97) translateY(6px);
   transition: transform .2s cubic-bezier(.25,.46,.45,.94);
+  /* Cap altura pra modal nunca estourar viewport — antes botao FECHAR
+     ficava cortado quando conteudo crescia (ex: trace com 8+ hops). */
+  max-height: calc(100vh - 40px); overflow-y: auto;
 }
 .modal-backdrop.open .modal { transform: scale(1) translateY(0); }
 
@@ -725,7 +728,8 @@ html[data-theme="light"] .kpi::after { background: linear-gradient(90deg, transp
   .table-wrap table { min-width: 600px; }
   .table-wrap td, .table-wrap th { padding: 6px 8px; font-size: .68rem; }
   .btn, button { min-height: 36px; min-width: 36px; }
-  .modal { width: 95vw; max-width: none; margin: 12px; max-height: 90vh; overflow-y: auto; }
+  /* Mobile: modal usa quase toda largura; max-height global em .modal cuida do scroll */
+  .modal { width: 95vw; max-width: none; margin: 12px; }
   .modal-backdrop { align-items: flex-start; padding-top: 5vh; }
   .section-title { flex-wrap: wrap; gap: 6px; }
   input, select, textarea { font-size: 16px !important; }
