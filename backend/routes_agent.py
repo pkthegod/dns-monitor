@@ -77,6 +77,7 @@ from auth import (
     AGENT_TOKEN,
     require_token, require_admin, require_admin_role,
     _verify_admin_cookie, _verify_client_cookie,
+    _real_client_ip,
 )
 from models import AgentPayload, AgentMetaUpdate, SpeedtestPayload
 from ws import ws_manager
@@ -396,6 +397,7 @@ async def create_command(request: Request) -> JSONResponse:
             await _m.db.audit(
                 issued_by, "purge_confirm_invalid", hostname,
                 detail="token invalido ou expirado",
+                ip=_real_client_ip(request),
             )
             return JSONResponse(
                 {"error": "confirm_token invalido ou expirado"},
@@ -414,7 +416,7 @@ async def create_command(request: Request) -> JSONResponse:
     if confirm_token:
         response["confirm_token"] = confirm_token  # ecoa o token validado (ja consumido)
 
-    await _m.db.audit(issued_by, "command", hostname, detail=command)
+    await _m.db.audit(issued_by, "command", hostname, detail=command, ip=_real_client_ip(request))
     nats_sent = False
     if nc and nc.is_connected():
         nats_sent = await nc.js_publish(f"dns.commands.{hostname}", {

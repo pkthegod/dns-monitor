@@ -265,7 +265,8 @@ async def create_admin_user_endpoint(request: Request) -> JSONResponse:
 
     pw_hash = _hash_password(password)
     user_id = await db.create_admin_user(username, pw_hash, role, caller["username"], notes)
-    await db.audit(caller["username"], "admin_user_created", username, detail=f"role={role}")
+    await db.audit(caller["username"], "admin_user_created", username,
+                   detail=f"role={role}", ip=_real_client_ip(request))
     return JSONResponse({"id": user_id, "username": username, "role": role}, status_code=201)
 
 
@@ -296,7 +297,7 @@ async def update_admin_user_endpoint(user_id: int, request: Request) -> JSONResp
     if not ok:
         raise HTTPException(status_code=404, detail="Admin user nao encontrado")
     await db.audit(caller["username"], "admin_user_updated", str(user_id),
-                   detail=str(list(fields.keys())))
+                   detail=str(list(fields.keys())), ip=_real_client_ip(request))
     return JSONResponse({"status": "ok"})
 
 
@@ -336,7 +337,7 @@ async def get_agent_dns_stats(hostname: str, request: Request, period: str = "24
 @admin_v1.patch("/agents/{hostname}/stats-interval", tags=["dns-stats"])
 async def set_agent_stats_interval(hostname: str, request: Request) -> JSONResponse:
     """Ajusta intervalo de coleta de stats DNS pro agente (60-3600s)."""
-    await require_admin_role(request)
+    caller = await require_admin_role(request)
     body = await request.json()
     interval = int(body.get("interval_seconds", 600))
     try:
@@ -345,7 +346,8 @@ async def set_agent_stats_interval(hostname: str, request: Request) -> JSONRespo
         return JSONResponse({"error": str(exc)}, status_code=422)
     if not ok:
         raise HTTPException(status_code=404, detail="Agente nao encontrado")
-    await db.audit("admin", "dns_stats_interval_set", hostname, detail=str(interval))
+    await db.audit(caller["username"], "dns_stats_interval_set", hostname,
+                   detail=str(interval), ip=_real_client_ip(request))
     return JSONResponse({"hostname": hostname, "interval_seconds": interval})
 
 
@@ -363,7 +365,8 @@ async def delete_admin_user_endpoint(user_id: int, request: Request) -> JSONResp
     ok = await db.delete_admin_user(user_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Admin user nao encontrado")
-    await db.audit(caller["username"], "admin_user_deleted", target["username"])
+    await db.audit(caller["username"], "admin_user_deleted", target["username"],
+                   ip=_real_client_ip(request))
     return JSONResponse({"status": "ok"})
 
 
@@ -382,5 +385,6 @@ async def verify_audit_chain_endpoint(request: Request, limit: int | None = None
         caller["username"], "audit_chain_verify",
         target=f"limit={limit or 'all'}",
         detail=f"valid={result['valid']} signed={result['signed_count']} legacy={result['legacy_count']}",
+        ip=_real_client_ip(request),
     )
     return JSONResponse(result)

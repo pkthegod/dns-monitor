@@ -70,7 +70,8 @@ async def create_client_endpoint(request: Request) -> JSONResponse:
     email = body.get("email", "").strip() or None
     pw_hash = _hash_password(password)
     client_id = await db.create_client(username, pw_hash, hostnames, notes or None, email)
-    await db.audit("admin", "client_created", username, detail=str(hostnames))
+    await db.audit("admin", "client_created", username,
+                   detail=str(hostnames), ip=_real_client_ip(request))
     return JSONResponse({"id": client_id, "username": username}, status_code=201)
 
 
@@ -298,6 +299,7 @@ async def client_report(request: Request, month: str = "", format: str = "json")
             await db.audit(
                 "client:" + client_user, "pdf_rate_limited",
                 detail=str(month or "current"),
+                ip=_real_client_ip(request),
             )
             return JSONResponse(
                 {"error": "Aguarde 10 minutos antes de gerar outro PDF",
@@ -402,6 +404,7 @@ async def client_report(request: Request, month: str = "", format: str = "json")
             await db.audit(
                 "client:" + client_user, "pdf_timeout",
                 detail=str(month or "current"),
+                ip=_real_client_ip(request),
             )
             logger.warning("PDF report timeout pra %s (period=%s)", client_user, month or "current")
             return JSONResponse(
@@ -413,6 +416,7 @@ async def client_report(request: Request, month: str = "", format: str = "json")
             await db.audit(
                 "client:" + client_user, "pdf_error",
                 detail=f"{type(exc).__name__}: {str(exc)[:200]}",
+                ip=_real_client_ip(request),
             )
             logger.exception("PDF report falhou pra %s: %s", client_user, exc)
             return JSONResponse(
@@ -422,6 +426,7 @@ async def client_report(request: Request, month: str = "", format: str = "json")
         await db.audit(
             "client:" + client_user, "pdf_generated",
             detail=str(month or "current"),
+            ip=_real_client_ip(request),
         )
         from starlette.responses import Response
         period_label = month or start.strftime("%Y-%m")
