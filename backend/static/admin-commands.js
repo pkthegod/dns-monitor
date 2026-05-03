@@ -262,11 +262,13 @@ function openTraceModal(hostname) {
 function closeTraceModal() {
   document.getElementById('trace-modal').classList.remove('open');
   if (tracePollTimer) { clearInterval(tracePollTimer); tracePollTimer = null; }
-  // Cleanup do mapa pra evitar leak de listeners + timeouts pendentes
-  // se usuario fechar antes da animacao terminar.
-  const mapContainer = document.getElementById('trace-map-2d');
-  if (mapContainer && window.TraceMap) {
-    window.TraceMap.destroy(mapContainer);
+  // Cleanup ambos mapas pra evitar leak de listeners + timeouts pendentes +
+  // WebGL context se usuario fechar antes da animacao terminar.
+  if (window.TraceMap) {
+    const m2d = document.getElementById('trace-map-2d');
+    const m3d = document.getElementById('trace-map-3d');
+    if (m2d) window.TraceMap.destroy(m2d);
+    if (m3d) window.TraceMap.destroy(m3d);
   }
   traceHostname = null;
 }
@@ -389,11 +391,16 @@ function attachTraceTabs(data, geoMap) {
       document.querySelectorAll('.trace-area .trace-tab-panel').forEach(p => {
         p.style.display = p.getAttribute('data-panel') === tab ? '' : 'none';
       });
-      // Lazy-init do mapa quando aba 2D e ativada pela primeira vez
+      // Lazy-init dos mapas quando aba ativada pela primeira vez
       if (tab === 'map2d') {
         const container = document.getElementById('trace-map-2d');
         if (container && window.TraceMap && !container._traceMap) {
           window.TraceMap.render2D(container, data.trace || [], geoMap || {});
+        }
+      } else if (tab === 'map3d') {
+        const container = document.getElementById('trace-map-3d');
+        if (container && window.TraceMap && !container._traceGlobe) {
+          window.TraceMap.render3D(container, data.trace || [], geoMap || {});
         }
       }
     });
@@ -430,12 +437,12 @@ function buildTraceHtml(data, geoMap) {
     return z.length <= 1 ? ['TLD', 'type-tld'] : ['AUTH', 'type-auth'];
   }
 
-  // Tabs Lista / Mapa 2D — Mapa 3D em breve (Onda D)
+  // Tabs Lista / Mapa 2D / Mapa 3D — todas ativas
   const tabsHtml = `
     <div class="trace-tabs" role="tablist">
       <button class="trace-tab trace-tab-active" data-tab="list" role="tab" aria-selected="true">Lista</button>
       <button class="trace-tab" data-tab="map2d" role="tab" aria-selected="false">Mapa 2D</button>
-      <button class="trace-tab trace-tab-disabled" data-tab="map3d" title="Em breve" aria-disabled="true">Mapa 3D</button>
+      <button class="trace-tab" data-tab="map3d" role="tab" aria-selected="false">Mapa 3D</button>
     </div>`;
 
   // Source node — fica dentro do panel "list"
@@ -524,16 +531,23 @@ function buildTraceHtml(data, geoMap) {
   html += `</div></div>`;  // fecha .trace-path e panel "list"
 
   // Panel "map2d" — container vazio; Leaflet renderiza no click da aba
+  const legendHtml = `
+    <div class="trace-map-legend">
+      <span><i class="trace-legend-dot" style="background:#9ece6a"></i>&lt;50ms</span>
+      <span><i class="trace-legend-dot" style="background:#7aa2f7"></i>&lt;200ms</span>
+      <span><i class="trace-legend-dot" style="background:#e0af68"></i>&lt;500ms</span>
+      <span><i class="trace-legend-dot" style="background:#f7768e"></i>&ge;500ms</span>
+      <span class="trace-map-hint">Hover pra ver detalhes</span>
+    </div>`;
+
   html += `
     <div class="trace-tab-panel" data-panel="map2d" style="display:none">
       <div class="trace-map-container" id="trace-map-2d"></div>
-      <div class="trace-map-legend">
-        <span><i class="trace-legend-dot" style="background:#9ece6a"></i>&lt;50ms</span>
-        <span><i class="trace-legend-dot" style="background:#7aa2f7"></i>&lt;200ms</span>
-        <span><i class="trace-legend-dot" style="background:#e0af68"></i>&lt;500ms</span>
-        <span><i class="trace-legend-dot" style="background:#f7768e"></i>&ge;500ms</span>
-        <span class="trace-map-hint">Clique nos marcadores pra ver detalhes</span>
-      </div>
+      ${legendHtml}
+    </div>
+    <div class="trace-tab-panel" data-panel="map3d" style="display:none">
+      <div class="trace-map-container trace-map-container-3d" id="trace-map-3d"></div>
+      ${legendHtml.replace('Hover pra ver detalhes', 'Arraste pra rotacionar &middot; scroll pra zoom')}
     </div>`;
 
   html += `</div>`;  // fecha .trace-area

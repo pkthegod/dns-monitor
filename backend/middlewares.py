@@ -296,12 +296,14 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://static.cloudflareinsights.com; "
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; "
             "font-src https://fonts.gstatic.com; "
-            # img-src: tiles do mapa 2D (Leaflet + CartoDB Dark Matter / Voyager).
-            # OpenStreetMap tile servers como fallback. Adicionado 2026-05-03
-            # pra feature de mapa de saltos de DNS trace.
+            # img-src: tiles do mapa 2D (Leaflet + CartoDB Dark Matter / Voyager) +
+            # texturas do globo 3D (Globe.gl puxa earth-night/blue-marble do
+            # three-globe via jsdelivr). OpenStreetMap como fallback pros tiles.
+            # Adicionado 2026-05-03 pra feature de mapa de saltos de DNS trace.
             "img-src 'self' data: blob: "
             "https://*.basemaps.cartocdn.com "
-            "https://*.tile.openstreetmap.org; "
+            "https://*.tile.openstreetmap.org "
+            "https://cdn.jsdelivr.net; "
             "connect-src 'self' https://cdn.jsdelivr.net https://cloudflareinsights.com; "
             "frame-ancestors 'none'; "
             "base-uri 'self'; "

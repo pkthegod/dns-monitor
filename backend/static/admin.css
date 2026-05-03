@@ -484,3 +484,34 @@ code { font-family: var(--font-mono); color: var(--text-mid); }
 .trace-popup-geo   { margin-top: 6px; font-size: .72rem; color: var(--text-mid); }
 .trace-popup-isp   { font-size: .65rem; color: var(--text-dim); margin-top: 2px; }
 .trace-popup-lat   { margin-top: 8px; font-weight: 700; font-size: .8rem; font-family: var(--font-mono); }
+
+/* ── Globe 3D (Globe.gl / Three.js) ── */
+.trace-map-container-3d {
+  /* Background gradient enquanto textura carrega — evita flash branco */
+  background: radial-gradient(ellipse at center,
+    color-mix(in srgb, var(--accent) 8%, var(--bg)) 0%,
+    var(--bg) 70%);
+  /* canvas Three.js fica absoluto dentro; container precisa ter position */
+  position: relative; overflow: hidden;
+}
+.trace-map-container-3d canvas {
+  display: block; outline: none;
+}
+/* Tooltip do Globe.gl ao hover em hop — Globe.gl injeta .scene-tooltip */
+.scene-tooltip {
+  pointer-events: none;
+  background: var(--bg-card) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--border-hi);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0,0,0,.55);
+  padding: 0 !important;
+  font-family: var(--font-mono) !important;
+  z-index: 600;
+}
+.globe-tooltip { padding: 10px 12px; line-height: 1.4; }
+.globe-tooltip-title { font-weight: 700; font-size: .72rem; letter-spacing: .04em; text-transform: uppercase; }
+.globe-tooltip-ip    { margin-top: 4px; font-weight: 600; font-size: .78rem; color: var(--text); }
+.globe-tooltip-geo   { margin-top: 4px; font-size: .68rem; color: var(--text-mid); }
+.globe-tooltip-isp   { font-size: .62rem; color: var(--text-dim); margin-top: 2px; }
+.globe-tooltip-lat   { margin-top: 6px; font-weight: 700; font-size: .76rem; }
