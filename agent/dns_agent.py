@@ -51,7 +51,7 @@ CONFIG_PATHS = [
 ]
 
 
-AGENT_VERSION = "1.5.5"
+AGENT_VERSION = "1.5.6"
 
 
 # ---------------------------------------------------------------------------
@@ -1355,11 +1355,28 @@ def _execute_update_agent(
     logger: logging.Logger,
 ) -> tuple[str, str]:
     """
-    Baixa a versão mais recente do agente do backend, verifica o checksum,
+    Baixa a versao mais recente do agente do backend, verifica o checksum,
     valida a sintaxe Python, substitui o arquivo atual e reinicia o processo.
 
-    Retorna (status, result) — o restart ocorre ~3s após o retorno para dar
+    Retorna (status, result) — o restart ocorre ~3s apos o retorno para dar
     tempo de reportar o resultado ao backend antes de encerrar.
+
+    Hardening (2026-05-04 — pos-incidente NS1 dns_agent.py truncado):
+      Validacoes em camadas pra impedir swap de arquivo corrompido. Cada
+      etapa loga sua propria assinatura (hash + size) — proximo incidente
+      e diagnosticavel sem SSH.
+
+      a) /version retorna size + checksum (campos obrigatorios em prod)
+      b) Bytes baixados batem com size do /version
+      c) SHA256 dos bytes em memoria bate com checksum do /version
+      d) Bytes escritos no tmp_path == bytes baixados (write completo)
+      e) SHA256 do tmp_path RELIDO bate com checksum (anti-corrupcao disco)
+      f) py_compile passa
+      g) Backup do arquivo atual com checksum logado pra rollback diagnostico
+      h) os.replace atomico
+      i) Apos swap, SHA256 do arquivo final bate com checksum (paranoia)
+
+      Falha em qualquer etapa: aborta + remove tmp_path + log com diff.
     """
     import hashlib as _hashlib
     import py_compile
@@ -1371,27 +1388,47 @@ def _execute_update_agent(
         "User-Agent":    f"dns-agent/{AGENT_VERSION}",
     }
 
-    # ── 1. Verificar versão disponível ───────────────────────────────────────
+    def _sha(b: bytes) -> str:
+        return _hashlib.sha256(b).hexdigest()
+
+    def _sha_short(s: str) -> str:
+        return s[:16] + "..." if s else "(none)"
+
+    # ── 1. Verificar versao disponivel ───────────────────────────────────────
     try:
         ver_resp = requests.get(
             f"{backend_url}/api/v1/agent/version",
             headers=headers, timeout=10,
         )
         if ver_resp.status_code != 200:
-            return "failed", f"Erro ao consultar versão: HTTP {ver_resp.status_code}"
+            return "failed", f"Erro ao consultar versao: HTTP {ver_resp.status_code}"
         ver_data     = ver_resp.json()
         remote_ver   = ver_data.get("version", "?")
-        remote_cksum = ver_data.get("checksum", "")
+        remote_cksum = (ver_data.get("checksum") or "").lower()
+        remote_size  = int(ver_data.get("size") or 0)
     except Exception as exc:
         return "failed", f"Erro ao consultar /agent/version: {exc}"
 
     if remote_ver == AGENT_VERSION:
-        return "done", f"Agente já está na versão atual ({AGENT_VERSION}) — nenhuma ação necessária"
+        return "done", f"Agente ja esta na versao atual ({AGENT_VERSION}) — nenhuma acao necessaria"
 
-    logger.warning("update_agent: versão remota=%s local=%s — iniciando download",
-                   remote_ver, AGENT_VERSION)
+    if not remote_cksum or not remote_size:
+        # Backend antigo nao retornava size — em prod sempre vem (>= v1.5).
+        # Sem ambos, refusamos a fazer swap pra nao swap arquivo nao-validavel.
+        return "failed", (
+            f"Update abortado — backend nao retornou checksum/size completos "
+            f"(ver={remote_ver} cksum={_sha_short(remote_cksum)} size={remote_size}). "
+            f"Atualize o backend pra >=v1.5 ou desabilite update_agent."
+        )
 
-    # ── 2. Baixar novo arquivo ───────────────────────────────────────────────
+    logger.warning(
+        "update_agent: remoto v=%s sha=%s size=%d local v=%s — iniciando download",
+        remote_ver, _sha_short(remote_cksum), remote_size, AGENT_VERSION,
+    )
+
+    # ── 2. Baixar arquivo (bytes, nao text) ──────────────────────────────────
+    # Usar .content (bytes) em vez de .text (string decoded) elimina ambiguidade
+    # de encoding entre download e SHA256 — mesmo bytes em todas as etapas.
     try:
         dl_resp = requests.get(
             f"{backend_url}/api/v1/agent/latest",
@@ -1399,24 +1436,86 @@ def _execute_update_agent(
         )
         if dl_resp.status_code != 200:
             return "failed", f"Erro ao baixar agente: HTTP {dl_resp.status_code}"
-        new_content = dl_resp.text
+        new_bytes = dl_resp.content
     except Exception as exc:
         return "failed", f"Erro ao baixar /agent/latest: {exc}"
 
-    # ── 3. Verificar checksum ────────────────────────────────────────────────
-    if remote_cksum:
-        actual_cksum = _hashlib.sha256(new_content.encode()).hexdigest()
-        if actual_cksum != remote_cksum:
-            return "failed", (
-                f"Checksum inválido — download corrompido ou adulterado. "
-                f"Esperado: {remote_cksum[:16]}… Obtido: {actual_cksum[:16]}…"
-            )
+    dl_size = len(new_bytes)
+    dl_sha = _sha(new_bytes)
+    logger.info(
+        "update_agent: download OK — size=%d sha=%s",
+        dl_size, _sha_short(dl_sha),
+    )
 
-    # ── 4. Validar sintaxe Python ────────────────────────────────────────────
+    # ── 3. Validar size + checksum DOS BYTES BAIXADOS ────────────────────────
+    if dl_size != remote_size:
+        return "failed", (
+            f"Tamanho diverge — download incompleto/MITM. "
+            f"Esperado: {remote_size}B  Obtido: {dl_size}B  "
+            f"(diferenca: {remote_size - dl_size:+d}B)"
+        )
+    if dl_sha != remote_cksum:
+        return "failed", (
+            f"Checksum diverge — download corrompido/adulterado. "
+            f"Esperado: {_sha_short(remote_cksum)}  Obtido: {_sha_short(dl_sha)}"
+        )
+
+    # ── 4. Escrever em tmp_path com fsync + RE-VALIDAR pos-write ─────────────
+    # Cenario coberto: disco cheio causa write parcial sem raise; escrita
+    # parcial passou silenciosamente em incidente NS1. fsync garante flush
+    # pro disco; releitura confere que o que esta em disco bate com bytes.
     tmp_path = current_file + ".update_tmp"
     try:
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            f.write(new_content)
+        with open(tmp_path, "wb") as f:
+            f.write(new_bytes)
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception as exc:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        return "failed", f"Erro ao escrever {tmp_path}: {exc}"
+
+    # Releitura: pega corrupcao silenciosa (write parcial sem raise, FS bug)
+    try:
+        with open(tmp_path, "rb") as f:
+            written_bytes = f.read()
+    except Exception as exc:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        return "failed", f"Erro ao reler {tmp_path}: {exc}"
+
+    written_size = len(written_bytes)
+    written_sha = _sha(written_bytes)
+    if written_size != dl_size:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        return "failed", (
+            f"Write parcial detectado — espaco em disco? "
+            f"Bytes baixados: {dl_size}  Bytes em disco: {written_size}"
+        )
+    if written_sha != dl_sha:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        return "failed", (
+            f"Conteudo em disco difere do baixado — corrupcao no FS. "
+            f"sha download: {_sha_short(dl_sha)}  sha disco: {_sha_short(written_sha)}"
+        )
+
+    logger.info(
+        "update_agent: write+verify OK — tmp_path=%s size=%d sha=%s",
+        tmp_path, written_size, _sha_short(written_sha),
+    )
+
+    # ── 5. Validar sintaxe Python ────────────────────────────────────────────
+    try:
         py_compile.compile(tmp_path, doraise=True)
     except py_compile.PyCompileError as exc:
         try:
@@ -1425,12 +1524,34 @@ def _execute_update_agent(
             pass
         return "failed", f"Arquivo baixado tem erro de sintaxe Python — update cancelado: {exc}"
     except Exception as exc:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
         return "failed", f"Erro ao validar arquivo: {exc}"
 
-    # ── 5. Substituição atômica (com backup) ─────────────────────────────────
+    # ── 6. Backup do arquivo atual + log do hash ─────────────────────────────
+    # Backup permite rollback. Logar SHA do .bak ajuda a auditar pos-incidente
+    # qual versao estava antes da troca (correlacionar com checksums no audit_log).
     backup_path = current_file + ".bak"
     try:
+        with open(current_file, "rb") as f:
+            current_bytes = f.read()
+        current_sha = _sha(current_bytes)
         shutil.copy2(current_file, backup_path)
+        logger.info(
+            "update_agent: backup criado %s sha=%s size=%d",
+            backup_path, _sha_short(current_sha), len(current_bytes),
+        )
+    except Exception as exc:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        return "failed", f"Erro ao criar backup {backup_path}: {exc}"
+
+    # ── 7. Swap atomico ──────────────────────────────────────────────────────
+    try:
         os.replace(tmp_path, current_file)
         os.chmod(current_file, 0o755)
     except Exception as exc:
@@ -1440,13 +1561,46 @@ def _execute_update_agent(
             pass
         return "failed", f"Erro ao substituir arquivo: {exc}"
 
+    # ── 8. Re-validar arquivo final pos-swap (paranoia) ──────────────────────
+    # Cobre caso patologico: outro processo escreveu no current_file entre
+    # o swap e este check, ou FS fez algo esquisito. Se diverge, restauramos
+    # do .bak antes de continuar.
+    try:
+        with open(current_file, "rb") as f:
+            final_bytes = f.read()
+        final_sha = _sha(final_bytes)
+    except Exception as exc:
+        return "failed", f"Erro ao ler arquivo final pos-swap: {exc}"
+
+    if final_sha != remote_cksum:
+        # Algo MUITO estranho aconteceu. Restaura do backup e aborta.
+        logger.error(
+            "update_agent: arquivo final divergente pos-swap — "
+            "esperado %s obtido %s. Restaurando do backup.",
+            _sha_short(remote_cksum), _sha_short(final_sha),
+        )
+        try:
+            shutil.copy2(backup_path, current_file)
+            os.chmod(current_file, 0o755)
+        except Exception as exc:
+            return "failed", (
+                f"FALHA CRITICA: arquivo final nao bate checksum E rollback "
+                f"do backup tambem falhou ({exc}). Servico pode estar quebrado. "
+                f"Restaure manualmente: cp {backup_path} {current_file}"
+            )
+        return "failed", (
+            f"Arquivo final pos-swap nao bate checksum — restaurado do backup. "
+            f"Esperado: {_sha_short(remote_cksum)}  Obtido: {_sha_short(final_sha)}"
+        )
+
     result_msg = (
-        f"Atualizado {AGENT_VERSION} → {remote_ver} com sucesso. "
-        f"Backup em {backup_path}. Reiniciando em 3s…"
+        f"Atualizado {AGENT_VERSION} -> {remote_ver} com sucesso. "
+        f"sha={_sha_short(final_sha)} size={len(final_bytes)} "
+        f"backup={backup_path}. Reiniciando em 3s..."
     )
     logger.warning("update_agent: %s", result_msg)
 
-    # ── 6. Reiniciar processo após dar tempo para reportar o resultado ────────
+    # ── 9. Reiniciar processo apos dar tempo para reportar o resultado ───────
     def _do_restart():
         time.sleep(3)
         logger.info("update_agent: reiniciando via os.execv")

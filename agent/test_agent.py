@@ -1313,28 +1313,91 @@ class TestExecuteCommandExtended:
 # ===========================================================================
 
 class TestExecuteUpdateAgent:
-    """Testa o mecanismo de auto-update do agente."""
+    """Testa o mecanismo de auto-update do agente.
 
-    def _mock_response(self, status_code=200, json_data=None, text=""):
+    Hardening 2026-05-04 (pos-incidente NS1 dns_agent.py truncado):
+    fluxo agora valida size + sha256 dos bytes, re-le tmp_path apos
+    write+fsync pra detectar corrupcao silenciosa, e re-valida arquivo
+    final pos-swap. Tests cobrem cada uma dessas camadas.
+    """
+
+    def _mock_response(self, status_code=200, json_data=None,
+                       text=None, content=None):
+        """Retorna mock de Response. Se text e content omitidos, ambos vazios.
+        content e bytes; text e str. _execute_update_agent agora usa .content."""
         resp = MagicMock()
         resp.status_code = status_code
         resp.json.return_value = json_data or {}
-        resp.text = text
+        resp.text = text if text is not None else ""
+        if content is not None:
+            resp.content = content
+        elif text is not None:
+            resp.content = text.encode("utf-8")
+        else:
+            resp.content = b""
         return resp
+
+    def _ver_resp(self, version, content_bytes):
+        """Helper: monta /version response com size + checksum corretos."""
+        import hashlib
+        return self._mock_response(200, {
+            "version": version,
+            "checksum": hashlib.sha256(content_bytes).hexdigest(),
+            "size": len(content_bytes),
+        })
+
+    def _cleanup_tmp(self):
+        """Remove dns_agent.py.update_tmp e .pyc residuais apos cada test
+        (alguns flows escrevem real). Idempotente."""
+        import dns_agent as da
+        for suffix in (".update_tmp",):
+            p = os.path.abspath(da.__file__) + suffix
+            try: os.unlink(p)
+            except OSError: pass
+
+    def _isolated_agent_file(self):
+        """Context manager: cria fake dns_agent.py em tempdir + patcha
+        dns_agent.__file__ pra ele. Permite testar swap/backup/re-check
+        sem tocar no arquivo real.
+
+        Returns: fake_path (caminho do dns_agent.py de teste).
+        """
+        import contextlib, tempfile, shutil as _shutil
+        import dns_agent
+
+        @contextlib.contextmanager
+        def _ctx():
+            orig_file = dns_agent.__file__
+            tmpdir = tempfile.mkdtemp(prefix="dns_agent_test_")
+            fake_path = os.path.join(tmpdir, "dns_agent.py")
+            with open(fake_path, "w", encoding="utf-8") as f:
+                f.write('AGENT_VERSION = "0.0.0-test"\nprint("dummy")\n')
+            dns_agent.__file__ = fake_path
+            try:
+                yield fake_path
+            finally:
+                dns_agent.__file__ = orig_file
+                try:
+                    _shutil.rmtree(tmpdir)
+                except Exception:
+                    pass
+
+        return _ctx()
 
     def test_same_version_skips_download(self):
         import dns_agent as da
         logger = make_logger()
         ver_resp = self._mock_response(200, {
             "version": da.AGENT_VERSION,
-            "checksum": "abc123",
+            "checksum": "abc123" * 11,  # 66 chars >= placeholder
+            "size": 100,
         })
         with patch("dns_agent.requests.get", return_value=ver_resp):
             status, result = da._execute_update_agent(
                 "http://localhost:8000", "token", logger
             )
         assert status == "done"
-        assert "já está na versão" in result
+        assert "ja esta na versao" in result.lower() or "já está na versão" in result
 
     def test_version_check_http_error(self):
         import dns_agent as da
@@ -1359,75 +1422,157 @@ class TestExecuteUpdateAgent:
         assert status == "failed"
 
     def test_checksum_mismatch_aborts(self):
+        """Bytes baixados nao batem checksum do /version => aborta."""
         import dns_agent as da
         logger = make_logger()
-        new_content = 'AGENT_VERSION = "9.9.9"\nprint("new")\n'
+        new_content = b'AGENT_VERSION = "9.9.9"\nprint("new")\n'
 
         ver_resp = self._mock_response(200, {
-            "version": "9.9.9", "checksum": "wrong_checksum_here"
+            "version": "9.9.9",
+            "checksum": "0" * 64,  # sha256 errado de proposito
+            "size": len(new_content),  # size correto, sha errado
         })
-        dl_resp = self._mock_response(200, text=new_content)
+        dl_resp = self._mock_response(200, content=new_content)
 
         with patch("dns_agent.requests.get", side_effect=[ver_resp, dl_resp]):
             status, result = da._execute_update_agent(
                 "http://localhost:8000", "token", logger
             )
         assert status == "failed"
-        assert "Checksum" in result
+        assert "Checksum" in result or "checksum" in result
 
-    def test_syntax_error_aborts(self):
+    def test_size_mismatch_aborts(self):
+        """SEC: bytes baixados tem size != size anunciado em /version.
+        Pega download incompleto (TCP cut, MITM, proxy buggy)."""
         import dns_agent as da
-        import hashlib
         logger = make_logger()
-        bad_content = 'AGENT_VERSION = "9.9.9"\ndef broken(\n'
-        checksum = hashlib.sha256(bad_content.encode()).hexdigest()
-
+        # Backend anuncia 1000 bytes mas download tem 500 (truncado)
+        new_content = b"x" * 500
         ver_resp = self._mock_response(200, {
-            "version": "9.9.9", "checksum": checksum
+            "version": "9.9.9",
+            "checksum": "0" * 64,
+            "size": 1000,
         })
-        dl_resp = self._mock_response(200, text=bad_content)
+        dl_resp = self._mock_response(200, content=new_content)
 
-        with patch("dns_agent.requests.get", side_effect=[ver_resp, dl_resp]), \
-             patch("dns_agent.os.unlink"):
+        with patch("dns_agent.requests.get", side_effect=[ver_resp, dl_resp]):
             status, result = da._execute_update_agent(
                 "http://localhost:8000", "token", logger
             )
         assert status == "failed"
-        assert "sintaxe" in result.lower() or "syntax" in result.lower()
+        assert "Tamanho" in result or "incompleto" in result
 
-    def test_successful_update_returns_done(self):
+    def test_missing_size_or_checksum_aborts(self):
+        """Backend antigo (<v1.5) nao retornava size — aborta em vez de
+        fazer swap de algo nao-validavel. Forca operador atualizar backend."""
         import dns_agent as da
-        import hashlib
-        import threading
         logger = make_logger()
-        new_content = 'AGENT_VERSION = "9.9.9"\nprint("new agent")\n'
-        checksum = hashlib.sha256(new_content.encode()).hexdigest()
-
+        # Tudo presente exceto size
         ver_resp = self._mock_response(200, {
-            "version": "9.9.9", "checksum": checksum
+            "version": "9.9.9",
+            "checksum": "0" * 64,
+            # size ausente
         })
-        dl_resp = self._mock_response(200, text=new_content)
-
-        mock_thread_cls = MagicMock()
-        with patch("dns_agent.requests.get", side_effect=[ver_resp, dl_resp]), \
-             patch("dns_agent.shutil.copy2"), \
-             patch("dns_agent.os.replace"), \
-             patch("dns_agent.os.chmod"), \
-             patch.object(threading, "Thread", mock_thread_cls):
+        with patch("dns_agent.requests.get", return_value=ver_resp):
             status, result = da._execute_update_agent(
                 "http://localhost:8000", "token", logger
             )
-        assert status == "done"
-        assert "9.9.9" in result
-        assert "Atualizado" in result
-        # Thread de restart deve ter sido criada
-        mock_thread_cls.assert_called_once()
+        assert status == "failed"
+        assert "checksum" in result.lower() or "size" in result.lower()
+
+    def test_syntax_error_aborts(self):
+        """Bytes validados (size + sha) mas com syntax error Python.
+        py_compile pega; aborta antes do swap."""
+        import dns_agent as da
+        logger = make_logger()
+        bad_content = b'AGENT_VERSION = "9.9.9"\ndef broken(\n'
+        ver_resp = self._ver_resp("9.9.9", bad_content)
+        dl_resp = self._mock_response(200, content=bad_content)
+
+        try:
+            with patch("dns_agent.requests.get", side_effect=[ver_resp, dl_resp]):
+                status, result = da._execute_update_agent(
+                    "http://localhost:8000", "token", logger
+                )
+            assert status == "failed"
+            assert "sintaxe" in result.lower() or "syntax" in result.lower()
+        finally:
+            self._cleanup_tmp()
+
+    def test_write_partial_detected_via_reread(self):
+        """SEC (anti-incidente NS1): write parcial NAO levantou exception
+        (disco cheio com FS exotico) — releitura pega tamanho diferente.
+        Mock de open: 1a chamada (write) recebe tudo, 2a chamada (read)
+        retorna so metade — simula disco que confirmou write mas perdeu
+        bytes."""
+        import dns_agent as da
+        logger = make_logger()
+        good_content = b'AGENT_VERSION = "9.9.9"\nprint("ok")\n'
+        ver_resp = self._ver_resp("9.9.9", good_content)
+        dl_resp = self._mock_response(200, content=good_content)
+
+        from unittest.mock import mock_open
+        # Mock open: 1a chamada (write) aceita qualquer write; 2a (read) retorna metade
+        write_handle = mock_open()
+        read_handle = mock_open(read_data=good_content[:len(good_content) // 2])
+        # combinar: open ser chamada 2x — primeiro write, depois read
+        m_open = MagicMock(side_effect=[
+            write_handle.return_value,
+            read_handle.return_value,
+        ])
+        try:
+            with patch("dns_agent.requests.get", side_effect=[ver_resp, dl_resp]), \
+                 patch("builtins.open", m_open), \
+                 patch("dns_agent.os.fsync"), \
+                 patch("dns_agent.os.unlink"):
+                status, result = da._execute_update_agent(
+                    "http://localhost:8000", "token", logger
+                )
+            assert status == "failed"
+            assert "parcial" in result.lower() or "disco" in result.lower() or "difere" in result.lower()
+        finally:
+            self._cleanup_tmp()
+
+    def test_successful_update_returns_done(self):
+        """Path feliz completo: tudo bate, swap atomico, restart agendado.
+        Usa tempfile pra deixar swap acontecer real (camada (i) — re-check
+        pos-swap — exige arquivo final realmente substituido)."""
+        import dns_agent as da
+        import threading
+        logger = make_logger()
+        new_content = b'AGENT_VERSION = "9.9.9"\nprint("new agent")\n'
+        ver_resp = self._ver_resp("9.9.9", new_content)
+        dl_resp = self._mock_response(200, content=new_content)
+
+        mock_thread_cls = MagicMock()
+        with self._isolated_agent_file() as fake_path:
+            with patch("dns_agent.requests.get", side_effect=[ver_resp, dl_resp]), \
+                 patch.object(threading, "Thread", mock_thread_cls):
+                status, result = da._execute_update_agent(
+                    "http://localhost:8000", "token", logger
+                )
+            assert status == "done", f"esperado 'done', got '{status}': {result}"
+            assert "9.9.9" in result
+            assert "Atualizado" in result
+            # Log de hardening — deve incluir hash + size no result
+            assert "sha=" in result.lower()
+            assert "size=" in result.lower()
+            mock_thread_cls.assert_called_once()
+            # Arquivo final tem o conteudo novo (swap real funcionou)
+            with open(fake_path, "rb") as f:
+                assert f.read() == new_content
+            # Backup tem o conteudo antigo
+            with open(fake_path + ".bak", "rb") as f:
+                bak_content = f.read()
+            assert b"0.0.0-test" in bak_content
 
     def test_download_http_error(self):
         import dns_agent as da
         logger = make_logger()
         ver_resp = self._mock_response(200, {
-            "version": "9.9.9", "checksum": "abc"
+            "version": "9.9.9",
+            "checksum": "0" * 64,
+            "size": 100,
         })
         dl_resp = self._mock_response(404)
 
@@ -1437,6 +1582,60 @@ class TestExecuteUpdateAgent:
             )
         assert status == "failed"
         assert "404" in result
+
+    def test_post_swap_corruption_restores_backup(self):
+        """SEC paranoia: arquivo final pos-swap NAO bate checksum.
+        Simulacao: deixa swap rodar real, mas patch hashlib.sha256 logo
+        antes do read final pra retornar hash divergente.
+
+        Cenario coberto: alguem escreve por cima do current_file entre
+        o swap e o final check, ou FS retorna conteudo desatualizado por
+        cache. Esperado: rollback do backup + status=failed."""
+        import dns_agent as da
+        import threading
+        import hashlib as _hl
+        logger = make_logger()
+        new_content = b'AGENT_VERSION = "9.9.9"\nprint("ok")\n'
+        ver_resp = self._ver_resp("9.9.9", new_content)
+        dl_resp = self._mock_response(200, content=new_content)
+
+        # Plan: tracking + override do _hashlib.sha256 quando chamar pos-swap.
+        # _execute_update_agent calcula sha 5x: download, write_verify,
+        # current (pra backup), final pos-swap, e mais nenhum apos.
+        # Forçamos a 4a a retornar sha errado.
+        sha_calls = {"n": 0}
+        real_sha256 = _hl.sha256
+        bad_digest = "f" * 64
+
+        def fake_sha256(data):
+            sha_calls["n"] += 1
+            if sha_calls["n"] == 4:
+                # 4a chamada = pos-swap final check; retorna hash errado
+                m = MagicMock()
+                m.hexdigest = lambda: bad_digest
+                return m
+            return real_sha256(data)
+
+        with self._isolated_agent_file() as fake_path:
+            # Salva conteudo original pra checar rollback
+            with open(fake_path, "rb") as f:
+                original_content = f.read()
+
+            with patch("dns_agent.requests.get", side_effect=[ver_resp, dl_resp]), \
+                 patch.object(threading, "Thread"), \
+                 patch("hashlib.sha256", side_effect=fake_sha256):
+                # _hashlib eh import alias dentro da funcao — patch hashlib.sha256
+                # pega ambos
+                status, result = da._execute_update_agent(
+                    "http://localhost:8000", "token", logger
+                )
+            assert status == "failed"
+            assert "checksum" in result.lower() or "restaurado" in result.lower()
+            # Rollback ocorreu: arquivo final agora tem conteudo do backup
+            with open(fake_path, "rb") as f:
+                final = f.read()
+            assert final == original_content, \
+                "rollback do backup nao restaurou conteudo original"
 
 
 # ===========================================================================
