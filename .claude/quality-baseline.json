@@ -1,0 +1,77 @@
+{
+  "_doc": "Baseline da skill quality-gate — RATCHET. Atualizado apenas apos rodada bem-sucedida com aprovacao do operador. Nao desca metricas sem justificativa explicita; cada queda exige acao corretiva ou commit que conserta o baseline.",
+  "_versao_baseline": "1.0.0",
+  "updated_at": "2026-05-04T15:30:00Z",
+  "updated_by_commit": "795ed49",
+
+  "tests": {
+    "_comentario": "Numero de testes que passam EM TODAS as 3 suites. Soma + breakdown.",
+    "backend_passed": 281,
+    "agent_passed": 157,
+    "grafana_passed": 92,
+    "total_passed": 530,
+    "total_skipped": 5,
+    "total_xfailed": 1,
+    "total_xpassed": 0,
+    "total_failed": 0,
+    "duration_s_p95": 18.0
+  },
+
+  "loc": {
+    "_comentario": "Linhas totais por area. Crescimento natural com features OK; >20% num run sem justificativa = WARN.",
+    "backend_total": 11542,
+    "agent_total": 4960,
+    "static_total": 5850
+  },
+
+  "files_over_1000_lines": {
+    "_comentario": "Lista de arquivos grandes. Nao deve crescer. Reducao = OK (split). Cada arquivo aqui e candidato a modularizar.",
+    "backend/db.py": 1563,
+    "backend/test_backend.py": 4845,
+    "agent/dns_agent.py": 2600,
+    "agent/test_agent.py": 2360
+  },
+
+  "todos_count": {
+    "_comentario": "Soma TODO/FIXME/XXX/HACK em backend+agent (excluindo tests). Crescimento >2 num run = INFO. Reduzir e bom.",
+    "value": 4
+  },
+
+  "ratchet_locks": {
+    "_comentario": "Debts deliberados que NAO podem desaparecer sem entrega correspondente no commit log. Quando entrega, atualiza pra 'resolved' + commit hash.",
+    "csp_unsafe_inline": "DEBT — refactor B em curso, ETA 2026-05-07 (routine trig_01VWjo2g4XWjWGa6pZc6NHmy)",
+    "nats_plain_text_4222": "DEBT — Onda 1 P5 pendente (TLS NATS via WS+CF)",
+    "nats_per_host_scoping": "DEBT — Onda 1 P4b pendente (refinamento do P4 atual com creds por agente)",
+    "ed25519_agent_signing": "DEBT — SEC-3.1 do roadmap (assinatura do agent.py com chave offline)"
+  },
+
+  "agent_size_bytes": {
+    "_comentario": "Tamanho do dns_agent.py em bytes. Bate com /api/v1/agent/version size. Crescimento OK; rasgada inesperada (>20%) = INVESTIGAR (corrupcao? truncamento?).",
+    "value": 101691,
+    "sha256": "78aa367827f7219b22089db66cee1c1af20f3819067aa7378cfc5ba5664975d5",
+    "version": "1.5.6"
+  },
+
+  "csp": {
+    "_comentario": "Estado da Content-Security-Policy. has_unsafe_inline esperado true ate refactor B; quando virar false, atualiza aqui (= ratchet up).",
+    "has_unsafe_inline_script": true,
+    "has_nonce": false,
+    "img_src_external_count": 3
+  },
+
+  "endpoints_count": {
+    "_comentario": "Total de rotas registradas em main.app. Crescimento natural; queda = endpoint removido (intencional? ratchet acepta se commit explicar).",
+    "estimated": 50
+  },
+
+  "history": {
+    "_comentario": "Notas de cada update do baseline. Manter ultimas 10 entradas pra audit trail.",
+    "entries": [
+      {
+        "ts": "2026-05-04T15:30:00Z",
+        "commit": "795ed49",
+        "delta": "BOOTSTRAP — primeiro baseline apos commits Onda1 P4 + Onda2 SEC-2.* + hardening agent + speedtest cliente."
+      }
+    ]
+  }
+}
