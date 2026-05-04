@@ -1,6 +1,6 @@
 psutil>=5.9.0
 dnspython>=2.4.0
 requests>=2.31.0
-schedule>=1.2.0
+schedule>=1.2.2
 tomli>=2.0.0;python_version<"3.11"
 nats-py>=2.7.0
