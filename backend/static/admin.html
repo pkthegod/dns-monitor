@@ -149,8 +149,12 @@
       <input type="password" id="client-password" placeholder="senha de acesso" autocomplete="new-password">
     </div>
     <div class="field">
-      <label>Hostnames (separados por virgula)</label>
-      <input type="text" id="client-hostnames" placeholder="dns01, dns02, dns03">
+      <label>Hostnames DNS (separados por virgula)</label>
+      <input type="text" id="client-hostnames" placeholder="NS1_X, NS2_X">
+    </div>
+    <div class="field">
+      <label>Dominios speedtest (separados por virgula, opcional)</label>
+      <input type="text" id="client-domains" placeholder="exemplo.com, app.cliente.com.br">
     </div>
     <div class="field">
       <label>Email (relatorio mensal)</label>
@@ -350,7 +354,7 @@
 <script src="/static/app.js?v=100"></script>
 <script src="/static/admin-agents.js?v=002"></script>
 <script src="/static/admin-commands.js?v=004"></script>
-<script src="/static/admin-clients.js?v=001"></script>
+<script src="/static/admin-clients.js?v=002"></script>
 <script>
   // -- Init / agregador / WS / boot ---------------------------------------
   async function loadAll() {

@@ -68,8 +68,13 @@ async def create_client_endpoint(request: Request) -> JSONResponse:
     if existing:
         return JSONResponse({"error": "username ja existe"}, status_code=409)
     email = body.get("email", "").strip() or None
+    domains = body.get("domains") or []
+    if not isinstance(domains, list):
+        return JSONResponse({"error": "domains deve ser array de strings"}, status_code=422)
     pw_hash = _hash_password(password)
-    client_id = await db.create_client(username, pw_hash, hostnames, notes or None, email)
+    client_id = await db.create_client(
+        username, pw_hash, hostnames, notes or None, email, domains,
+    )
     await db.audit("admin", "client_created", username,
                    detail=str(hostnames), ip=_real_client_ip(request))
     return JSONResponse({"id": client_id, "username": username}, status_code=201)
@@ -83,6 +88,10 @@ async def update_client_endpoint(client_id: int, request: Request) -> JSONRespon
     fields = {}
     if "hostnames" in body:
         fields["hostnames"] = body["hostnames"]
+    if "domains" in body:
+        if not isinstance(body["domains"], list):
+            return JSONResponse({"error": "domains deve ser array de strings"}, status_code=422)
+        fields["domains"] = body["domains"]
     if "active" in body:
         fields["active"] = body["active"]
     if "notes" in body:
@@ -610,6 +619,39 @@ def _build_report_pdf(data: dict, client_user: str) -> bytes:
 
     doc.build(elements)
     return buf.getvalue()
+
+
+@client_v1.get("/client/speedtest")
+async def client_speedtest(request: Request):
+    """Resumo + lista do speedtest dos dominios cadastrados pro cliente.
+
+    SEC: filtra apenas pelos dominios em client.domains[]. Sobreposicao entre
+    clientes e permitida (sem unique constraint) — mesmo dominio publico pode
+    aparecer em multiplos portais; cada cliente recebe snapshot independente.
+
+    Retorna:
+      domains: list[str]                 — dominios cadastrados pro cliente
+      summary: { total, reachable, ssl_*, ... }
+      latest:  list[dict]                — estado atual de cada dominio
+                                           (mesma estrutura que speedtest_domains
+                                           mas com so o registro mais recente).
+    """
+    from main import _SafeJSONResponse
+    cookie = request.cookies.get("client_session", "")
+    client_user = _verify_client_cookie(cookie)
+    if not client_user:
+        raise HTTPException(status_code=403, detail="Acesso negado")
+    user = await db.get_client(client_user)
+    if not user or not user["active"]:
+        raise HTTPException(status_code=403)
+    domains = user.get("domains") or []
+    summary = await db.get_client_speedtest_summary(domains)
+    latest = await db.get_client_speedtest_latest(domains)
+    return _SafeJSONResponse({
+        "domains": domains,
+        "summary": summary,
+        "latest": latest,
+    })
 
 
 @client_v1.get("/client/dns-stats")

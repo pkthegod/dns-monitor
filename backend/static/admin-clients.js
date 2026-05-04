@@ -53,6 +53,7 @@ function openClientModal(clientId) {
     document.getElementById('client-password').value = '';
     document.getElementById('client-password').placeholder = 'deixe vazio para manter';
     document.getElementById('client-hostnames').value = (c.hostnames || []).join(', ');
+    document.getElementById('client-domains').value = (c.domains || []).join(', ');
     document.getElementById('client-email').value = c.email || '';
     document.getElementById('client-notes').value = c.notes || '';
     document.getElementById('client-active').checked = c.active !== false;
@@ -62,6 +63,7 @@ function openClientModal(clientId) {
     document.getElementById('client-password').value = '';
     document.getElementById('client-password').placeholder = 'senha de acesso';
     document.getElementById('client-hostnames').value = '';
+    document.getElementById('client-domains').value = '';
     document.getElementById('client-email').value = '';
     document.getElementById('client-notes').value = '';
     document.getElementById('client-active').checked = true;
@@ -84,6 +86,9 @@ async function saveClient() {
   const password = document.getElementById('client-password').value;
   const hostnamesRaw = document.getElementById('client-hostnames').value;
   const hostnames = hostnamesRaw.split(',').map(h => h.trim()).filter(Boolean);
+  const domainsRaw = document.getElementById('client-domains').value;
+  // Dominios speedtest sao opcionais — array vazio se campo em branco
+  const domains = domainsRaw.split(',').map(d => d.trim().toLowerCase()).filter(Boolean);
   const email = document.getElementById('client-email').value.trim();
   const notes = document.getElementById('client-notes').value.trim();
 
@@ -94,7 +99,7 @@ async function saveClient() {
     try {
       await apiFetch('/clients', {
         method: 'POST',
-        body: JSON.stringify({ username, password, hostnames, notes, email }),
+        body: JSON.stringify({ username, password, hostnames, domains, notes, email }),
       });
       toast.ok(`Cliente "${username}" criado.`);
       closeClientModal();
@@ -103,7 +108,7 @@ async function saveClient() {
   } else {
     // Editar
     if (!hostnames.length) { toast.err('Informe ao menos um hostname.'); return; }
-    const body = { hostnames, notes, email, active: document.getElementById('client-active').checked };
+    const body = { hostnames, domains, notes, email, active: document.getElementById('client-active').checked };
     if (password) body.password = password;
     try {
       await apiFetch(`/clients/${editingClientId}`, {

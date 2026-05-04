@@ -908,12 +908,13 @@ async def get_commands_history(hostname: str, limit: int = 50) -> list[dict]:
 # ===========================================================================
 
 async def create_client(username: str, password_hash: str, hostnames: list[str],
-                        notes: str = None, email: str = None) -> int:
+                        notes: str = None, email: str = None,
+                        domains: list[str] = None) -> int:
     async with get_conn() as conn:
         row = await conn.fetchrow(
-            """INSERT INTO client_users (username, password_hash, hostnames, notes, email)
-               VALUES ($1, $2, $3, $4, $5) RETURNING id""",
-            username, password_hash, hostnames, notes, email,
+            """INSERT INTO client_users (username, password_hash, hostnames, notes, email, domains)
+               VALUES ($1, $2, $3, $4, $5, $6) RETURNING id""",
+            username, password_hash, hostnames, notes, email, domains or [],
         )
         return row["id"]
 
@@ -928,11 +929,12 @@ async def get_client(username: str) -> Optional[dict]:
 async def list_clients() -> list[dict]:
     async with get_conn() as conn:
         rows = await conn.fetch(
-            "SELECT id, username, hostnames, active, created_at, notes, email, webhook_url FROM client_users ORDER BY username")
+            "SELECT id, username, hostnames, active, created_at, notes, email, webhook_url, domains "
+            "FROM client_users ORDER BY username")
         return [dict(r) for r in rows]
 
 
-_CLIENT_ALLOWED_FIELDS = {"hostnames", "active", "password_hash", "notes", "email", "webhook_url"}
+_CLIENT_ALLOWED_FIELDS = {"hostnames", "active", "password_hash", "notes", "email", "webhook_url", "domains"}
 
 
 async def update_client(client_id: int, **fields) -> bool:
@@ -1463,3 +1465,100 @@ async def get_speedtest_history(limit: int = 30) -> list[dict]:
             "SELECT * FROM speedtest_scans ORDER BY ts DESC LIMIT $1", limit
         )
         return [dict(r) for r in rows]
+
+
+# ===========================================================================
+# Speedtest — visao do cliente (filtrada pelos seus dominios)
+# ===========================================================================
+
+async def get_client_speedtest_latest(domains: list[str]) -> list[dict]:
+    """Retorna o ultimo registro de cada dominio em speedtest_domains que
+    bate com a lista do cliente. SEC: lista vazia = nada (nao retorna tudo).
+
+    Sobreposicao entre clientes e suportada — mesmo dominio pode aparecer
+    em multiplos client.domains[]; cada cliente recebe o snapshot atual
+    independente.
+    """
+    if not domains:
+        return []
+    async with get_conn() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT DISTINCT ON (domain)
+                domain, port, ts, reachable, ssl_enabled,
+                certificate_valid, certificate_expired, days_until_expiry,
+                expiry_date, issuer, tls_version,
+                response_time_ms, error_message
+            FROM speedtest_domains
+            WHERE domain = ANY($1)
+            ORDER BY domain, ts DESC
+            """,
+            domains,
+        )
+        return [dict(r) for r in rows]
+
+
+async def get_client_speedtest_summary(domains: list[str]) -> dict:
+    """KPIs agregados pra card resumo no portal do cliente.
+    Calcula em cima do ultimo registro de cada dominio (ou seja, mesmo
+    set que get_client_speedtest_latest).
+
+    Retorna:
+      total_domains
+      reachable / unreachable
+      ssl_valid / ssl_invalid / ssl_expired
+      expiring_soon (< 30 dias pra vencer)
+      avg_response_ms (so dos reachable)
+      last_check_ts (timestamp do scan mais recente que envolveu algum dominio)
+    """
+    if not domains:
+        return {
+            "total_domains": 0, "reachable": 0, "unreachable": 0,
+            "ssl_valid": 0, "ssl_invalid": 0, "ssl_expired": 0,
+            "expiring_soon": 0, "avg_response_ms": None,
+            "last_check_ts": None,
+        }
+    latest = await get_client_speedtest_latest(domains)
+    if not latest:
+        return {
+            "total_domains": len(domains), "reachable": 0, "unreachable": 0,
+            "ssl_valid": 0, "ssl_invalid": 0, "ssl_expired": 0,
+            "expiring_soon": 0, "avg_response_ms": None,
+            "last_check_ts": None,
+        }
+
+    total = len(latest)
+    reachable = sum(1 for r in latest if r.get("reachable"))
+    ssl_valid = sum(1 for r in latest if r.get("certificate_valid"))
+    ssl_invalid = sum(
+        1 for r in latest
+        if r.get("ssl_enabled") and not r.get("certificate_valid")
+        and not r.get("certificate_expired")
+    )
+    ssl_expired = sum(1 for r in latest if r.get("certificate_expired"))
+    # Expiring soon: < 30 dias E nao expirado ainda (= valido mas perto do fim)
+    expiring_soon = sum(
+        1 for r in latest
+        if r.get("days_until_expiry") is not None
+        and 0 < r["days_until_expiry"] < 30
+        and not r.get("certificate_expired")
+    )
+    rt_values = [
+        float(r["response_time_ms"]) for r in latest
+        if r.get("response_time_ms") is not None and r.get("reachable")
+    ]
+    avg_rt = round(sum(rt_values) / len(rt_values), 1) if rt_values else None
+    last_ts = max((r["ts"] for r in latest if r.get("ts")), default=None)
+
+    return {
+        "total_domains": total,
+        "configured_domains": len(domains),  # quantos o cliente cadastrou
+        "reachable": reachable,
+        "unreachable": total - reachable,
+        "ssl_valid": ssl_valid,
+        "ssl_invalid": ssl_invalid,
+        "ssl_expired": ssl_expired,
+        "expiring_soon": expiring_soon,
+        "avg_response_ms": avg_rt,
+        "last_check_ts": last_ts,
+    }

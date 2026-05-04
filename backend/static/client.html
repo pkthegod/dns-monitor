@@ -333,6 +333,34 @@
     <div id="dsEmptyState" class="dim" style="font-size:12px;font-style:italic;display:none">Coleta de stats inicia ~10min apos primeira execucao do agente. Aguarde os primeiros ciclos.</div>
   </div>
 
+  <!-- Speedtest dos dominios do cliente — esconde se cliente nao tem dominios cadastrados -->
+  <div class="speedtest-section" id="speedtestSection" style="display:none;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px 24px;margin-bottom:20px;">
+    <h3 style="font-size:12px;font-weight:500;color:var(--text-mid);text-transform:uppercase;letter-spacing:.06em;margin-bottom:14px;">Conectividade dos seus dominios</h3>
+    <div id="speedtestKpis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:16px;">
+      <div class="dns-stat-kpi"><div class="dns-stat-label">Dominios</div><div class="dns-stat-value" id="stKpiTotal">--</div></div>
+      <div class="dns-stat-kpi" style="color:var(--green)"><div class="dns-stat-label">Acessiveis</div><div class="dns-stat-value" id="stKpiReach">--</div></div>
+      <div class="dns-stat-kpi" style="color:var(--green)"><div class="dns-stat-label">SSL valido</div><div class="dns-stat-value" id="stKpiSslOk">--</div></div>
+      <div class="dns-stat-kpi" style="color:var(--yellow)"><div class="dns-stat-label">SSL expirando &lt;30d</div><div class="dns-stat-value" id="stKpiSslSoon">--</div></div>
+      <div class="dns-stat-kpi" style="color:var(--red)"><div class="dns-stat-label">SSL expirado</div><div class="dns-stat-value" id="stKpiSslExp">--</div></div>
+      <div class="dns-stat-kpi"><div class="dns-stat-label">Tempo medio</div><div class="dns-stat-value" id="stKpiAvgRt">--</div></div>
+    </div>
+    <table class="table" style="margin-top:8px;font-size:12px">
+      <thead>
+        <tr>
+          <th style="text-align:left">Dominio</th>
+          <th>Status</th>
+          <th>SSL</th>
+          <th>Vence em</th>
+          <th>Tempo</th>
+          <th>Ultimo check</th>
+        </tr>
+      </thead>
+      <tbody id="speedtestBody"><tr><td colspan="6" class="dim">Carregando...</td></tr></tbody>
+    </table>
+    <div id="stEmptyState" class="dim" style="font-size:11px;font-style:italic;margin-top:8px;display:none">Sem dados de conectividade ainda. Os dominios precisam estar cadastrados no scanner do operador. Procure suporte se nao aparecer em 24h.</div>
+    <div id="stLastCheck" class="dim" style="font-size:11px;font-style:italic;margin-top:8px;"></div>
+  </div>
+
   <!-- Alerts -->
   <div class="alerts-section">
     <h3>Alertas Recentes</h3>
@@ -545,6 +573,112 @@ function renderTimeline(data) {
     else { cls = 'down'; label = `${b.failures}/${b.total} falhas`; }
     return `<div class="slot ${cls}" title="${t} — ${label} (${b.total} checks)"></div>`;
   }).join('');
+}
+
+// Speedtest — conectividade dos dominios cadastrados pra esse cliente
+async function loadSpeedtest() {
+  const section = document.getElementById('speedtestSection');
+  const tbody   = document.getElementById('speedtestBody');
+  const empty   = document.getElementById('stEmptyState');
+  const lastTs  = document.getElementById('stLastCheck');
+
+  let payload;
+  try {
+    payload = await apiFetch('/client/speedtest');
+  } catch (e) {
+    console.warn('[client] /speedtest falhou:', e?.message || e);
+    section.style.display = 'none';
+    return;
+  }
+
+  const domains = payload.domains || [];
+  if (!domains.length) {
+    // Cliente sem dominios cadastrados — esconde o card inteiro
+    section.style.display = 'none';
+    return;
+  }
+  section.style.display = '';
+
+  const summary = payload.summary || {};
+  const latest  = payload.latest || [];
+
+  // KPIs
+  const total = summary.total_domains ?? 0;
+  const cfg   = summary.configured_domains ?? domains.length;
+  document.getElementById('stKpiTotal').textContent = total
+    + (total < cfg ? ` / ${cfg}` : '');
+  document.getElementById('stKpiReach').textContent  = summary.reachable ?? 0;
+  document.getElementById('stKpiSslOk').textContent  = summary.ssl_valid ?? 0;
+  document.getElementById('stKpiSslSoon').textContent = summary.expiring_soon ?? 0;
+  document.getElementById('stKpiSslExp').textContent  = summary.ssl_expired ?? 0;
+  document.getElementById('stKpiAvgRt').textContent =
+    summary.avg_response_ms != null ? `${summary.avg_response_ms}ms` : '--';
+
+  // Tabela: estado atual de cada dominio cadastrado
+  // (alguns dominios cadastrados podem nao ter dado ainda — aparece como "—")
+  if (latest.length === 0) {
+    tbody.innerHTML = '';
+    empty.style.display = '';
+    lastTs.textContent = '';
+    return;
+  }
+  empty.style.display = 'none';
+
+  // Index pra lookup rapido por dominio
+  const byDomain = {};
+  for (const r of latest) byDomain[r.domain] = r;
+
+  tbody.innerHTML = domains.map(d => {
+    const r = byDomain[d.toLowerCase()] || byDomain[d];
+    if (!r) {
+      return `<tr>
+        <td><strong>${esc(d)}</strong></td>
+        <td colspan="5" class="dim" style="font-style:italic">Sem dados ainda</td>
+      </tr>`;
+    }
+    const reachPill = r.reachable
+      ? '<span style="color:var(--green)">OK</span>'
+      : '<span style="color:var(--red)">Falha</span>';
+    let sslPill;
+    if (!r.ssl_enabled) {
+      sslPill = '<span class="dim">—</span>';
+    } else if (r.certificate_expired) {
+      sslPill = '<span style="color:var(--red)">Expirado</span>';
+    } else if (r.certificate_valid) {
+      sslPill = '<span style="color:var(--green)">Valido</span>';
+    } else {
+      sslPill = '<span style="color:var(--yellow)">Invalido</span>';
+    }
+    let exp;
+    if (r.days_until_expiry == null) {
+      exp = '<span class="dim">—</span>';
+    } else if (r.days_until_expiry < 0) {
+      exp = `<span style="color:var(--red)">${Math.abs(r.days_until_expiry)}d atras</span>`;
+    } else if (r.days_until_expiry < 30) {
+      exp = `<span style="color:var(--yellow)">${r.days_until_expiry}d</span>`;
+    } else {
+      exp = `<span style="color:var(--text-mid)">${r.days_until_expiry}d</span>`;
+    }
+    const rt = r.response_time_ms != null
+      ? `${parseFloat(r.response_time_ms).toFixed(0)}ms`
+      : '<span class="dim">—</span>';
+    const tsStr = r.ts ? fmtAgo(r.ts) : '<span class="dim">—</span>';
+
+    return `<tr>
+      <td><strong>${esc(d)}</strong>${r.error_message ? `<div class="dim" style="font-size:10px">${esc(r.error_message)}</div>` : ''}</td>
+      <td>${reachPill}</td>
+      <td>${sslPill}</td>
+      <td>${exp}</td>
+      <td>${rt}</td>
+      <td><span class="dim">${tsStr}</span></td>
+    </tr>`;
+  }).join('');
+
+  if (summary.last_check_ts) {
+    lastTs.textContent = `Ultima coleta: ${fmtAgo(summary.last_check_ts)}`;
+  } else {
+    lastTs.textContent = '';
+  }
 }
 
 // DNS Query Stats — RCODEs / QPS / cache do servidor DNS do cliente
@@ -1402,7 +1536,12 @@ document.getElementById('traceInput').addEventListener('keydown', e => {
   if (e.key === 'Enter') runDnsTrace();
 });
 
-fetchSessionToken().then(() => { loadPortal(); loadSLA(); loadDnsStats(); });
+fetchSessionToken().then(() => {
+  loadPortal();
+  loadSLA();
+  loadDnsStats();
+  loadSpeedtest();
+});
 </script>
 </body>
 </html>

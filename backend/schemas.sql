@@ -478,6 +478,11 @@ CREATE TABLE IF NOT EXISTS client_users (
 -- Migracoes (ADD COLUMN IF NOT EXISTS e idempotente)
 ALTER TABLE client_users ADD COLUMN IF NOT EXISTS email TEXT;
 ALTER TABLE client_users ADD COLUMN IF NOT EXISTS webhook_url TEXT;
+-- Speedtest do cliente (2026-05-04): lista de dominios web cuja conectividade/SSL
+-- o cliente pode ver no portal. Sobreposicao entre clientes e permitida (sem
+-- unique constraint) — dominios publicos podem aparecer em multiplos portais.
+-- Filtro no portal: speedtest_domains WHERE domain = ANY(client.domains).
+ALTER TABLE client_users ADD COLUMN IF NOT EXISTS domains TEXT[] NOT NULL DEFAULT '{}';
 
 
 -- =============================================================================

@@ -4663,6 +4663,182 @@ class TestNatsServerConfig:
 
 
 # ===========================================================================
+# Cliente — speedtest filtrado por client.domains[]
+# ===========================================================================
+
+class TestClientSpeedtest:
+    """Cliente ve apenas o speedtest dos dominios cadastrados pra ele.
+    Multi-tenant isolation paralelo ao /client/data + /client/dns-stats.
+
+    Sobreposicao entre clientes e suportada — mesmo dominio em multiplos
+    client.domains[] retorna snapshot independente em cada portal.
+    """
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def _make_request(self, cookie="valid"):
+        req = MagicMock()
+        req.cookies = {"client_session": cookie}
+        return req
+
+    def test_summary_zerado_se_cliente_sem_dominios(self):
+        """Cliente cadastrado mas sem domains[]: card no portal nao aparece."""
+        import main as m_module
+        async def run():
+            req = self._make_request()
+            with patch("routes_client._verify_client_cookie", return_value="cliente1"), \
+                 patch("routes_client.db.get_client", AsyncMock(return_value={
+                     "username": "cliente1", "active": True,
+                     "hostnames": ["NS1_X"], "domains": [],
+                 })), \
+                 patch("routes_client.db.get_client_speedtest_summary",
+                       AsyncMock(return_value={
+                           "total_domains": 0, "configured_domains": 0,
+                           "reachable": 0, "unreachable": 0,
+                           "ssl_valid": 0, "ssl_invalid": 0, "ssl_expired": 0,
+                           "expiring_soon": 0, "avg_response_ms": None,
+                           "last_check_ts": None,
+                       })), \
+                 patch("routes_client.db.get_client_speedtest_latest",
+                       AsyncMock(return_value=[])):
+                return await m_module.client_v1.routes[0].endpoint(req)
+        # Endpoint pode estar em ordem variavel — chamamos direto
+        from routes_client import client_speedtest
+        async def run2():
+            req = self._make_request()
+            with patch("routes_client._verify_client_cookie", return_value="cliente1"), \
+                 patch("routes_client.db.get_client", AsyncMock(return_value={
+                     "username": "cliente1", "active": True,
+                     "hostnames": ["NS1_X"], "domains": [],
+                 })), \
+                 patch("routes_client.db.get_client_speedtest_summary",
+                       AsyncMock(return_value={
+                           "total_domains": 0, "configured_domains": 0,
+                           "reachable": 0, "unreachable": 0,
+                           "ssl_valid": 0, "ssl_invalid": 0, "ssl_expired": 0,
+                           "expiring_soon": 0, "avg_response_ms": None,
+                           "last_check_ts": None,
+                       })), \
+                 patch("routes_client.db.get_client_speedtest_latest",
+                       AsyncMock(return_value=[])):
+                return await client_speedtest(req)
+        resp = self._run(run2())
+        import json as _json
+        body = _json.loads(resp.body)
+        assert body["domains"] == []
+        assert body["summary"]["total_domains"] == 0
+        assert body["latest"] == []
+
+    def test_filtra_apenas_dominios_do_cliente(self):
+        """SEC: cliente recebe so dominios em sua lista. db.get_client_speedtest_*
+        recebe a lista de dominios DELE — nao da pra ver de outros."""
+        from routes_client import client_speedtest
+        async def run():
+            req = self._make_request()
+            with patch("routes_client._verify_client_cookie", return_value="cliente1"), \
+                 patch("routes_client.db.get_client", AsyncMock(return_value={
+                     "username": "cliente1", "active": True,
+                     "hostnames": [], "domains": ["meusite.com", "api.meusite.com"],
+                 })), \
+                 patch("routes_client.db.get_client_speedtest_summary",
+                       AsyncMock(return_value={"total_domains": 2})) as mock_sum, \
+                 patch("routes_client.db.get_client_speedtest_latest",
+                       AsyncMock(return_value=[])) as mock_lat:
+                resp = await client_speedtest(req)
+                # SEC: backend recebe APENAS os dominios do cliente
+                mock_sum.assert_awaited_once_with(["meusite.com", "api.meusite.com"])
+                mock_lat.assert_awaited_once_with(["meusite.com", "api.meusite.com"])
+            return resp
+        resp = self._run(run())
+        assert resp.status_code == 200
+
+    def test_sem_cookie_403(self):
+        """SEC: rota exige cookie cliente — sem auth, 403."""
+        from routes_client import client_speedtest
+        from fastapi import HTTPException
+        async def run():
+            req = self._make_request(cookie="")
+            with patch("routes_client._verify_client_cookie", return_value=None):
+                return await client_speedtest(req)
+        with pytest.raises(HTTPException) as exc:
+            self._run(run())
+        assert exc.value.status_code == 403
+
+    def test_cliente_inativo_403(self):
+        """Cliente cadastrado mas active=False: 403."""
+        from routes_client import client_speedtest
+        from fastapi import HTTPException
+        async def run():
+            req = self._make_request()
+            with patch("routes_client._verify_client_cookie", return_value="cliente_inactive"), \
+                 patch("routes_client.db.get_client", AsyncMock(return_value={
+                     "username": "cliente_inactive", "active": False,
+                     "hostnames": [], "domains": ["a.com"],
+                 })):
+                return await client_speedtest(req)
+        with pytest.raises(HTTPException) as exc:
+            self._run(run())
+        assert exc.value.status_code == 403
+
+
+class TestSpeedtestSummary:
+    """Validacao da logica de get_client_speedtest_summary — KPIs corretos."""
+
+    def test_summary_calculado_corretamente(self):
+        """Mock get_client_speedtest_latest e checa que summary deriva certo."""
+        import db
+        from datetime import datetime, timezone
+        async def run():
+            ts = datetime.now(timezone.utc)
+            mock_latest = [
+                # dominio 1: reachable, SSL valido, 100d pra expirar, 50ms
+                {"domain": "a.com", "ts": ts, "reachable": True,
+                 "ssl_enabled": True, "certificate_valid": True,
+                 "certificate_expired": False, "days_until_expiry": 100,
+                 "response_time_ms": 50.0},
+                # dominio 2: reachable, SSL expirado, -5d, 80ms
+                {"domain": "b.com", "ts": ts, "reachable": True,
+                 "ssl_enabled": True, "certificate_valid": False,
+                 "certificate_expired": True, "days_until_expiry": -5,
+                 "response_time_ms": 80.0},
+                # dominio 3: NAO reachable (timeout), SSL desconhecido
+                {"domain": "c.com", "ts": ts, "reachable": False,
+                 "ssl_enabled": False, "certificate_valid": False,
+                 "certificate_expired": False, "days_until_expiry": None,
+                 "response_time_ms": None},
+                # dominio 4: reachable, SSL valido mas expira em 15d (soon)
+                {"domain": "d.com", "ts": ts, "reachable": True,
+                 "ssl_enabled": True, "certificate_valid": True,
+                 "certificate_expired": False, "days_until_expiry": 15,
+                 "response_time_ms": 70.0},
+            ]
+            with patch("db.get_client_speedtest_latest",
+                       AsyncMock(return_value=mock_latest)):
+                return await db.get_client_speedtest_summary(
+                    ["a.com", "b.com", "c.com", "d.com"]
+                )
+        s = asyncio.run(run())
+        assert s["total_domains"] == 4
+        assert s["reachable"] == 3
+        assert s["unreachable"] == 1
+        assert s["ssl_valid"] == 2  # a.com + d.com
+        assert s["ssl_expired"] == 1  # b.com
+        assert s["expiring_soon"] == 1  # d.com (15d < 30d)
+        # avg_response_ms = (50+80+70)/3 = 66.66...
+        assert s["avg_response_ms"] == 66.7
+
+    def test_summary_dominios_vazios(self):
+        """Cliente sem domains[] cadastrados — summary zerado, sem query."""
+        import db
+        s = asyncio.run(db.get_client_speedtest_summary([]))
+        assert s["total_domains"] == 0
+        assert s["reachable"] == 0
+        assert s["avg_response_ms"] is None
+        assert s["last_check_ts"] is None
+
+
+# ===========================================================================
 # Entry point
 # ===========================================================================
 
