@@ -109,6 +109,8 @@ services:
       FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
       # Onda 1 P2: hosts autorizados em CSRF (sem schema, separados por virgula)
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      # Onda 2 SEC-2.3: HTTPS pro geolocate (opt-in via plano pago ip-api.com)
+      IPAPI_KEY: ${IPAPI_KEY:-}
     volumes:
       # SEC/OPS: bind mount de DIRETORIO (nao de arquivo unico).
       # Bind mount de file unico amarra no inode original — quando `cp -a`

@@ -665,6 +665,36 @@ async def agent_latest_download(request: Request):
 # /tools/geolocate
 # ---------------------------------------------------------------------------
 
+# SEC (Onda 2 SEC-2.3): geolocate via HTTPS quando IPAPI_KEY configurado.
+# ip-api.com FREE e HTTP-only — versao HTTPS exige plano pago em
+# https://members.ip-api.com (~$13/mes). Se IPAPI_KEY setado, usamos
+# https://pro.ip-api.com/batch (HTTPS); senao mantemos HTTP free.
+#
+# Risco mitigado: vazamento dos IPs do trace via plaintext. IPs sao publicos
+# (servers DNS root/TLD/auth) — nao revelam dado privado do cliente — mas
+# tracegrafia revela QUE host esta investigando QUAL dominio: padrao de uso
+# leakable em rede compartilhada. HTTPS fecha esse vetor pra quem paga.
+_IPAPI_FIELDS = "query,status,country,countryCode,regionName,city,isp,org,lat,lon"
+
+
+def _ipapi_url() -> str:
+    """URL do ip-api: pro (HTTPS) se IPAPI_KEY set; senao free (HTTP plain)."""
+    key = _os.environ.get("IPAPI_KEY", "").strip()
+    if key:
+        return f"https://pro.ip-api.com/batch?key={key}&fields={_IPAPI_FIELDS}"
+    return f"http://ip-api.com/batch?fields={_IPAPI_FIELDS}"
+
+
+# Warning uma vez no import — em prod sem IPAPI_KEY, geo vai plaintext
+if _os.environ.get("INFRA_VISION_ENV", "").lower() == "production" \
+   and not _os.environ.get("IPAPI_KEY", "").strip():
+    logger.warning(
+        "IPAPI_KEY ausente em INFRA_VISION_ENV=production — geolocate fara "
+        "HTTP plain pra ip-api.com (vetor leak de trace patterns). "
+        "Pra HTTPS, configure IPAPI_KEY=<chave> de https://members.ip-api.com"
+    )
+
+
 @agent_v1.post("/tools/geolocate", dependencies=[Depends(require_admin_or_client)], tags=["tools"])
 async def geolocate_ips(request: Request) -> JSONResponse:
     """Lookup IP via ip-api.com — admin OU cliente autenticado.
@@ -672,6 +702,7 @@ async def geolocate_ips(request: Request) -> JSONResponse:
     SEC: IPs do trace sao publicos (servers DNS), nenhum dado sensivel.
     Cliente precisa pra mostrar mapa de saltos no portal — paridade com admin.
     Rate limit do middleware /api/ ja protege contra bombing (~120 req/min/IP).
+    Transporte HTTP (free) ou HTTPS (com IPAPI_KEY) — ver _ipapi_url().
     """
     body = await request.json()
     ips  = list(dict.fromkeys(str(ip) for ip in body.get("ips", []) if ip))[:100]
@@ -679,12 +710,12 @@ async def geolocate_ips(request: Request) -> JSONResponse:
         return JSONResponse([])
 
     payload = _json.dumps([{"query": ip} for ip in ips]).encode()
+    url = _ipapi_url()
 
     def _fetch():
         try:
             req = _urllib.Request(
-                "http://ip-api.com/batch"
-                "?fields=query,status,country,countryCode,regionName,city,isp,org,lat,lon",
+                url,
                 data=payload,
                 headers={"Content-Type": "application/json"},
                 method="POST",
@@ -692,7 +723,7 @@ async def geolocate_ips(request: Request) -> JSONResponse:
             with _urllib.urlopen(req, timeout=10) as resp:
                 return _json.loads(resp.read().decode())
         except Exception as exc:
-            logger.warning("geolocate: ip-api.com falhou: %s", exc)
+            logger.warning("geolocate: ip-api falhou: %s", exc)
             return [{"query": ip, "status": "fail"} for ip in ips]
 
     loop = asyncio.get_running_loop()

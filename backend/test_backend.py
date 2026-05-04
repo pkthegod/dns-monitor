@@ -4463,6 +4463,55 @@ class TestWSManagerCap:
 
 
 # ===========================================================================
+# Onda 2 SEC-2.3 — geolocate via HTTPS quando IPAPI_KEY configurado
+# ===========================================================================
+
+class TestIpApiUrl:
+    """Onda 2 SEC-2.3: _ipapi_url() escolhe HTTP free ou HTTPS pro baseado
+    em IPAPI_KEY. Sem mudar o handler, escolha do transporte fica
+    centralizada e testavel."""
+
+    def test_sem_key_retorna_http_free(self):
+        with patch.dict(os.environ, {"IPAPI_KEY": ""}, clear=False):
+            import importlib
+            import routes_agent
+            importlib.reload(routes_agent)
+            url = routes_agent._ipapi_url()
+            assert url.startswith("http://ip-api.com/batch")
+            assert "key=" not in url
+            assert "fields=" in url
+
+    def test_com_key_retorna_https_pro(self):
+        with patch.dict(os.environ, {"IPAPI_KEY": "test-key-xyz"}, clear=False):
+            import importlib
+            import routes_agent
+            importlib.reload(routes_agent)
+            url = routes_agent._ipapi_url()
+            assert url.startswith("https://pro.ip-api.com/batch")
+            assert "key=test-key-xyz" in url
+            assert "fields=" in url
+
+    def test_key_com_espacos_e_trimmed(self):
+        """Espacos acidentais em IPAPI_KEY sao removidos."""
+        with patch.dict(os.environ, {"IPAPI_KEY": "  realkey  "}, clear=False):
+            import importlib
+            import routes_agent
+            importlib.reload(routes_agent)
+            url = routes_agent._ipapi_url()
+            assert "key=realkey" in url
+            assert "key=  " not in url
+
+    def test_fields_inclui_lat_lon(self):
+        """Mapa precisa de lat/lon — regression guard pra ninguem remover."""
+        with patch.dict(os.environ, {"IPAPI_KEY": ""}, clear=False):
+            import importlib
+            import routes_agent
+            importlib.reload(routes_agent)
+            url = routes_agent._ipapi_url()
+            assert "lat" in url and "lon" in url
+
+
+# ===========================================================================
 # Entry point
 # ===========================================================================
 
