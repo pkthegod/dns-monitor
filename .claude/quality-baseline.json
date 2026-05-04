@@ -1,27 +1,26 @@
 {
   "_doc": "Baseline da skill quality-gate — RATCHET. Atualizado apenas apos rodada bem-sucedida com aprovacao do operador. Nao desca metricas sem justificativa explicita; cada queda exige acao corretiva ou commit que conserta o baseline.",
-  "_versao_baseline": "1.0.0",
-  "updated_at": "2026-05-04T15:30:00Z",
-  "updated_by_commit": "795ed49",
+  "_versao_baseline": "1.1.0",
+  "updated_at": "2026-05-04T19:30:00Z",
+  "updated_by_commit": "9a1ce1a",
 
   "tests": {
-    "_comentario": "Numero de testes que passam EM TODAS as 3 suites. Soma + breakdown.",
+    "_comentario": "Numero de testes que passam EM TODAS as suites ativas. Grafana removido em 2026-05-04 (stack change — ver history).",
     "backend_passed": 281,
     "agent_passed": 157,
-    "grafana_passed": 92,
-    "total_passed": 530,
+    "total_passed": 438,
     "total_skipped": 5,
     "total_xfailed": 1,
     "total_xpassed": 0,
     "total_failed": 0,
-    "duration_s_p95": 18.0
+    "duration_s_p95": 12.0
   },
 
   "loc": {
     "_comentario": "Linhas totais por area. Crescimento natural com features OK; >20% num run sem justificativa = WARN.",
     "backend_total": 11542,
     "agent_total": 4960,
-    "static_total": 5850
+    "static_total": 6828
   },
 
   "files_over_1000_lines": {
@@ -33,8 +32,8 @@
   },
 
   "todos_count": {
-    "_comentario": "Soma TODO/FIXME/XXX/HACK em backend+agent (excluindo tests). Crescimento >2 num run = INFO. Reduzir e bom.",
-    "value": 4
+    "_comentario": "Soma TODO/FIXME/XXX/HACK em backend+agent (excluindo tests). Crescimento >2 num run = INFO. Reduzir e bom. Atual: 0 reais (anteriores eram falsos positivos — 'TODOS' em PT-BR + comentario informativo).",
+    "value": 0
   },
 
   "ratchet_locks": {
@@ -61,7 +60,7 @@
 
   "endpoints_count": {
     "_comentario": "Total de rotas registradas em main.app. Crescimento natural; queda = endpoint removido (intencional? ratchet acepta se commit explicar).",
-    "estimated": 50
+    "estimated": 51
   },
 
   "history": {
@@ -71,6 +70,11 @@
         "ts": "2026-05-04T15:30:00Z",
         "commit": "795ed49",
         "delta": "BOOTSTRAP — primeiro baseline apos commits Onda1 P4 + Onda2 SEC-2.* + hardening agent + speedtest cliente."
+      },
+      {
+        "ts": "2026-05-04T19:30:00Z",
+        "commit": "9a1ce1a",
+        "delta": "STACK CHANGE: grafana removido da stack pelo operador; suite test_grafana.py orfaa, ainda no repo (limpeza pendente). total_passed cai 530->438. loc.static cresceu 5850->6828 (+16.7%, dentro de threshold) por Onda E (mapas) + speedtest cliente. todos_count zerado (anterior eram FPs). endpoints_count subiu pra 51 (+1: /api/v1/client/speedtest)."
       }
     ]
   }
