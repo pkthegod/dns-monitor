@@ -4224,6 +4224,135 @@ class TestRequireAdminOrClient:
 
 
 # ===========================================================================
+# Onda 2 SEC-2.4 — decommission two-step (paridade com purge)
+# ===========================================================================
+
+class TestDecommissionTwoStep:
+    """Onda 2 SEC-2.4: decommission ganha fluxo two-step com confirm_token,
+    paridade com purge. Antes: backend nunca passava confirm_token e o agente
+    rejeitava com 'decommission exige confirm_token' — TODO decommission via
+    /api/v1/commands virava status=failed silenciosamente.
+
+    Bonus: tokens incluem o nome do comando no HMAC, entao token de purge
+    NAO autoriza decommission e vice-versa (defesa contra reuso cross-command).
+    """
+
+    _ADMIN_INFO = {"username": "admin", "role": "admin"}
+
+    def test_decommission_sem_token_retorna_202_com_token(self):
+        """1a chamada sem confirm_token deve retornar 202 + token, sem enfileirar."""
+        import main as m_module
+        async def run():
+            req = MagicMock()
+            req.json = AsyncMock(return_value={
+                "hostname": "ns1", "command": "decommission", "issued_by": "admin",
+            })
+            req.client = MagicMock(host="127.0.0.1")
+            req.headers = MagicMock()
+            req.headers.get = lambda k, d="": ""
+            req.cookies = {}
+            with patch("main.require_admin_role", AsyncMock(return_value=self._ADMIN_INFO)), \
+                 patch("main.db.insert_command", AsyncMock(return_value=99)) as mock_ins, \
+                 patch("main.db.audit", AsyncMock()):
+                resp = await m_module.create_command(req)
+            assert resp.status_code == 202
+            import json
+            data = json.loads(resp.body)
+            assert data["requires_confirm"] is True
+            assert "confirm_token" in data
+            assert len(data["confirm_token"]) == 24
+            # Critico: NAO inseriu no DB na 1a chamada
+            mock_ins.assert_not_called()
+        asyncio.run(run())
+
+    def test_decommission_com_token_valido_enfileira(self):
+        """2a chamada com token valido deve enfileirar (status 201)."""
+        import main as m_module
+        from routes_agent import _critical_token_for
+        import time as _t
+        async def run():
+            bucket = int(_t.time() // 60)
+            token = _critical_token_for("ns1", "decommission", bucket)
+            req = MagicMock()
+            req.json = AsyncMock(return_value={
+                "hostname": "ns1", "command": "decommission",
+                "issued_by": "admin", "confirm_token": token,
+            })
+            req.client = MagicMock(host="127.0.0.1")
+            req.headers = MagicMock()
+            req.headers.get = lambda k, d="": ""
+            req.cookies = {}
+            with patch("main.require_admin_role", AsyncMock(return_value=self._ADMIN_INFO)), \
+                 patch("main.db.insert_command", AsyncMock(return_value=42)) as mock_ins, \
+                 patch("main.db.audit", AsyncMock()):
+                resp = await m_module.create_command(req)
+            assert resp.status_code == 201
+            import json
+            data = json.loads(resp.body)
+            assert data["id"] == 42
+            assert data["confirm_token"] == token  # ecoa token consumido
+            mock_ins.assert_called_once()
+        asyncio.run(run())
+
+    def test_decommission_token_invalido_retorna_400(self):
+        """Token aleatorio nao valida -> 400 + audit do invalid attempt."""
+        import main as m_module
+        async def run():
+            req = MagicMock()
+            req.json = AsyncMock(return_value={
+                "hostname": "ns1", "command": "decommission",
+                "issued_by": "admin", "confirm_token": "x" * 24,  # length OK mas HMAC errado
+            })
+            req.client = MagicMock(host="127.0.0.1")
+            req.headers = MagicMock()
+            req.headers.get = lambda k, d="": ""
+            req.cookies = {}
+            with patch("main.require_admin_role", AsyncMock(return_value=self._ADMIN_INFO)), \
+                 patch("main.db.insert_command", AsyncMock(return_value=1)) as mock_ins, \
+                 patch("main.db.audit", AsyncMock()) as mock_audit:
+                resp = await m_module.create_command(req)
+            assert resp.status_code == 400
+            mock_ins.assert_not_called()
+            # Audit deve registrar tentativa invalida
+            audit_calls = [c[0] for c in mock_audit.call_args_list]
+            assert any("decommission_confirm_invalid" in str(args) for args in audit_calls)
+        asyncio.run(run())
+
+    def test_token_isolation_entre_purge_e_decommission(self):
+        """SEC: token gerado pra purge nao deve autorizar decommission e vice-versa.
+        Antes do fix, o HMAC era so 'purge:host:bucket' — adicionar decommission
+        com mesmo scheme reusaria tokens cross-command. Agora HMAC inclui o
+        nome do comando, isolando."""
+        from routes_agent import (
+            _critical_token_for, _verify_critical_token,
+        )
+        import time as _t
+        bucket = int(_t.time() // 60)
+
+        purge_token = _critical_token_for("ns1", "purge", bucket)
+        decom_token = _critical_token_for("ns1", "decommission", bucket)
+
+        # Tokens sao distintos
+        assert purge_token != decom_token
+
+        # Cada token valida APENAS pro proprio comando
+        assert _verify_critical_token("ns1", "purge", purge_token) is True
+        assert _verify_critical_token("ns1", "decommission", decom_token) is True
+
+        # Cross-uso e rejeitado
+        assert _verify_critical_token("ns1", "purge", decom_token) is False
+        assert _verify_critical_token("ns1", "decommission", purge_token) is False
+
+    def test_db_insert_command_decommission_sem_token_levanta_value_error(self):
+        """Defesa em profundidade no DB layer: insert direto sem token rejeita."""
+        import db
+        async def run():
+            with pytest.raises(ValueError, match="decommission"):
+                await db.insert_command("ns1", "decommission", "admin", confirm_token=None)
+        asyncio.run(run())
+
+
+# ===========================================================================
 # Entry point
 # ===========================================================================
 

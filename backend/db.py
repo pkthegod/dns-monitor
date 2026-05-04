@@ -747,6 +747,11 @@ async def upsert_fingerprint(hostname: str, fingerprint: str) -> dict:
 
 VALID_COMMANDS = {"stop", "disable", "enable", "restart", "purge", "decommission", "run_script", "update_agent", "dnstop"}
 
+# SEC (SEC-2.4): comandos irreversiveis que exigem confirm_token no INSERT.
+# Defesa em profundidade — controller ja barra no two-step, mas o DB tambem
+# valida pra impedir codigo legado/scripts inserindo direto sem o gate.
+_TOKEN_REQUIRED_COMMANDS = {"purge", "decommission"}
+
 
 async def get_pending_commands(hostname: str) -> list[dict]:
     """
@@ -832,8 +837,8 @@ async def insert_command(
     """Insere um novo comando para o agente executar. Retorna o ID."""
     if command not in VALID_COMMANDS:
         raise ValueError(f"Comando inválido: {command}. Válidos: {VALID_COMMANDS}")
-    if command == "purge" and not confirm_token:
-        raise ValueError("purge exige confirm_token")
+    if command in _TOKEN_REQUIRED_COMMANDS and not confirm_token:
+        raise ValueError(f"{command} exige confirm_token")
     if command == "run_script" and not params:
         raise ValueError("run_script exige params com o nome do script")
 

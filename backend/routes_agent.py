@@ -38,40 +38,66 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 import db
 
 
-# SEC (M7): purge confirm_token agora e um HMAC stateless valido por 5 min.
-# Antes, backend gerava um token e ja enfileirava o comando — admin recebia
-# o token apenas como "recibo". Agente so checava `if not token` (truthy),
-# entao qualquer string nao-vazia passava. Agora exige fluxo two-step:
-# 1ª chamada (sem token) retorna o token sem enfileirar; 2ª chamada (com
-# token valido) enfileira o comando de fato. Sem DB schema change.
+# SEC (M7 + Onda 2 SEC-2.4): comandos irreversiveis exigem confirm_token HMAC
+# stateless valido por 5 min. Fluxo two-step:
+#   1ª chamada (sem token) retorna o token e NAO enfileira o comando
+#   2ª chamada (com token valido) enfileira de fato
+# Comandos cobertos:
+#   - purge        (M7, original)
+#   - decommission (SEC-2.4, 2026-05-04 — antes nao tinha gate; backend
+#                   passava confirm_token=None e o agente recusava com
+#                   "decommission exige confirm_token", entao TODO
+#                   decommission via /api/v1/commands virava status=failed)
+#
+# Token e HMAC de "{command}:{hostname}:{bucket}" — tokens NAO sao
+# intercambiaveis entre comandos (token de purge nao funciona pra
+# decommission e vice-versa).
 _PURGE_TOKEN_LEN = 24  # hex chars (12 bytes de entropia)
 _PURGE_WINDOW_MIN = 5  # minutos de validade
+_TOKEN_REQUIRED_COMMANDS = {"purge", "decommission"}
 
 
-def _purge_token_secret() -> bytes:
-    """Chave HMAC do purge token. Reusa ADMIN_SESSION_SECRET (gerenciado e
-    rotacionavel pelo operador). Cai pra AGENT_TOKEN se aquele estiver vazio."""
+def _critical_token_secret() -> bytes:
+    """Chave HMAC dos tokens criticos. Reusa ADMIN_SESSION_SECRET (gerenciado
+    e rotacionavel pelo operador). Cai pra AGENT_TOKEN se vazio."""
     s = _os.environ.get("ADMIN_SESSION_SECRET", "")
     if s:
         return s.encode()
     return _os.environ.get("AGENT_TOKEN", "").encode() or b"infra-vision-fallback"
 
 
-def _purge_token_for(hostname: str, bucket: int) -> str:
-    msg = f"purge:{hostname}:{bucket}".encode()
-    return _hmac.new(_purge_token_secret(), msg, hashlib.sha256).hexdigest()[:_PURGE_TOKEN_LEN]
+def _critical_token_for(hostname: str, command: str, bucket: int) -> str:
+    """HMAC de {command}:{hostname}:{bucket}. Inclusao de command no message
+    impede atacante reusar token de purge pra autorizar decommission."""
+    msg = f"{command}:{hostname}:{bucket}".encode()
+    return _hmac.new(_critical_token_secret(), msg, hashlib.sha256).hexdigest()[:_PURGE_TOKEN_LEN]
 
 
-def _verify_purge_token(hostname: str, token: str) -> bool:
+def _verify_critical_token(hostname: str, command: str, token: str) -> bool:
+    """True se token valida contra (hostname, command, bucket atual ou ate N
+    minutos atras). Compara via hmac.compare_digest (timing-safe)."""
     if not token or len(token) != _PURGE_TOKEN_LEN:
         return False
     bucket = int(_time.time() // 60)
-    # Aceita bucket atual + os ultimos N (janela de _PURGE_WINDOW_MIN minutos)
     for delta in range(0, _PURGE_WINDOW_MIN + 1):
-        expected = _purge_token_for(hostname, bucket - delta)
+        expected = _critical_token_for(hostname, command, bucket - delta)
         if _hmac.compare_digest(token, expected):
             return True
     return False
+
+
+# Backward-compat aliases pra tests/scripts que ainda importam os nomes
+# originais. Comportamento identico ao especifico de "purge".
+def _purge_token_secret() -> bytes:  # pragma: no cover (alias)
+    return _critical_token_secret()
+
+
+def _purge_token_for(hostname: str, bucket: int) -> str:
+    return _critical_token_for(hostname, "purge", bucket)
+
+
+def _verify_purge_token(hostname: str, token: str) -> bool:
+    return _verify_critical_token(hostname, "purge", token)
 import telegram_bot as tg
 from auth import (
     AGENT_TOKEN,
@@ -377,26 +403,25 @@ async def create_command(request: Request) -> JSONResponse:
     if not hostname or not command:
         return JSONResponse({"error": "hostname e command sao obrigatorios"}, status_code=422)
 
-    # SEC (M7): purge requer fluxo two-step com confirm_token HMAC.
-    # 1a chamada (sem token) -> retorna token, NAO enfileira o comando.
-    # 2a chamada (com token valido) -> enfileira de fato.
+    # SEC (M7 + SEC-2.4): comandos irreversiveis (_TOKEN_REQUIRED_COMMANDS)
+    # exigem fluxo two-step com confirm_token HMAC.
     confirm_token = None
-    if command == "purge":
+    if command in _TOKEN_REQUIRED_COMMANDS:
         provided = (body.get("confirm_token") or "").strip()
         if not provided:
-            issued = _purge_token_for(hostname, int(_time.time() // 60))
+            issued = _critical_token_for(hostname, command, int(_time.time() // 60))
             return JSONResponse({
                 "requires_confirm": True,
                 "confirm_token": issued,
                 "expires_in_seconds": _PURGE_WINDOW_MIN * 60,
                 "message": (
-                    "purge e irreversivel. Reenvie a request com este "
-                    "confirm_token dentro de 5 minutos para confirmar."
+                    f"{command} e irreversivel. Reenvie a request com este "
+                    f"confirm_token dentro de 5 minutos para confirmar."
                 ),
             }, status_code=202)
-        if not _verify_purge_token(hostname, provided):
+        if not _verify_critical_token(hostname, command, provided):
             await _m.db.audit(
-                issued_by, "purge_confirm_invalid", hostname,
+                issued_by, f"{command}_confirm_invalid", hostname,
                 detail="token invalido ou expirado",
                 ip=_real_client_ip(request),
             )

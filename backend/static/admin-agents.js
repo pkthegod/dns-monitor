@@ -99,6 +99,21 @@ function refreshOutdatedBadge() {
 }
 
 // -- Send command ---------------------------------------------------------
+// Helper interno: faz POST /commands e, se backend pedir confirm_token
+// (purge/decommission — _TOKEN_REQUIRED_COMMANDS no backend), reenvia
+// com o token. window.confirm() do caller ja serviu como UX gate antes
+// de chegarmos aqui, entao auto-resubmit nao bypassa intencao do usuario.
+async function _postCommandWithConfirm(body) {
+  let resp = await apiFetch('/commands', { method: 'POST', body: JSON.stringify(body) });
+  if (resp.requires_confirm && resp.confirm_token) {
+    resp = await apiFetch('/commands', {
+      method: 'POST',
+      body: JSON.stringify({ ...body, confirm_token: resp.confirm_token }),
+    });
+  }
+  return resp;
+}
+
 async function sendCommand(hostname, command, btn) {
   if (!canWrite()) { toast.warn('Permissao insuficiente. Requer role admin.'); return; }
   if (command === 'disable') {
@@ -106,10 +121,7 @@ async function sendCommand(hostname, command, btn) {
   }
   if (btn) btn.disabled = true;
   try {
-    await apiFetch('/commands', {
-      method: 'POST',
-      body: JSON.stringify({ hostname, command, issued_by: 'admin-panel' }),
-    });
+    await _postCommandWithConfirm({ hostname, command, issued_by: 'admin-panel' });
     toast(`"${command.toUpperCase()}" enfileirado para ${hostname}.`);
     await loadHistory();
   } catch (e) {
@@ -340,10 +352,10 @@ async function sendUpdate(hostname, btn) {
   )) return;
   if (btn) btn.disabled = true;
   try {
-    await apiFetch('/commands', {
-      method: 'POST',
-      body: JSON.stringify({ hostname, command: 'update_agent', issued_by: 'admin-panel' }),
-    });
+    // update_agent nao esta em _TOKEN_REQUIRED_COMMANDS hoje, mas usar o
+    // helper unifica path se mudarmos o backend no futuro (no-op pra
+    // comandos que retornam 201 direto).
+    await _postCommandWithConfirm({ hostname, command: 'update_agent', issued_by: 'admin-panel' });
     toast(`UPDATE enfileirado para ${hostname}. Aguarde o próximo poll do agente.`);
     await loadHistory();
   } catch (e) {
@@ -496,10 +508,9 @@ async function bulkAction(command) {
   let ok = 0, fail = 0;
   for (const hostname of hostnames) {
     try {
-      await apiFetch('/commands', {
-        method: 'POST',
-        body: JSON.stringify({ hostname, command, issued_by: 'admin-bulk' }),
-      });
+      // _postCommandWithConfirm trata 202 + confirm_token automaticamente
+      // pra purge/decommission. Window.confirm acima ja foi gate UX.
+      await _postCommandWithConfirm({ hostname, command, issued_by: 'admin-bulk' });
       ok++;
     } catch (_) { fail++; }
   }
