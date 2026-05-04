@@ -19,8 +19,11 @@ _nc: Optional[nats.NATS] = None
 _js = None  # JetStream context
 
 NATS_URL  = os.environ.get("NATS_URL", "nats://localhost:4222")
-NATS_USER = os.environ.get("NATS_USER", "")
-NATS_PASS = os.environ.get("NATS_PASS", "")
+# Onda 1 P4: backend usa creds dedicadas (full access). Compat: se
+# NATS_BACKEND_* nao setado, cai pra NATS_USER/PASS legacy — deploy
+# existente continua funcionando ate operador atualizar o .env.
+NATS_USER = os.environ.get("NATS_BACKEND_USER") or os.environ.get("NATS_USER", "")
+NATS_PASS = os.environ.get("NATS_BACKEND_PASS") or os.environ.get("NATS_PASS", "")
 
 # Streams JetStream (criados no connect)
 STREAMS = {

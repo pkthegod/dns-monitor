@@ -86,6 +86,10 @@ services:
       THRESH_DNS_LATENCY_CRITICAL: ${THRESH_DNS_LATENCY_CRITICAL:-1000}
       THRESH_OFFLINE_MINUTES: ${THRESH_OFFLINE_MINUTES:-10}
       NATS_URL: nats://172.20.0.13:4222
+      # Onda 1 P4: backend usa BACKEND user (full access). Fallback NATS_USER
+      # mantido pra deploy legado que ainda nao migrou as 4 vars novas.
+      NATS_BACKEND_USER: ${NATS_BACKEND_USER:-${NATS_USER:-dnsmonitor}}
+      NATS_BACKEND_PASS: ${NATS_BACKEND_PASS:-${NATS_PASS:-}}
       NATS_USER: ${NATS_USER:-dnsmonitor}
       NATS_PASS: ${NATS_PASS:-}
       ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:-}
@@ -135,12 +139,20 @@ services:
   # ─────────────────────────────────────────────
   # NATS (message broker + JetStream)
   # ─────────────────────────────────────────────
+  # Onda 1 P4: lê config externa em vez de --user/--pass na CLI.
+  # nats-server.conf define 2 users no $G account (BACKEND full + AGENT
+  # scoped). Migration suave: se NATS_BACKEND_USER/PASS nao setado,
+  # cai pra NATS_USER/PASS legacy — agentes em prod continuam funcionando.
   nats:
     image: nats:2.10-alpine
     container_name: infra_vision_nats
     restart: unless-stopped
-    command: ["--jetstream", "--store_dir", "/data", "--name", "infra-vision-nats",
-              "--user", "${NATS_USER:-dnsmonitor}", "--pass", "${NATS_PASS:?Defina NATS_PASS no .env}"]
+    command: ["-c", "/etc/nats/nats-server.conf"]
+    environment:
+      NATS_BACKEND_USER: ${NATS_BACKEND_USER:-${NATS_USER:-dnsmonitor-backend}}
+      NATS_BACKEND_PASS: ${NATS_BACKEND_PASS:-${NATS_PASS:?Defina NATS_BACKEND_PASS ou NATS_PASS no .env}}
+      NATS_AGENT_USER: ${NATS_AGENT_USER:-${NATS_USER:-dnsmonitor}}
+      NATS_AGENT_PASS: ${NATS_AGENT_PASS:-${NATS_PASS:?Defina NATS_AGENT_PASS ou NATS_PASS no .env}}
     networks:
       infra_vision_net:
         ipv4_address: 172.20.0.13
@@ -149,6 +161,7 @@ services:
       - "8222:8222"
     volumes:
       - nats_data:/data
+      - ./nats-server.conf:/etc/nats/nats-server.conf:ro
 
 volumes:
   pgdata:

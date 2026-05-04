@@ -4512,6 +4512,157 @@ class TestIpApiUrl:
 
 
 # ===========================================================================
+# Onda 1 P4 — NATS account isolation (creds resolution + config sanity)
+# ===========================================================================
+
+class TestNatsBackendCreds:
+    """Onda 1 P4: backend lê NATS_BACKEND_USER/PASS preferencialmente,
+    com fallback pra NATS_USER/PASS legacy. Mesma migration suave que
+    docker-compose.yaml expõe.
+
+    nats_client.py importa 'nats' no top-level — nem todo ambiente local
+    tem nats-py instalado. Mock antes do reload pra rodar em qualquer host.
+    """
+
+    def _mock_nats_module(self):
+        """Stub nats/nats.js/nats.js.api se nao estiverem instalados."""
+        for mod in ("nats", "nats.js", "nats.js.api"):
+            if mod not in sys.modules:
+                sys.modules[mod] = MagicMock()
+
+    def _read_creds_from_env(self, env_overrides):
+        """Resolve credenciais como nats_client faria, sem importar o modulo.
+        Mantem espelhada a logica de nats_client.py:21-22."""
+        return (
+            env_overrides.get("NATS_BACKEND_USER") or env_overrides.get("NATS_USER", ""),
+            env_overrides.get("NATS_BACKEND_PASS") or env_overrides.get("NATS_PASS", ""),
+        )
+
+    def test_prefere_backend_creds_se_setadas(self):
+        """Backend creds dedicadas têm precedencia sobre legado.
+        Validamos a regra direto (espelhada em nats_client.py); reload
+        do modulo seria fragil em hosts sem nats-py."""
+        user, pwd = self._read_creds_from_env({
+            "NATS_BACKEND_USER": "backend-user",
+            "NATS_BACKEND_PASS": "backend-pass",
+            "NATS_USER": "legacy-shared",
+            "NATS_PASS": "legacy-pass",
+        })
+        assert user == "backend-user"
+        assert pwd == "backend-pass"
+
+    def test_fallback_legacy_se_backend_vazio(self):
+        """Sem NATS_BACKEND_*, cai pra NATS_USER/PASS — migration suave."""
+        user, pwd = self._read_creds_from_env({
+            "NATS_USER": "legacy-shared",
+            "NATS_PASS": "legacy-pass",
+        })
+        assert user == "legacy-shared"
+        assert pwd == "legacy-pass"
+
+    def test_sem_nada_setado_vira_strings_vazias(self):
+        """Sem env nenhum: strings vazias (NATS conecta sem auth — dev local)."""
+        user, pwd = self._read_creds_from_env({})
+        assert user == ""
+        assert pwd == ""
+
+    def test_string_vazia_explicita_em_backend_cai_pra_legacy(self):
+        """Edge case: NATS_BACKEND_USER='' ainda deve cair pra NATS_USER.
+        Atende docker-compose ${NATS_BACKEND_USER:-${NATS_USER}}."""
+        # Simula como o shell expande quando BACKEND vazio
+        user, pwd = self._read_creds_from_env({
+            "NATS_BACKEND_USER": "",
+            "NATS_USER": "legacy",
+            "NATS_PASS": "pwd",
+        })
+        # Python `or` trata '' como falsy => cai pro legacy. Bom.
+        assert user == "legacy"
+        assert pwd == "pwd"
+
+
+class TestNatsServerConfig:
+    """Onda 1 P4: validacao do nats-server.conf — permissions corretas e
+    nenhum vazamento acidental de subject pro AGENT user."""
+
+    def _read_conf(self):
+        conf_path = os.path.join(
+            os.path.dirname(__file__), "nats-server.conf",
+        )
+        with open(conf_path, "r", encoding="utf-8") as f:
+            return f.read()
+
+    def _agent_block(self, conf):
+        """Retorna o trecho de config do AGENT user — do '{ user: $NATS_AGENT_USER'
+        ate fechar a chave do bloco."""
+        # Ancoramos no comeco do bloco do user
+        anchor = "{ user: $NATS_AGENT_USER"
+        idx = conf.find(anchor)
+        assert idx >= 0, "anchor do AGENT user nao encontrado no conf"
+        # Conta chaves a partir do anchor pra encontrar o fim do bloco
+        depth = 0
+        end = idx
+        for i, ch in enumerate(conf[idx:]):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = idx + i + 1
+                    break
+        return conf[idx:end]
+
+    def _publish_block(self, agent):
+        """Extrai apenas o trecho do publish: { allow: [...] } do AGENT.
+        subscribe: vem depois e pode legitimamente conter dns.commands.*."""
+        pub_idx = agent.find("publish:")
+        sub_idx = agent.find("subscribe:")
+        assert pub_idx >= 0 and sub_idx > pub_idx, \
+            "AGENT block nao tem publish:/subscribe: na ordem esperada"
+        return agent[pub_idx:sub_idx]
+
+    def test_agent_publish_allow_so_tem_ack_e_stats(self):
+        """SEC: agente NAO pode publicar dns.commands.<host>.
+        Regression guard contra remocao acidental do scope.
+
+        Subscribe pode conter 'dns.commands.*' (legitimo — receber comandos).
+        Publish NAO pode (= sequestro). Isolamos publish_block pra checar."""
+        conf = self._read_conf()
+        agent = self._agent_block(conf)
+        publish = self._publish_block(agent)
+        # Allow esperados no publish:
+        assert '"dns.commands.*.ack"' in publish
+        assert '"dns.stats.*"' in publish
+        # Pattern perigoso: '"dns.commands.*"' (sem .ack/.stats apos)
+        # NUNCA pode estar no allow do publish — sequestro de comandos.
+        import re as _re
+        dangerous = _re.search(r'"dns\.commands\.\*"\s*[,\]]', publish)
+        assert dangerous is None, \
+            f"publish allow tem wildcard sem suffix — sequestro de comandos: {dangerous.group()}"
+
+    def test_agent_subscribe_inclui_inbox_pra_request_reply(self):
+        """AGENT precisa subscrever _INBOX.> alem de dns.commands.* —
+        sem isso, request/reply NATS interno quebra silenciosamente."""
+        conf = self._read_conf()
+        agent = self._agent_block(conf)
+        assert '"dns.commands.*"' in agent
+        assert '"_INBOX.>"' in agent
+
+    def test_backend_user_aparece_em_g_e_sys(self):
+        """BACKEND user e usado em $SYS account (admin) e em $G (operacao).
+        Regression guard pra ninguem reduzir o escopo acidentalmente."""
+        conf = self._read_conf()
+        # NATS_BACKEND_USER aparece 2x: uma em $SYS, outra em $G
+        assert conf.count("$NATS_BACKEND_USER") >= 2
+
+    def test_jetstream_habilitado(self):
+        """JetStream e core do feature (durable consumers, replay anti-loss).
+        Sem isso, a Onda 1 P4 quebra o backend."""
+        conf = self._read_conf()
+        assert "jetstream" in conf
+        assert "store_dir" in conf
+
+
+# ===========================================================================
 # Entry point
 # ===========================================================================
 
