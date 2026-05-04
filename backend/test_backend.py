@@ -4353,6 +4353,116 @@ class TestDecommissionTwoStep:
 
 
 # ===========================================================================
+# Onda 2 SEC-2.2 — WSManager: cap de conexoes/identidade
+# ===========================================================================
+
+class TestWSManagerCap:
+    """Onda 2 SEC-2.2: cap de conexoes simultaneas por identidade.
+
+    Antes: 1 cookie podia abrir N conexoes ate FD exhaustion. Agora:
+      - admin: 5 conexoes maximo por username
+      - client: 3 conexoes maximo por username
+      - identidades distintas sao independentes (admin:joao tem 5,
+        admin:maria tem 5, sem interferencia)
+    """
+
+    def _fresh_manager(self):
+        from ws import WSManager
+        return WSManager()
+
+    def _mock_ws(self):
+        ws = MagicMock()
+        ws.accept = AsyncMock()
+        ws.close = AsyncMock()
+        ws.send_json = AsyncMock()
+        return ws
+
+    def test_admin_aceita_ate_cap(self):
+        """5 conexoes do mesmo admin sao aceitas; 6a e rejeitada."""
+        async def run():
+            mgr = self._fresh_manager()
+            wss = []
+            for i in range(5):
+                ws = self._mock_ws()
+                ok = await mgr.connect(ws, "admin:joao", "admin")
+                assert ok is True, f"conexao {i+1} deveria ser aceita"
+                wss.append(ws)
+            # 6a — rejeitada (cap)
+            ws6 = self._mock_ws()
+            ok = await mgr.connect(ws6, "admin:joao", "admin")
+            assert ok is False
+            ws6.accept.assert_not_called()
+            assert mgr.count == 5
+        asyncio.run(run())
+
+    def test_client_cap_3(self):
+        """Cliente tem cap menor (3)."""
+        async def run():
+            mgr = self._fresh_manager()
+            for i in range(3):
+                ok = await mgr.connect(self._mock_ws(), "client:cliente1", "client")
+                assert ok is True
+            ok = await mgr.connect(self._mock_ws(), "client:cliente1", "client")
+            assert ok is False
+            assert mgr.count == 3
+        asyncio.run(run())
+
+    def test_identidades_distintas_sao_independentes(self):
+        """admin:joao no cap nao afeta admin:maria."""
+        async def run():
+            mgr = self._fresh_manager()
+            # 5 do joao
+            for _ in range(5):
+                await mgr.connect(self._mock_ws(), "admin:joao", "admin")
+            # maria entra normal
+            ok = await mgr.connect(self._mock_ws(), "admin:maria", "admin")
+            assert ok is True
+            assert mgr.count == 6
+        asyncio.run(run())
+
+    def test_disconnect_libera_vaga(self):
+        """Apos disconnect, identidade pode reabrir conexao."""
+        async def run():
+            mgr = self._fresh_manager()
+            wss = []
+            for _ in range(5):
+                ws = self._mock_ws()
+                await mgr.connect(ws, "admin:joao", "admin")
+                wss.append(ws)
+            # Desconecta uma
+            mgr.disconnect(wss[0])
+            assert mgr.count == 4
+            # Agora abre outra (vaga liberada)
+            ok = await mgr.connect(self._mock_ws(), "admin:joao", "admin")
+            assert ok is True
+            assert mgr.count == 5
+        asyncio.run(run())
+
+    def test_broadcast_filtra_por_hostnames_permitidos(self):
+        """Cliente so recebe hostnames associados; admin recebe tudo.
+        Mantem comportamento antigo apos refactor da identidade."""
+        async def run():
+            mgr = self._fresh_manager()
+            ws_admin = self._mock_ws()
+            ws_client = self._mock_ws()
+            await mgr.connect(ws_admin, "admin:joao", "admin", None)
+            await mgr.connect(ws_client, "client:c1", "client", ["NS1_X"])
+
+            # Hostname permitido pro cliente
+            await mgr.broadcast({"hostname": "NS1_X", "cpu": 50})
+            ws_admin.send_json.assert_called_once()
+            ws_client.send_json.assert_called_once()
+
+            # Hostname NAO permitido pro cliente — so admin
+            ws_admin.send_json.reset_mock()
+            ws_client.send_json.reset_mock()
+            await mgr.broadcast({"hostname": "NS_OUTRO", "cpu": 50})
+            ws_admin.send_json.assert_called_once()
+            ws_client.send_json.assert_not_called()
+        asyncio.run(run())
+
+
+# ===========================================================================
 # Entry point
 # ===========================================================================
 
