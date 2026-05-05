@@ -4620,24 +4620,46 @@ class TestNatsServerConfig:
             "AGENT block nao tem publish:/subscribe: na ordem esperada"
         return agent[pub_idx:sub_idx]
 
-    def test_agent_publish_allow_so_tem_ack_e_stats(self):
-        """SEC: agente NAO pode publicar dns.commands.<host>.
+    def test_agent_publish_allow_so_tem_subjects_seguros(self):
+        """SEC: agente NAO pode publicar dns.commands.<host> (sequestro)
+        nem $JS.API.STREAM.CREATE/DELETE/PURGE (DoS no stream COMMANDS).
         Regression guard contra remocao acidental do scope.
 
         Subscribe pode conter 'dns.commands.*' (legitimo — receber comandos).
-        Publish NAO pode (= sequestro). Isolamos publish_block pra checar."""
+        Publish NAO pode (= sequestro). Isolamos publish_block pra checar.
+
+        2026-05-05: $JS.API.* adicionado depois que descobrimos no deploy
+        que JS subscribe precisa publicar em $JS.API.STREAM.NAMES (init).
+        Liberados so os reads + consumer; CREATE/DELETE/PURGE bloqueados."""
         conf = self._read_conf()
         agent = self._agent_block(conf)
         publish = self._publish_block(agent)
+
         # Allow esperados no publish:
         assert '"dns.commands.*.ack"' in publish
         assert '"dns.stats.*"' in publish
-        # Pattern perigoso: '"dns.commands.*"' (sem .ack/.stats apos)
-        # NUNCA pode estar no allow do publish — sequestro de comandos.
+        # JetStream subscribe init exige esses (regression guard pra ninguem
+        # remover de novo achando que eh leak):
+        assert '"$JS.API.STREAM.NAMES"' in publish
+        assert '"$JS.API.STREAM.INFO.>"' in publish
+        assert '"$JS.API.CONSUMER.>"' in publish
+        assert '"$JS.ACK.>"' in publish
+
+        # Patterns PERIGOSOS no publish (sequestro / DoS):
         import re as _re
-        dangerous = _re.search(r'"dns\.commands\.\*"\s*[,\]]', publish)
-        assert dangerous is None, \
-            f"publish allow tem wildcard sem suffix — sequestro de comandos: {dangerous.group()}"
+        dangerous_patterns = [
+            (r'"dns\.commands\.\*"\s*[,\]]', "sequestro de comandos"),
+            # $JS.API.STREAM.CREATE/DELETE/PURGE -> agente apaga stream COMMANDS
+            (r'"\$JS\.API\.STREAM\.CREATE', "agente cria streams"),
+            (r'"\$JS\.API\.STREAM\.DELETE', "agente apaga stream (DoS)"),
+            (r'"\$JS\.API\.STREAM\.PURGE', "agente purga stream (DoS)"),
+            # $JS.API.> raw -> overscoped, cobre tudo do JS
+            (r'"\$JS\.API\.>"', "overscoped — usa subjects especificos"),
+        ]
+        for pattern, description in dangerous_patterns:
+            match = _re.search(pattern, publish)
+            assert match is None, \
+                f"publish allow tem pattern perigoso ({description}): {match.group()}"
 
     def test_agent_subscribe_inclui_inbox_pra_request_reply(self):
         """AGENT precisa subscrever _INBOX.> alem de dns.commands.* —
