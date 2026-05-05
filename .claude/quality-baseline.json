@@ -80,6 +80,11 @@
         "ts": "2026-05-05T11:38:00Z",
         "commit": "21d82ae",
         "delta": "Onda 1 P4 NATS isolation VALIDADA em prod via 'nats pub' adversarial. Agent user 'dnsmonitor' bloqueado de publicar 'dns.commands.<host>' (Permissions Violation), mas passa em 'dns.commands.<host>.ack'. ratchet_lock nats_per_host_scoping marcado parcialmente atendido — fronteira BACKEND vs AGENTS fechada; per-host scoping fica pra P4b futuro. 2 fixes pos-deploy: 28e711a ($G reserved) + 21d82ae (Duplicate user warn)."
+      },
+      {
+        "ts": "2026-05-05T20:00:00Z",
+        "commit": "8f813e9",
+        "delta": "DEPLOY COMPLETO Onda 1 P4 + agent v1.5.6 hardening em PROD nos 11 agentes. Mais 2 fixes pos-deploy: 81e413f (liberar $JS.API.* pro agent subscribe JetStream) + 8f813e9 (require_admin_or_agent pra /agent/version aceitar Bearer agent mesmo com ADMIN_BEARER_DISABLED=true). Bulk update via UI funcionou; UI confirma 11/11 em 1.5.6. Telegram notifications fluindo. Sequencia 4-fixes-em-cadeia documentada na memoria onda1_security pra futuro reference."
       }
     ]
   }
