@@ -101,7 +101,8 @@ def _verify_purge_token(hostname: str, token: str) -> bool:
 import telegram_bot as tg
 from auth import (
     AGENT_TOKEN,
-    require_token, require_admin, require_admin_role, require_admin_or_client,
+    require_token, require_admin, require_admin_role,
+    require_admin_or_client, require_admin_or_agent,
     _verify_admin_cookie, _verify_client_cookie,
     _real_client_ip,
 )
@@ -626,13 +627,20 @@ async def _evaluate_dns_stats_alerts(hostname: str, data: dict) -> None:
 async def agent_version_info(request: Request) -> JSONResponse:
     """Versao+checksum do agente servido em /agent/latest.
 
-    SEC: aceita admin cookie OU Bearer (require_admin). Painel admin precisa
-    saber a versao remota pra mostrar badges de "desatualizado" na tabela
-    de agentes; agente usa Bearer pro check de auto-update. Endpoint nao
-    expoe nada sensivel — so version, checksum, tamanho do arquivo.
+    SEC: aceita admin cookie OU Bearer com AGENT_TOKEN. Painel admin
+    precisa saber a versao remota pra mostrar badges de "desatualizado"
+    na tabela; agente usa Bearer pro auto-update.
+
+    Bug 2026-05-05: antes usava require_admin, mas em prod com
+    ADMIN_BEARER_DISABLED=true (Onda 1 P3) o Bearer dos agentes era
+    bloqueado e auto-update via UI dava 403. Agora usa
+    require_admin_or_agent que NAO e gateado pelo flag — agente
+    precisa legitimamente desse endpoint.
+
+    Endpoint nao expoe nada sensivel — so version, checksum, size.
     """
     import main as _m
-    await _m.require_admin(request)
+    await require_admin_or_agent(request)
     if not _m.AGENT_FILE_PATH.exists():
         raise HTTPException(status_code=404, detail="Arquivo do agente nao encontrado no servidor")
     content = _m.AGENT_FILE_PATH.read_text(encoding="utf-8")

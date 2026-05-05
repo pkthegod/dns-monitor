@@ -2006,6 +2006,7 @@ class TestAgentVersionEndpoint:
         return fake
 
     def test_returns_version_and_checksum(self):
+        """Admin via cookie passa OK e recebe version+sha+size."""
         import importlib
         import main as m
         importlib.reload(m)
@@ -2016,7 +2017,8 @@ class TestAgentVersionEndpoint:
 
         async def run():
             req = MagicMock()
-            with patch("main.require_admin", AsyncMock(return_value={"username": "admin", "role": "admin"})), \
+            with patch("routes_agent.require_admin_or_agent",
+                       AsyncMock(return_value={"username": "admin", "role": "admin"})), \
                  patch("main.AGENT_FILE_PATH", self._make_fake_path(True, fake_content)):
                 resp = await m.agent_version_info(req)
             return resp
@@ -2035,7 +2037,8 @@ class TestAgentVersionEndpoint:
 
         async def run():
             req = MagicMock()
-            with patch("main.require_admin", AsyncMock(return_value={"username": "admin", "role": "admin"})), \
+            with patch("routes_agent.require_admin_or_agent",
+                       AsyncMock(return_value={"username": "admin", "role": "admin"})), \
                  patch("main.AGENT_FILE_PATH", self._make_fake_path(True, "# no version here")):
                 resp = await m.agent_version_info(req)
             return resp
@@ -2053,13 +2056,73 @@ class TestAgentVersionEndpoint:
 
         async def run():
             req = MagicMock()
-            with patch("main.require_admin", AsyncMock(return_value={"username": "admin", "role": "admin"})), \
+            with patch("routes_agent.require_admin_or_agent",
+                       AsyncMock(return_value={"username": "admin", "role": "admin"})), \
                  patch("main.AGENT_FILE_PATH", self._make_fake_path(False)):
                 with pytest.raises(HTTPException) as exc:
                     await m.agent_version_info(req)
                 assert exc.value.status_code == 404
 
         self._run(run())
+
+    def test_bearer_agent_passa_mesmo_com_admin_bearer_disabled(self):
+        """REGRESSION GUARD (bug 2026-05-05): em prod com ADMIN_BEARER_DISABLED=true,
+        agentes ainda PRECISAM acessar /agent/version pra auto-update.
+        require_admin_or_agent NAO e gateado por esse flag.
+
+        Bug pre-fix: require_admin gerava 403 em Bearer pos-flag, quebrando
+        bulk update de todos os agentes.
+        """
+        import importlib
+        with patch.dict(os.environ, {
+            "INFRA_VISION_ENV": "production",
+            "ADMIN_BEARER_DISABLED": "true",
+            "AGENT_TOKEN": "test-token-xyz",
+            "ADMIN_SESSION_SECRET": "x" * 64,
+            "CLIENT_SESSION_SECRET": "y" * 64,
+        }, clear=False):
+            import auth
+            importlib.reload(auth)
+
+            async def run():
+                req = MagicMock()
+                req.cookies = {}
+                # Bearer com token correto — em rotas que usam require_admin,
+                # daria 403. Em require_admin_or_agent, deve passar com role='agent'.
+                headers = {"authorization": "Bearer test-token-xyz"}
+                req.headers = MagicMock()
+                req.headers.get = lambda k, d="": headers.get(k.lower(), d)
+
+                result = await auth.require_admin_or_agent(req)
+                return result
+
+            result = self._run(run())
+            assert result["role"] == "agent"
+            assert result["username"] == "agent:bearer"
+
+    def test_sem_cookie_sem_bearer_retorna_403(self):
+        """require_admin_or_agent: nem cookie admin nem Bearer agent -> 403."""
+        import importlib
+        with patch.dict(os.environ, {
+            "AGENT_TOKEN": "test-token-xyz",
+            "ADMIN_SESSION_SECRET": "x" * 64,
+            "CLIENT_SESSION_SECRET": "y" * 64,
+        }, clear=False):
+            import auth
+            importlib.reload(auth)
+            from fastapi import HTTPException
+
+            async def run():
+                req = MagicMock()
+                req.cookies = {}
+                req.headers = MagicMock()
+                req.headers.get = lambda k, d="": ""
+                with pytest.raises(HTTPException) as exc:
+                    await auth.require_admin_or_agent(req)
+                return exc.value
+
+            err = self._run(run())
+            assert err.status_code == 403
 
 
 # ===========================================================================

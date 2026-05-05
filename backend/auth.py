@@ -238,6 +238,39 @@ async def require_admin_role(request: Request) -> dict:
     return info
 
 
+async def require_admin_or_agent(request: Request) -> dict:
+    """Aceita admin (cookie) OU Bearer com AGENT_TOKEN (agente).
+    Usado em endpoints que precisam ser acessiveis pelos DOIS canais:
+      - /agent/version: agente checa pra auto-update; admin UI mostra badge
+      - /agent/latest: download do binario do agente
+
+    SEC: este path NAO e bloqueado por ADMIN_BEARER_DISABLED — porque o
+    agente legitimamente precisa do Bearer aqui (sem alternativa). Retorna
+    role='agent' pra Bearer (nao 'admin') — codigo downstream que checar
+    role tem comportamento explicito.
+
+    Ordem: tenta cookie admin (UI), depois Bearer agent (auto-update),
+    depois 403.
+    """
+    # 1. Cookie admin (frontend admin panel)
+    cookie = request.cookies.get("admin_session", "")
+    info = _verify_admin_cookie(cookie)
+    if info:
+        return info
+
+    # 2. Bearer agent — independente de ADMIN_BEARER_DISABLED.
+    # Bearer aqui retorna role='agent', NUNCA 'admin' — sem escalation.
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer ") and AGENT_TOKEN and \
+       hmac.compare_digest(auth[7:].encode(), AGENT_TOKEN.encode()):
+        return {"username": "agent:bearer", "role": "agent"}
+
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Acesso negado: requer sessao admin ou Bearer agent",
+    )
+
+
 async def require_admin_or_client(request: Request) -> dict:
     """Aceita admin OU cliente autenticado. Retorna dict da identidade ativa.
 
