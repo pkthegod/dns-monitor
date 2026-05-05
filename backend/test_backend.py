@@ -4647,12 +4647,33 @@ class TestNatsServerConfig:
         assert '"dns.commands.*"' in agent
         assert '"_INBOX.>"' in agent
 
-    def test_backend_user_aparece_em_g_e_sys(self):
-        """BACKEND user e usado em $SYS account (admin) e em $G (operacao).
-        Regression guard pra ninguem reduzir o escopo acidentalmente."""
+    def test_backend_user_sem_permissions(self):
+        """BACKEND user nao deve ter bloco 'permissions:' (= full access).
+        Regression guard contra alguem acidentalmente restringir o backend
+        e quebrar emissao de comandos.
+
+        Refatorado 2026-05-05: anteriormente checava aparicao em $SYS+$G,
+        mas $G e reserved (NATS rejeita 'accounts {$G ...}'); migrado pra
+        sintaxe top-level 'authorization { users: ... }'."""
         conf = self._read_conf()
-        # NATS_BACKEND_USER aparece 2x: uma em $SYS, outra em $G
-        assert conf.count("$NATS_BACKEND_USER") >= 2
+        # Pega o trecho do BACKEND user (entra { user: $NATS_BACKEND_USER ... })
+        anchor = "{ user: $NATS_BACKEND_USER"
+        idx = conf.find(anchor)
+        assert idx >= 0, "BACKEND user nao encontrado no conf"
+        # Conta chaves pra extrair o bloco
+        depth = 0
+        end = idx
+        for i, ch in enumerate(conf[idx:]):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = idx + i + 1
+                    break
+        backend_block = conf[idx:end]
+        assert "permissions" not in backend_block, \
+            "BACKEND user com permissions = full access removido (quebra backend)"
 
     def test_jetstream_habilitado(self):
         """JetStream e core do feature (durable consumers, replay anti-loss).
