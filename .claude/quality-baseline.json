@@ -40,7 +40,7 @@
     "_comentario": "Debts deliberados que NAO podem desaparecer sem entrega correspondente no commit log. Quando entrega, atualiza pra 'resolved' + commit hash.",
     "csp_unsafe_inline": "DEBT — refactor B em curso, ETA 2026-05-07 (routine trig_01VWjo2g4XWjWGa6pZc6NHmy)",
     "nats_plain_text_4222": "DEBT — Onda 1 P5 pendente (TLS NATS via WS+CF)",
-    "nats_per_host_scoping": "DEBT — Onda 1 P4b pendente (refinamento do P4 atual com creds por agente)",
+    "nats_per_host_scoping": "DEBT — Onda 1 P4b pendente (refinamento do P4 atual com creds por agente). PARCIALMENTE ATENDIDO em 2026-05-05: BACKEND vs AGENTS isolation validada em prod (commits 80a5774+28e711a+21d82ae). Per-host fica P4b.",
     "ed25519_agent_signing": "DEBT — SEC-3.1 do roadmap (assinatura do agent.py com chave offline)"
   },
 
@@ -75,6 +75,11 @@
         "ts": "2026-05-04T19:30:00Z",
         "commit": "9a1ce1a",
         "delta": "STACK CHANGE: grafana removido da stack pelo operador; suite test_grafana.py orfaa, ainda no repo (limpeza pendente). total_passed cai 530->438. loc.static cresceu 5850->6828 (+16.7%, dentro de threshold) por Onda E (mapas) + speedtest cliente. todos_count zerado (anterior eram FPs). endpoints_count subiu pra 51 (+1: /api/v1/client/speedtest)."
+      },
+      {
+        "ts": "2026-05-05T11:38:00Z",
+        "commit": "21d82ae",
+        "delta": "Onda 1 P4 NATS isolation VALIDADA em prod via 'nats pub' adversarial. Agent user 'dnsmonitor' bloqueado de publicar 'dns.commands.<host>' (Permissions Violation), mas passa em 'dns.commands.<host>.ack'. ratchet_lock nats_per_host_scoping marcado parcialmente atendido — fronteira BACKEND vs AGENTS fechada; per-host scoping fica pra P4b futuro. 2 fixes pos-deploy: 28e711a ($G reserved) + 21d82ae (Duplicate user warn)."
       }
     ]
   }
