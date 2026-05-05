@@ -25,6 +25,21 @@ NATS_URL  = os.environ.get("NATS_URL", "nats://localhost:4222")
 NATS_USER = os.environ.get("NATS_BACKEND_USER") or os.environ.get("NATS_USER", "")
 NATS_PASS = os.environ.get("NATS_BACKEND_PASS") or os.environ.get("NATS_PASS", "")
 
+# Onda 1 P4 (post-mortem 2026-05-05): se BACKEND_USER == AGENT_USER, o
+# nats-server.conf falha com "Duplicate user X detected" porque ambos
+# resolvem pro mesmo nome via fallback NATS_USER. Detecta cedo e loga
+# warning; em prod, ja causa NATS crashloop entao operador notou.
+# Sanity check: garante que isolation P4 esta efetivamente ativo.
+_AGENT_USER = os.environ.get("NATS_AGENT_USER") or os.environ.get("NATS_USER", "")
+if NATS_USER and _AGENT_USER and NATS_USER == _AGENT_USER:
+    logger.warning(
+        "NATS_BACKEND_USER == NATS_AGENT_USER ('%s') — Onda 1 P4 isolation "
+        "INATIVA. nats-server vai falhar com 'Duplicate user'. Configure "
+        "NATS_BACKEND_USER distinto no .env (ex: 'infra-vision-backend') "
+        "pra recuperar permissions scoped por user.",
+        NATS_USER,
+    )
+
 # Streams JetStream (criados no connect)
 STREAMS = {
     "COMMANDS": StreamConfig(
