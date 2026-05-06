@@ -66,9 +66,6 @@ PYTHONPATH=. pytest test_backend.py -v
 
 # Agente (rodar na raiz)
 PYTHONPATH=. pytest agent/test_agent.py -v
-
-# Dashboards
-pytest test_grafana.py -v
 ```
 
 **Todos devem passar antes de qualquer `docker compose build`.**
@@ -81,7 +78,6 @@ pytest test_grafana.py -v
 |---|---|
 | Endpoints FastAPI, db.py, scheduler | `backend/test_backend.py` |
 | Agente (coleta, DNS, comandos) | `agent/test_agent.py` |
-| Dashboards Grafana (JSON) | `test_grafana.py` |
 
 ### Estrutura padrão de uma classe de teste
 
@@ -123,6 +119,5 @@ class TestNomoDaFeature:
 
 - [ ] `pytest backend/test_backend.py -v` — todos passando
 - [ ] `pytest agent/test_agent.py -v` — todos passando
-- [ ] `pytest test_grafana.py -v` — todos passando
 - [ ] `docker compose build --no-cache backend` sem erros
 - [ ] `curl http://localhost:8000/health` retorna `{"status":"ok"}`

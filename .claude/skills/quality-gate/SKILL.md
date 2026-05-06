@@ -84,8 +84,7 @@ local no repo). Estrutura:
   "tests": {
     "backend_passed": 281,
     "agent_passed": 157,
-    "grafana_passed": 92,
-    "total_passed": 530,
+    "total_passed": 438,
     "total_skipped": 5,
     "total_xfailed": 1,
     "total_xpassed": 0,
@@ -139,7 +138,7 @@ rodada continua flagando.
 
 ### 1. Testes (suite completa)
 
-Roda os 3 conjuntos:
+Roda os 2 conjuntos:
 
 ```bash
 # Backend
@@ -147,10 +146,9 @@ cd <repo> && PYTHONPATH=backend py -m pytest backend/test_backend.py -q
 
 # Agent
 cd <repo> && PYTHONPATH=agent py -m pytest agent/test_agent.py -q
-
-# Grafana dashboards (se existir)
-cd <repo> && py -m pytest test_grafana.py -q  # ou ignora se nao houver
 ```
+
+(Grafana suite removida em 2026-05-06 — stack abandonada.)
 
 Reporta:
 - Total passed / skipped / xfailed / xpassed / failed

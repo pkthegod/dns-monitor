@@ -1,7 +1,7 @@
 # dns-monitor — Snapshot/Restore (Fase 1)
 
 Bundle cifrado, auto-contido e replicável da stack inteira.
-Captura DB + .env + compose + provisioning Grafana + dados NATS num único
+Captura DB + .env + compose + nats-server.conf + dados NATS num único
 arquivo `.tar.age`. Restaurado em qualquer máquina nova com Docker em ~5min.
 
 ## Componentes
@@ -128,9 +128,7 @@ dns-monitor-snapshot-<timestamp>-<git>.tar.age
         │   ├── timescaledb.yaml
         │   ├── schemas.sql        ← DDL de referência
         │   ├── Dockerfile
-        │   ├── grafana/
-        │   │   ├── provisioning/
-        │   │   └── dashboards/
+        │   ├── nats-server.conf   ← config NATS isolation P4
         │   └── agent/
         │       └── dns_agent.py   ← código atual do agente
         └── nats/

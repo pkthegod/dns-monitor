@@ -35,7 +35,6 @@ DB_NAME="${DB_NAME:-dns_monitor}"
 DB_USER="${DB_USER:-dnsmonitor}"
 NATS_CONTAINER="${NATS_CONTAINER:-infra_vision_nats}"
 INCLUDE_NATS="${INCLUDE_NATS:-1}"   # 1=inclui jetstream data, 0=pula
-INCLUDE_GRAFANA="${INCLUDE_GRAFANA:-1}"
 
 # Multi-recipient: arquivo com pubkeys age (uma por linha, # = comentario)
 BACKUP_AGE_RECIPIENTS_FILE="${BACKUP_AGE_RECIPIENTS_FILE:-}"
@@ -175,7 +174,7 @@ ENV_BYTES=$(wc -c < "$WORK_DIR/secrets/backend.env")
 log "backend.env: $ENV_BYTES bytes (sera cifrado dentro do bundle, que tambem e cifrado)"
 
 # -----------------------------------------------------------------------------
-# Capture: stack (compose + grafana provisioning + schemas + agent code)
+# Capture: stack (compose + nats config + schemas + agent code)
 # -----------------------------------------------------------------------------
 step "stack files"
 mkdir -p "$WORK_DIR/stack"
@@ -183,14 +182,7 @@ cp -p "$PROJECT_DIR/backend/docker-compose.yaml" "$WORK_DIR/stack/docker-compose
 cp -p "$PROJECT_DIR/backend/timescaledb.yaml"   "$WORK_DIR/stack/timescaledb.yaml" 2>/dev/null || true
 cp -p "$PROJECT_DIR/backend/schemas.sql"        "$WORK_DIR/stack/schemas.sql"
 cp -p "$PROJECT_DIR/backend/Dockerfile"         "$WORK_DIR/stack/Dockerfile" 2>/dev/null || true
-
-if [[ $INCLUDE_GRAFANA -eq 1 && -d "$PROJECT_DIR/grafana" ]]; then
-  mkdir -p "$WORK_DIR/stack/grafana"
-  # Inclui apenas provisioning + dashboards versionados (NAO grafana-data, que tem state runtime)
-  cp -rp "$PROJECT_DIR/grafana/provisioning" "$WORK_DIR/stack/grafana/" 2>/dev/null || true
-  cp -rp "$PROJECT_DIR/grafana/dashboards"   "$WORK_DIR/stack/grafana/" 2>/dev/null || true
-  log "grafana: provisioning + dashboards"
-fi
+cp -p "$PROJECT_DIR/backend/nats-server.conf"   "$WORK_DIR/stack/nats-server.conf" 2>/dev/null || true
 
 # Codigo do agente (tem que casar com o que esta no DB)
 mkdir -p "$WORK_DIR/stack/agent"

@@ -3,8 +3,9 @@
 Monitoramento distribuído de servidores DNS (Bind9/Unbound) para ISPs e operadores.
 Agentes em Linux coletam métricas, latência DNS e estatísticas de query
 (RCODEs/QPS/cache hits) e empurram pra um backend central, que serve um painel
-admin com RBAC, um portal cliente self-service e dashboards Grafana. Comandos
-remotos (start/stop/diagnóstico/auto-update) chegam ao agente em tempo real
+admin com RBAC e portal cliente self-service (com mapas 2D/3D do trace
+DNS, gauges de SSL/conectividade, relatórios PDF). Comandos remotos
+(start/stop/diagnóstico/auto-update) chegam ao agente em tempo real
 via NATS JetStream — com HTTP polling como fallback.
 
 ---
@@ -23,8 +24,7 @@ via NATS JetStream — com HTTP polling como fallback.
 │   ├─ fingerprint hardware  │ ─── NATS publish (dns.stats.<host>) ──► │                       │
 │   └─ self-update via /opt  │ ─── NATS publish (...ack)         ────► │   TimescaleDB / PG15  │
 └────────────────────────────┘                                         │   NATS JetStream      │
-       (50–100 hosts)                                                  │   Grafana :3000       │
-                                                                       │   Telegram + webhooks │
+       (50–100 hosts)                                                  │   Telegram + webhooks │
                                                                        └───────────────────────┘
 ```
 
@@ -36,8 +36,8 @@ via NATS JetStream — com HTTP polling como fallback.
 | Backend      | FastAPI, asyncpg, APScheduler, nats-py                  |
 | Banco        | TimescaleDB 2.17 / PostgreSQL 15 — 9 hypertables        |
 | Mensageria   | NATS 2.10 + JetStream (durable consumers)               |
-| Frontend     | HTML + CSS + vanilla JS (sem build step)                |
-| Dashboards   | Grafana 12 (PostgreSQL datasource)                      |
+| Frontend     | HTML + CSS + vanilla JS (sem build step) + Leaflet/Globe.gl |
+| Dashboards   | Embutidos no painel admin (`/dashboard`, `/speedtest`)   |
 | Notificações | Telegram + webhooks (Slack / Teams / PagerDuty / JSON)  |
 | Deploy       | Docker Compose (1 worker — scheduler único)             |
 
@@ -52,7 +52,6 @@ infra-vision/
 ├── CONTRIBUTING.md                 fluxo de contribuição
 ├── DBAAction.sql / DBAUpdate.sql   referência operacional do banco
 ├── DBAreference.sql
-├── test_grafana.py                 92 testes dos dashboards
 ├── test_payload.py                 utilitario de diagnóstico
 │
 ├── agent/
@@ -83,13 +82,13 @@ infra-vision/
 │   ├── email_report.py             relatório mensal por email
 │   ├── telegram_bot.py             alertas Telegram (anti-spam)
 │   ├── static/                     admin.html + client.html + dashboard + speedtest
-│   ├── docker-compose.yaml         backend + db + nats + grafana
+│   ├── docker-compose.yaml         backend + db + nats
 │   ├── Dockerfile
 │   ├── requirements.txt
-│   └── test_backend.py             187 testes
+│   └── test_backend.py             283 testes
 │
 ├── docs/security/                  política de disclosure + relatórios
-├── grafana/dashboards/             overview, host-detail, dns-stats
+├── docs/onda1-p5-tls-nats.md       plano de migração TLS NATS via WS+CF
 ├── scripts/
 │   ├── backup/snapshot.sh          snapshot replicável cifrado (AES-256)
 │   ├── backup/restore-snapshot.sh
@@ -106,7 +105,7 @@ infra-vision/
 **Servidor central**
 - Linux (Debian/Ubuntu recomendado)
 - Docker + Compose plugin
-- Portas: 8000 (API), 3000 (Grafana), 4222 (NATS — pode ser exposto via NAT pra agentes externos)
+- Portas: 8000 (API; via nginx+CF em prod), 4222 (NATS — em transição pra `wss://` via Onda 1 P5)
 
 **Cada agente**
 - Linux com Bind9, Unbound ou Named
@@ -135,8 +134,8 @@ curl http://localhost:8000/health
 # → {"status":"ok","db":"connected","nats":"connected"}
 ```
 
-Importação de dashboards no Grafana — ver `grafana/dashboards/` e
-`grafana/provisioning/`.
+Os dashboards ficam embutidos no painel admin (`/dashboard` para
+métricas DNS, `/speedtest` para conectividade SSL/portas).
 
 ---
 
@@ -356,17 +355,14 @@ manual — defina em cron conforme política.
 ## Testes
 
 ```bash
-# Backend (187 testes — RBAC, CSP, race conditions, idempotência)
+# Backend (283 testes — RBAC, CSP, race conditions, idempotência, NATS isolation)
 cd backend && PYTHONPATH=. pytest test_backend.py -v
 
-# Agente (153 testes — config, polling adaptativo, NATS replay, healthcheck)
+# Agente (157 testes — config, polling adaptativo, NATS replay, hardening auto-update)
 cd agent && PYTHONPATH=. pytest test_agent.py -v
-
-# Dashboards Grafana (92 testes)
-pytest test_grafana.py -v
 ```
 
-**Total: 432 testes** (187 + 153 + 92). Tudo passando antes de qualquer deploy
+**Total: 440 testes** (283 + 157). Tudo passando antes de qualquer deploy
 em produção. CI roda automaticamente via GitHub Actions (CodeQL).
 
 ---
