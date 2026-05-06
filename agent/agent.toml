@@ -78,9 +78,25 @@ interval = 600
 [nats]
 # Habilita comunicacao via NATS (comandos push instantaneos)
 enabled = false
-# URL do servidor NATS
+
+# URL do servidor NATS — 2 modos:
+#
+# A) wss:// (RECOMENDADO desde Onda 1 P5, 2026-05-06):
+#    TLS via CF + nginx. Funciona atras de NAT/firewall corporativo
+#    (so precisa egress 443). Sem porta 4222 exposta no servidor.
+#
+#    url = "wss://nats.procyontecnologia.net/ws"
+#
+# B) nats:// (LEGADO):
+#    Plain TCP na porta 4222. Plaintext na rede — credenciais e
+#    payloads visiveis. Mantido durante migration; sera removido
+#    quando todos os agentes migrarem pra wss://.
+#
 url = "nats://172.20.0.13:4222"
-# Credenciais NATS (deixe vazio se sem auth)
+
+# Credenciais NATS — agentes usam o user AGENT (scoped). Backend usa
+# BACKEND user separado (full access). Ambos definidos no
+# nats-server.conf via Onda 1 P4 isolation.
 user = ""
 password = ""
 

@@ -157,8 +157,16 @@ services:
       infra_vision_net:
         ipv4_address: 172.20.0.13
     ports:
+      # 4222 (plain TCP) e 8222 (monitor) ainda expostos pro compat com
+      # agentes legacy. Onda 1 P5 final: remover apos todos migrarem
+      # pra wss:// via nginx + CF.
       - "4222:4222"
       - "8222:8222"
+      # WebSocket port — bind 127.0.0.1 only; nginx do host faz proxy
+      # /ws -> 127.0.0.1:8080 -> NATS. Cobre TLS termination via CF
+      # Origin Cert no nginx. Agentes externos conectam via:
+      #   wss://nats.<dominio>/ws
+      - "127.0.0.1:8080:8080"
     volumes:
       - nats_data:/data
       - ./nats-server.conf:/etc/nats/nats-server.conf:ro
