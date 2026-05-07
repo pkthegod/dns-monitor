@@ -4931,6 +4931,107 @@ class TestSpeedtestSummary:
 
 
 # ===========================================================================
+# Speedtest — agregados computados de domains[] (fix 2026-05-07)
+# ===========================================================================
+
+class TestSpeedtestAggregates:
+    """db._aggregate_speedtest_metrics: KPIs computados a partir da lista
+    individual de dominios, robusto a mismatch de chaves em metadata.
+
+    Bug pre-fix: bug visivel em prod onde grafico 'Historico — Ultimos
+    30 Scans' tinha series todas zeradas porque speedtest_scans tinha
+    agregados=0 (checker enviava metadata.* com nomes diferentes do que
+    o backend esperava). speedtest_domains continuava OK.
+    """
+
+    def test_calcula_de_domains_quando_disponivel(self):
+        from db import _aggregate_speedtest_metrics
+        domains = [
+            # 2 reachable + ssl valido
+            {"reachable": True, "ssl_enabled": True, "certificate_valid": True,
+             "certificate_expired": False, "days_until_expiry": 100,
+             "response_time_ms": 50.0},
+            {"reachable": True, "ssl_enabled": True, "certificate_valid": True,
+             "certificate_expired": False, "days_until_expiry": 200,
+             "response_time_ms": 70.0},
+            # 1 reachable + ssl expirando (<30d)
+            {"reachable": True, "ssl_enabled": True, "certificate_valid": True,
+             "certificate_expired": False, "days_until_expiry": 15,
+             "response_time_ms": 60.0},
+            # 1 reachable + ssl expirado
+            {"reachable": True, "ssl_enabled": True, "certificate_valid": False,
+             "certificate_expired": True, "days_until_expiry": -5,
+             "response_time_ms": 80.0},
+            # 1 reachable + ssl invalido (enabled mas nao valid nem expired)
+            {"reachable": True, "ssl_enabled": True, "certificate_valid": False,
+             "certificate_expired": False, "days_until_expiry": None,
+             "response_time_ms": 90.0},
+            # 1 NAO reachable
+            {"reachable": False, "ssl_enabled": False, "certificate_valid": False,
+             "certificate_expired": False, "days_until_expiry": None,
+             "response_time_ms": None},
+        ]
+        agg = _aggregate_speedtest_metrics(domains, metadata={}, summary={})
+        assert agg["total_domains"] == 6
+        assert agg["reachable"] == 5
+        assert agg["unreachable"] == 1
+        # ssl_valid: 3 (a, b, c) — c.expiring_soon mas certificate_valid=True
+        assert agg["ssl_valid"] == 3
+        assert agg["ssl_expired"] == 1
+        # ssl_invalid: 1 (e — ssl_enabled mas nao valid nem expired)
+        assert agg["ssl_invalid"] == 1
+        # expiring_soon: 1 (c — days=15, <30, !expired)
+        assert agg["expiring_soon"] == 1
+        # avg_rt: media dos reachable com rt!=null = (50+70+60+80+90)/5 = 70.0
+        assert agg["avg_response_ms"] == 70.0
+
+    def test_fallback_metadata_quando_domains_vazio(self):
+        """Cenario edge — domains vazio nao deveria acontecer mas se rolar,
+        cai pro velho comportamento de ler metadata.<x>."""
+        from db import _aggregate_speedtest_metrics
+        agg = _aggregate_speedtest_metrics(
+            [],
+            metadata={
+                "total_domains": 10, "reachable_domains": 8,
+                "valid_certificates": 6, "ssl_enabled_domains": 7,
+                "expired_certificates": 1, "expiring_soon_count": 2,
+            },
+            summary={"performance_metrics": {"avg_response_time_ms": 123.4}},
+        )
+        assert agg["total_domains"] == 10
+        assert agg["reachable"] == 8
+        assert agg["unreachable"] == 2
+        assert agg["ssl_valid"] == 6
+        assert agg["ssl_expired"] == 1
+        assert agg["expiring_soon"] == 2
+        assert agg["avg_response_ms"] == 123.4
+
+    def test_dominio_sem_response_time_ignorado_em_avg(self):
+        """response_time_ms None ou !reachable nao entra na media."""
+        from db import _aggregate_speedtest_metrics
+        domains = [
+            {"reachable": True,  "response_time_ms": 100.0},
+            {"reachable": True,  "response_time_ms": None},   # ignora
+            {"reachable": False, "response_time_ms": 999.0},  # ignora (nao reachable)
+            {"reachable": True,  "response_time_ms": 200.0},
+        ]
+        agg = _aggregate_speedtest_metrics(domains, {}, {})
+        # Media = (100 + 200) / 2 = 150
+        assert agg["avg_response_ms"] == 150.0
+
+    def test_todos_inacessiveis_avg_fica_none(self):
+        from db import _aggregate_speedtest_metrics
+        domains = [
+            {"reachable": False, "response_time_ms": None},
+            {"reachable": False, "response_time_ms": None},
+        ]
+        agg = _aggregate_speedtest_metrics(domains, {}, {})
+        assert agg["reachable"] == 0
+        assert agg["unreachable"] == 2
+        assert agg["avg_response_ms"] is None
+
+
+# ===========================================================================
 # Entry point
 # ===========================================================================
 

@@ -1382,10 +1382,77 @@ async def get_aggregated_metrics(
 # Speedtest — Domain SSL/Port checker (medidores)
 # ===========================================================================
 
+def _aggregate_speedtest_metrics(domains: list, metadata: dict, summary: dict) -> dict:
+    """Computa metricas agregadas de speedtest_scans a partir da lista
+    individual de dominios. Robusto contra divergencias de schema do
+    payload do domain_checker.py (mismatch de chaves em metadata).
+
+    Bug 2026-05-07: o checker enviava 'reachable_count' mas backend
+    esperava 'reachable_domains' (etc). Resultado: agregados zerados em
+    speedtest_scans, embora speedtest_domains tivesse dados certos.
+    Grafico de historico (que le dos agregados) ficava todo em zero.
+
+    Estrategia:
+      - Conta a partir de domains[] (fonte primaria)
+      - Cai pra metadata.<x> apenas se domains[] vazio (cenario edge)
+      - 'expiring_soon' definido como SSL valido com <30 dias pra expirar
+        (alinhado com filtro do frontend)
+    """
+    if not domains:
+        return {
+            "total_domains":  metadata.get("total_domains", 0),
+            "reachable":      metadata.get("reachable_domains", 0),
+            "unreachable":    metadata.get("total_domains", 0) - metadata.get("reachable_domains", 0),
+            "ssl_valid":      metadata.get("valid_certificates", 0),
+            "ssl_invalid":    metadata.get("ssl_enabled_domains", 0) - metadata.get("valid_certificates", 0),
+            "ssl_expired":    metadata.get("expired_certificates", 0),
+            "expiring_soon":  metadata.get("expiring_soon_count", 0),
+            "avg_response_ms": (summary.get("performance_metrics") or {}).get("avg_response_time_ms"),
+        }
+
+    total       = len(domains)
+    reachable   = sum(1 for d in domains if d.get("reachable"))
+    ssl_valid   = sum(1 for d in domains if d.get("certificate_valid"))
+    ssl_expired = sum(1 for d in domains if d.get("certificate_expired"))
+    ssl_invalid = sum(
+        1 for d in domains
+        if d.get("ssl_enabled")
+        and not d.get("certificate_valid")
+        and not d.get("certificate_expired")
+    )
+    expiring_soon = sum(
+        1 for d in domains
+        if (d.get("days_until_expiry") is not None)
+        and 0 < d["days_until_expiry"] < 30
+        and not d.get("certificate_expired")
+    )
+    rt_values = [
+        float(d["response_time_ms"]) for d in domains
+        if d.get("response_time_ms") is not None and d.get("reachable")
+    ]
+    avg_rt = round(sum(rt_values) / len(rt_values), 2) if rt_values else None
+
+    return {
+        "total_domains":   total,
+        "reachable":       reachable,
+        "unreachable":     total - reachable,
+        "ssl_valid":       ssl_valid,
+        "ssl_invalid":     ssl_invalid,
+        "ssl_expired":     ssl_expired,
+        "expiring_soon":   expiring_soon,
+        "avg_response_ms": avg_rt,
+    }
+
+
 async def insert_speedtest_scan(metadata: dict, summary: dict, domains: list) -> int:
     """Insere scan completo do speedtest. Retorna scan_id."""
     from datetime import datetime as _dt, timezone as _tz
     ts = _parse_ts(metadata.get("scan_timestamp", _dt.now(_tz.utc).isoformat()))
+
+    # 2026-05-07: agregados computados em Python a partir de domains[].
+    # Antes lia direto de metadata.<x> e ficava zerado quando o checker
+    # enviava chaves diferentes. Agora robusto a mismatch.
+    agg = _aggregate_speedtest_metrics(domains, metadata, summary)
 
     async with get_conn() as conn:
         row = await conn.fetchrow(
@@ -1398,14 +1465,14 @@ async def insert_speedtest_scan(metadata: dict, summary: dict, domains: list) ->
             RETURNING id
             """,
             ts,
-            metadata.get("total_domains", len(domains)),
-            metadata.get("reachable_domains", 0),
-            metadata.get("total_domains", 0) - metadata.get("reachable_domains", 0),
-            metadata.get("valid_certificates", 0),
-            metadata.get("ssl_enabled_domains", 0) - metadata.get("valid_certificates", 0),
-            metadata.get("expired_certificates", 0),
-            metadata.get("expiring_soon_count", 0),
-            summary.get("performance_metrics", {}).get("avg_response_time_ms"),
+            agg["total_domains"],
+            agg["reachable"],
+            agg["unreachable"],
+            agg["ssl_valid"],
+            agg["ssl_invalid"],
+            agg["ssl_expired"],
+            agg["expiring_soon"],
+            agg["avg_response_ms"],
             metadata.get("scan_duration_seconds"),
             metadata.get("errors_count", 0),
             metadata.get("timeouts_count", 0),
