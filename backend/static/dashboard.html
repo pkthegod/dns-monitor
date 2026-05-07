@@ -98,7 +98,7 @@
   <div class="header fade-in">
     <img src="/static/logo.svg" alt="">
     <h1>Infra-Vision <span>/ DNS Metrics</span></h1>
-    <div style="display:flex;gap:8px;align-items:center"><a href="/admin" class="btn-nav">Admin</a><a href="/speedtest" class="btn-nav">Speedtest Metrics</a><a href="/admin/logout" class="btn-nav">Sair</a><button class="theme-toggle" onclick="toggleTheme()" title="Alternar tema"><span class="icon-sun">&#9728;</span><span class="icon-moon">&#9790;</span></button></div>
+    <div style="display:flex;gap:8px;align-items:center"><a href="/admin" class="btn-nav">Admin</a><a href="/speedtest" class="btn-nav">Speedtest Metrics</a><a href="/admin/logout" class="btn-nav">Sair</a><button class="theme-toggle" data-action="toggleTheme" title="Alternar tema"><span class="icon-sun">&#9728;</span><span class="icon-moon">&#9790;</span></button></div>
   </div>
 
   <div class="token-bar fade-in stagger-1" style="display:none">
@@ -185,7 +185,9 @@
   <div class="footer">auto-refresh a cada 60s</div>
 </div>
 
-<script src="/static/app.js?v=100"></script>
+<!-- Event-bus dispatcher (CSP refactor B) -->
+<script src="/static/event-bus.js?v=001"></script>
+<script src="/static/app.js?v=101"></script>
 <script>
 const COLORS = ['#7aa2f7','#9ece6a','#e0af68','#ff9e64','#f7768e','#bb9af7','#73daca','#7dcfff','#c0caf5','#b4f9f8'];
 let charts = {};

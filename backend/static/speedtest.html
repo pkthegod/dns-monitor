@@ -136,7 +136,7 @@
       <a href="/admin" class="btn-nav">Admin</a>
       <a href="/dashboard" class="btn-nav">DNS Metrics</a>
       <a href="/admin/logout" class="btn-nav">Sair</a>
-      <button class="theme-toggle" onclick="toggleTheme()" title="Alternar tema"><span class="icon-sun">&#9728;</span><span class="icon-moon">&#9790;</span></button>
+      <button class="theme-toggle" data-action="toggleTheme" title="Alternar tema"><span class="icon-sun">&#9728;</span><span class="icon-moon">&#9790;</span></button>
     </div>
   </div>
 
@@ -190,12 +190,12 @@
       <table>
         <thead>
           <tr>
-            <th style="min-width:200px;cursor:pointer" onclick="sortDomains('domain')">Dominio &#8645;</th>
-            <th style="cursor:pointer" onclick="sortDomains('status')">Status &#8645;</th>
+            <th style="min-width:200px;cursor:pointer" data-action="sortDomains" data-field="domain">Dominio &#8645;</th>
+            <th style="cursor:pointer" data-action="sortDomains" data-field="status">Status &#8645;</th>
             <th>Certificado</th>
-            <th style="text-align:center;cursor:pointer" onclick="sortDomains('expiry')">Expira &#8645;</th>
+            <th style="text-align:center;cursor:pointer" data-action="sortDomains" data-field="expiry">Expira &#8645;</th>
             <th>Emissor / TLS</th>
-            <th style="text-align:right;cursor:pointer" onclick="sortDomains('time')">Tempo &#8645;</th>
+            <th style="text-align:right;cursor:pointer" data-action="sortDomains" data-field="time">Tempo &#8645;</th>
             <th>Detalhes</th>
           </tr>
         </thead>
@@ -211,7 +211,9 @@
 
 <div id="toast-container"></div>
 
-<script src="/static/app.js?v=100"></script>
+<!-- Event-bus dispatcher (CSP refactor B) -->
+<script src="/static/event-bus.js?v=001"></script>
+<script src="/static/app.js?v=101"></script>
 <script>
 const COLORS = ['#7aa2f7','#9ece6a','#e0af68','#ff9e64','#f7768e','#bb9af7','#73daca','#7dcfff','#c0caf5','#b4f9f8'];
 let charts = {};
@@ -514,7 +516,13 @@ async function loadSpeedtest() {
 
 // Sorting
 let _sortField = 'domain', _sortAsc = true;
-function sortDomains(field) {
+function sortDomains(fieldOrEvent) {
+  // Event-bus: dispatcher passa event; le data-field do <th>.
+  let field = fieldOrEvent;
+  if (fieldOrEvent && typeof fieldOrEvent === 'object' && fieldOrEvent.currentTarget) {
+    field = fieldOrEvent.currentTarget.dataset.field;
+  }
+  if (!field) return;
   if (_sortField === field) _sortAsc = !_sortAsc;
   else { _sortField = field; _sortAsc = true; }
   renderTable(domainsCache);

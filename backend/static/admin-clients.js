@@ -29,8 +29,8 @@ async function loadClients() {
         <td>${statusPill}</td>
         <td><span class="dim">${fmtDate(c.created_at)}</span></td>
         <td class="admin-only">
-          <button class="btn btn-ghost" style="font-size:.7rem;padding:2px 8px" onclick="openClientModal(${c.id})">Editar</button>
-          <button class="btn btn-ghost" style="font-size:.7rem;padding:2px 8px;color:var(--red)" onclick="deleteClient(${c.id},'${esc(c.username)}')">Remover</button>
+          <button class="btn btn-ghost" style="font-size:.7rem;padding:2px 8px" data-action="openClientModal" data-client-id="${c.id}">Editar</button>
+          <button class="btn btn-ghost" style="font-size:.7rem;padding:2px 8px;color:var(--red)" data-action="deleteClient" data-client-id="${c.id}" data-username="${esc(c.username)}">Remover</button>
         </td>
       </tr>`;
     }).join('');
@@ -39,7 +39,16 @@ async function loadClients() {
   }
 }
 
-function openClientModal(clientId) {
+function openClientModal(clientIdOrEvent) {
+  // Suporta:
+  //   openClientModal()        — botao "+ Novo Cliente"
+  //   openClientModal(123)     — callsite legacy
+  //   openClientModal(event)   — dispatcher event-bus, le data-client-id
+  let clientId = clientIdOrEvent;
+  if (clientIdOrEvent && typeof clientIdOrEvent === 'object' && clientIdOrEvent.currentTarget) {
+    const raw = clientIdOrEvent.currentTarget.dataset.clientId;
+    clientId = raw ? Number(raw) : null;
+  }
   editingClientId = clientId || null;
   const isEdit = !!clientId;
   document.getElementById('client-modal-title').textContent = isEdit ? 'Editar Cliente' : 'Novo Cliente';
@@ -80,6 +89,13 @@ function closeClientModal() {
 document.getElementById('client-active').addEventListener('change', function() {
   document.getElementById('client-active-label').textContent = this.checked ? 'Ativo' : 'Inativo';
 });
+
+// Event-bus wrapper: <form data-action-submit="saveClientEv">
+// Previne navigation default + chama saveClient.
+function saveClientEv(e) {
+  if (e && e.preventDefault) e.preventDefault();
+  return saveClient();
+}
 
 async function saveClient() {
   const username = document.getElementById('client-username').value.trim();
@@ -122,7 +138,14 @@ async function saveClient() {
   }
 }
 
-async function deleteClient(clientId, username) {
+async function deleteClient(clientIdOrEvent, username) {
+  // dispatcher event-bus passa event; legacy passa (id, username)
+  let clientId = clientIdOrEvent;
+  if (clientIdOrEvent && typeof clientIdOrEvent === 'object' && clientIdOrEvent.currentTarget) {
+    const ds = clientIdOrEvent.currentTarget.dataset;
+    clientId = Number(ds.clientId);
+    username = ds.username;
+  }
   if (!confirm(`Remover o cliente "${username}"?\n\nEle perdera acesso ao portal.`)) return;
   try {
     await apiFetch(`/clients/${clientId}`, { method: 'DELETE' });
@@ -160,8 +183,8 @@ async function loadAdminUsers() {
         <td><span class="dim">${esc(u.created_by || '—')}</span></td>
         <td><span class="dim">${esc(u.notes || '—')}</span></td>
         <td>
-          <button class="btn btn-ghost" style="font-size:.7rem;padding:2px 8px" onclick="openAdminUserModal(${u.id})">Editar</button>
-          <button class="btn btn-ghost" style="font-size:.7rem;padding:2px 8px;color:var(--red)" onclick="deleteAdminUser(${u.id},'${esc(u.username)}')">Remover</button>
+          <button class="btn btn-ghost" style="font-size:.7rem;padding:2px 8px" data-action="openAdminUserModal" data-user-id="${u.id}">Editar</button>
+          <button class="btn btn-ghost" style="font-size:.7rem;padding:2px 8px;color:var(--red)" data-action="deleteAdminUser" data-user-id="${u.id}" data-username="${esc(u.username)}">Remover</button>
         </td>
       </tr>`;
     }).join('');
@@ -172,7 +195,12 @@ async function loadAdminUsers() {
 
 let editingAdminUserId = null;
 
-function openAdminUserModal(userId) {
+function openAdminUserModal(userIdOrEvent) {
+  let userId = userIdOrEvent;
+  if (userIdOrEvent && typeof userIdOrEvent === 'object' && userIdOrEvent.currentTarget) {
+    const raw = userIdOrEvent.currentTarget.dataset.userId;
+    userId = raw ? Number(raw) : null;
+  }
   editingAdminUserId = userId || null;
   const isEdit = !!userId;
   document.getElementById('admin-user-modal-title').textContent = isEdit ? 'Editar Admin User' : 'Novo Admin User';
@@ -209,6 +237,12 @@ function closeAdminUserModal() {
 document.getElementById('admin-user-active')?.addEventListener('change', function() {
   document.getElementById('admin-user-active-label').textContent = this.checked ? 'Ativo' : 'Inativo';
 });
+
+// Event-bus wrapper: <form data-action-submit="saveAdminUserEv">
+function saveAdminUserEv(e) {
+  if (e && e.preventDefault) e.preventDefault();
+  return saveAdminUser();
+}
 
 async function saveAdminUser() {
   const username = document.getElementById('admin-user-username').value.trim();
@@ -247,7 +281,13 @@ async function saveAdminUser() {
   }
 }
 
-async function deleteAdminUser(userId, username) {
+async function deleteAdminUser(userIdOrEvent, username) {
+  let userId = userIdOrEvent;
+  if (userIdOrEvent && typeof userIdOrEvent === 'object' && userIdOrEvent.currentTarget) {
+    const ds = userIdOrEvent.currentTarget.dataset;
+    userId = Number(ds.userId);
+    username = ds.username;
+  }
   if (!confirm(`Remover admin user "${username}"?`)) return;
   try {
     await apiFetch(`/admin-users/${userId}`, { method: 'DELETE' });

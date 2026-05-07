@@ -3141,42 +3141,28 @@ class TestCSPNonceOnly:
                       for d in csp.split(";") if d.strip()}
         return csp, directives
 
-    def test_csp_has_unsafe_inline_today(self):
-        """Estado atual conhecido — 'unsafe-inline' sustenta event handlers
-        HTML enquanto o refactor B nao fecha o ciclo. Mudanca acidental
-        que tire 'unsafe-inline' (sem refactor) quebra a UI; este teste
-        impede regressao silenciosa."""
-        _, directives = self._capture_csp()
-        script_src = directives.get("script-src", "")
-        assert "'unsafe-inline'" in script_src, \
-            f"script-src DEVE ter 'unsafe-inline' enquanto handlers inline existirem: {script_src}"
-        # Defesa adicional: nonce nao deve estar presente junto com unsafe-inline,
-        # senao browsers entram em CSP3 strict e bloqueiam handlers.
-        assert "nonce-" not in script_src, \
-            (f"script-src tem nonce-source com 'unsafe-inline': em CSP3 strict, "
-             f"event handlers ficam bloqueados. CSP={script_src}")
-
-    @pytest.mark.xfail(reason="DEBT: ~60 inline event handlers; refactor pra "
-                              "addEventListener planejado. Quando feito, este "
-                              "xfail vira xpass; remove-se 'unsafe-inline' do "
-                              "CSP em middlewares.py, adiciona-se 'nonce-{nonce}', "
-                              "e remove-se o decorator.")
     def test_csp_has_no_unsafe_inline(self):
-        """Estado futuro: script-src sem 'unsafe-inline', com nonce-source.
-
-        Quando virar xpass:
-          1. Confirma que o refactor B terminou (todos os onclick=/onchange= viraram addEventListener).
-          2. Remove 'unsafe-inline' da string CSP em middlewares.py.
-          3. Adiciona f"'nonce-{nonce}'" no script-src.
-          4. Remove o decorator @pytest.mark.xfail.
-          5. Atualiza test_csp_has_unsafe_inline_today (vira xfail / removido).
-        """
+        """CSP refactor B concluido 2026-05-06: script-src sem 'unsafe-inline',
+        com nonce-source. Todo evento HTML inline migrou pra data-action +
+        event-bus.js delegado. Regression guard contra alguem readicionar."""
         _, directives = self._capture_csp()
         script_src = directives.get("script-src", "")
         assert "'unsafe-inline'" not in script_src, \
-            f"script-src ainda tem 'unsafe-inline': {script_src}"
+            f"script-src readicionou 'unsafe-inline': {script_src}"
         assert "nonce-" in script_src, \
-            f"script-src precisa declarar 'nonce-X' apos refactor: {script_src}"
+            f"script-src precisa declarar 'nonce-X': {script_src}"
+
+    @pytest.mark.xfail(reason="Estado historico (anterior ao refactor B). Mantido como "
+                              "marcador de regression: se algum dia voltarem 'unsafe-inline' "
+                              "este test passa e sinaliza retrocesso.")
+    def test_csp_has_unsafe_inline_today(self):
+        """Estado pre-refactor B — quando 'unsafe-inline' estava no CSP por
+        causa dos ~40 handlers HTML inline. Apos 2026-05-06 esse estado
+        nao deve voltar. Test fica como xfail; se virar xpass = regressao."""
+        _, directives = self._capture_csp()
+        script_src = directives.get("script-src", "")
+        assert "'unsafe-inline'" in script_src, \
+            f"esperado estado historico com 'unsafe-inline'; pos-refactor isso e xfail"
 
     def test_csp_connect_src_allows_jsdelivr_for_sourcemaps(self):
         """DevTools tenta baixar .js.map via fetch — se cdn.jsdelivr.net

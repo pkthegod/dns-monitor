@@ -127,7 +127,12 @@ function toast(msg, typeOrBool, duration) {
   el.className = 'toast toast-' + type;
   el.innerHTML = '<span class="toast-icon">' + (ICONS[type] || '') + '</span>'
     + '<span class="toast-msg">' + esc(msg) + '</span>'
-    + '<button class="toast-close" onclick="this.parentElement.remove()">&times;</button>';
+    + '<button class="toast-close" type="button">&times;</button>';
+  // CSP refactor B: addEventListener em vez de inline onclick.
+  // Listener vinculado ao elemento criado dinamicamente — sem leak (
+  // remove() apaga o button + listener junto).
+  const closeBtn = el.querySelector('.toast-close');
+  if (closeBtn) closeBtn.addEventListener('click', () => el.remove());
 
   container.appendChild(el);
   // Trigger reflow for animation

@@ -201,7 +201,9 @@ async function loadHistory() {
         if (r.command === 'run_script') {
           try {
             const d = JSON.parse(r.result);
-            resultPreview = `<span class="pill ${d.error_count === 0 ? 'pill-done' : 'pill-failed'} untrusted-marker" title="${UNTRUSTED_TOOLTIP}" style="cursor:pointer" onclick="showResultModal(${esc(JSON.stringify(r.result))})">
+            // CSP refactor B: data-result com encodeURIComponent evita
+            // escapes complexos no innerHTML; showResultModalEv decodifica.
+            resultPreview = `<span class="pill ${d.error_count === 0 ? 'pill-done' : 'pill-failed'} untrusted-marker" title="${UNTRUSTED_TOOLTIP}" style="cursor:pointer" data-action="showResultModalEv" data-result="${encodeURIComponent(r.result)}">
               ${d.error_count === 0 ? 'SAUDÁVEL' : d.error_count + ' FALHA(S)'} — ${esc(d.summary || '')}
             </span>`;
           } catch (_) {
@@ -597,3 +599,20 @@ async function fetchGeo(ips) {
   }
   return map;
 }
+
+// Event-bus wrapper: <span data-action="showResultModalEv" data-result="<encoded>">
+// Le e decodifica raw result string + delega pra showResultModal real.
+function showResultModalEv(e) {
+  const raw = e.currentTarget.dataset.result;
+  if (!raw) return;
+  try {
+    showResultModal(decodeURIComponent(raw));
+  } catch (_) {
+    showResultModal(raw);  // fallback se decode falhar
+  }
+}
+
+// Event-bus wrapper pro select de resolver: dispatcher chama na change,
+// helper original espera ouvir 'this.value'.
+// (admin-commands.js define um `change` listener inline que checava
+// `this.value === 'custom'`. Ja eh addEventListener — sem mudanca aqui.)

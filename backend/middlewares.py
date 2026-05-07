@@ -266,34 +266,22 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
-        # SEC (DEBT): script-src tem 'unsafe-inline' SEM nonce-source. Razao:
-        # em CSP3, quando 'nonce-X' esta presente o browser entra em strict
-        # mode e IGNORA 'unsafe-inline' especificamente para event handlers
-        # HTML (onclick=, onchange=, onsubmit=). Como o codigo ainda tem ~60
-        # desses handlers em admin.html, speedtest.html, dashboard.html,
-        # client.html e em strings de innerHTML em admin-{agents,clients,
-        # commands}.js, adicionar nonce quebrava sort, bulk-select, theme
-        # toggle, modais, etc.
+        # CSP refactor B (concluido 2026-05-06): unsafe-inline removido do
+        # script-src. Antes era debt deliberado pq tinhamos ~40 handlers
+        # inline (onclick=/onchange=/onsubmit=) que CSP3 strict bloqueia
+        # quando 'nonce-X' esta presente. Refactor migrou tudo pra
+        # event-bus.js + addEventListener delegado por data-action.
         #
-        # Combos testados (validados em browser real):
-        #   'unsafe-inline' + 'nonce-X'      -> handlers BLOQUEADOS (strict)
-        #   'unsafe-inline' SO              -> handlers OK (este, atual)
-        #   'nonce-X' + addEventListener    -> alvo do refactor B
+        # Atual: 'self' + 'nonce-{nonce}' + cdn.jsdelivr.net + cf insights.
+        # Inline <script> tags continuam servidas (com nonce injetado pelo
+        # _html_with_nonce em main.py); event handlers HTML inline NAO
+        # funcionam mais — exatamente o ponto.
         #
-        # O pipeline _html_with_nonce em main.py / routes_*.py CONTINUA ATIVO —
-        # injeta nonce nas <script> tags servidas mesmo sem o CSP exigir. Custo
-        # zero. Quando o refactor B concluir (handlers viram addEventListener),
-        # basta re-adicionar `'nonce-{nonce}'` aqui e remover 'unsafe-inline'.
-        # Sem retrabalho do lado do template.
-        #
-        # Refactor B agendado: routine trig_01VWjo2g4XWjWGa6pZc6NHmy
-        # (csp-event-delegation, run_once_at 2026-05-07T13:00:00Z).
-        #
-        # connect-src inclui cdn.jsdelivr.net pra DevTools poder baixar
-        # sourcemaps (.js.map) sem violar CSP. Afeta so DX, nao runtime.
+        # connect-src inclui cdn.jsdelivr.net pra DevTools baixar sourcemaps
+        # (.js.map) sem violar CSP. Afeta so DX, nao runtime.
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://static.cloudflareinsights.com; "
+            f"script-src 'self' 'nonce-{nonce}' https://cdn.jsdelivr.net https://static.cloudflareinsights.com; "
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; "
             "font-src https://fonts.gstatic.com; "
             # img-src: tiles do mapa 2D (Leaflet + CartoDB Dark Matter / Voyager) +

@@ -30,7 +30,7 @@
   <a href="/speedtest" class="btn-nav">Speedtest Metrics</a>
   <a href="/admin/help" class="btn-nav">Ajuda</a>
   <a href="/admin/logout" class="btn-nav">Sair</a>
-  <button class="theme-toggle" onclick="toggleTheme()" title="Alternar tema"><span class="icon-sun">&#9728;</span><span class="icon-moon">&#9790;</span></button>
+  <button class="theme-toggle" data-action="toggleTheme" title="Alternar tema"><span class="icon-sun">&#9728;</span><span class="icon-moon">&#9790;</span></button>
   <span class="refresh-info">REFRESH EM <span id="countdown">5:00</span></span>
 </div>
 
@@ -49,33 +49,33 @@
       </select>
       <span id="bulk-bar" style="display:none;gap:6px;align-items:center;font-size:.7rem">
         <span id="bulk-count" class="dim">0 selecionados</span>
-        <button class="btn btn-ghost" style="font-size:.68rem;padding:2px 8px" onclick="bulkSelectOffline()">Sel. offline</button>
-        <button class="btn btn-ghost" style="font-size:.68rem;padding:2px 8px" onclick="bulkSelectOutdated()">Sel. desatualizados</button>
-        <button class="btn btn-ghost" style="font-size:.68rem;padding:2px 8px" onclick="bulkAction('restart')">Restart</button>
-        <button class="btn btn-ghost" style="font-size:.68rem;padding:2px 8px" onclick="bulkAction('update_agent')">Update</button>
-        <button class="btn btn-ghost" style="font-size:.68rem;padding:2px 8px;color:var(--red)" onclick="bulkAction('decommission')">Decommission</button>
+        <button class="btn btn-ghost" style="font-size:.68rem;padding:2px 8px" data-action="bulkSelectOffline">Sel. offline</button>
+        <button class="btn btn-ghost" style="font-size:.68rem;padding:2px 8px" data-action="bulkSelectOutdated">Sel. desatualizados</button>
+        <button class="btn btn-ghost" style="font-size:.68rem;padding:2px 8px" data-action="bulkActionEv" data-cmd="restart">Restart</button>
+        <button class="btn btn-ghost" style="font-size:.68rem;padding:2px 8px" data-action="bulkActionEv" data-cmd="update_agent">Update</button>
+        <button class="btn btn-ghost" style="font-size:.68rem;padding:2px 8px;color:var(--red)" data-action="bulkActionEv" data-cmd="decommission">Decommission</button>
       </span>
       <span id="outdated-badge" class="version-badge version-old-minor"
             style="margin-left:6px;cursor:pointer;display:none;font-size:.7rem"
             title="Clique pra selecionar todos os agentes desatualizados"
-            onclick="bulkSelectOutdated()"></span>
+            data-action="bulkSelectOutdated"></span>
     </div>
   </div>
   <div class="table-wrap">
     <table>
       <thead>
         <tr>
-          <th style="width:28px"><input type="checkbox" id="bulk-select-all" onchange="bulkToggleAll(this.checked)" title="Selecionar todos"></th>
-          <th style="cursor:pointer" onclick="sortAgents('hostname')">Hostname ⇅</th>
+          <th style="width:28px"><input type="checkbox" id="bulk-select-all" data-action-change="bulkToggleAllEv" title="Selecionar todos"></th>
+          <th style="cursor:pointer" data-action="sortAgents" data-field="hostname">Hostname ⇅</th>
           <th>Localizacao</th>
           <th>Cliente</th>
-          <th style="cursor:pointer" onclick="sortAgents('agent_status')">Status ⇅</th>
-          <th style="cursor:pointer" onclick="sortAgents('cpu_percent')">CPU ⇅</th>
-          <th style="cursor:pointer" onclick="sortAgents('ram_percent')">RAM ⇅</th>
+          <th style="cursor:pointer" data-action="sortAgents" data-field="agent_status">Status ⇅</th>
+          <th style="cursor:pointer" data-action="sortAgents" data-field="cpu_percent">CPU ⇅</th>
+          <th style="cursor:pointer" data-action="sortAgents" data-field="ram_percent">RAM ⇅</th>
           <th>Servico</th>
           <th>DNS</th>
           <th>Versao</th>
-          <th style="cursor:pointer" onclick="sortAgents('last_seen')">Ultimo heartbeat ⇅</th>
+          <th style="cursor:pointer" data-action="sortAgents" data-field="last_seen">Ultimo heartbeat ⇅</th>
           <th>Acoes</th>
         </tr>
       </thead>
@@ -114,7 +114,7 @@
     <h2>Clientes</h2>
     <span class="section-badge" id="badge-clients">—</span>
     <div style="margin-left:auto">
-      <button class="btn btn-primary admin-only" onclick="openClientModal()" style="font-size:.75rem;padding:4px 14px">+ Novo Cliente</button>
+      <button class="btn btn-primary admin-only" data-action="openClientModal" style="font-size:.75rem;padding:4px 14px">+ Novo Cliente</button>
     </div>
   </div>
   <div class="table-wrap">
@@ -138,7 +138,7 @@
 <!-- Modal de cliente (criar/editar) -->
 <div class="modal-backdrop" id="client-modal">
   <div class="modal">
-    <form onsubmit="saveClient(); return false;" autocomplete="off">
+    <form data-action-submit="saveClientEv" autocomplete="off">
     <h3 id="client-modal-title">Novo Cliente</h3>
     <div class="field">
       <label>Username</label>
@@ -175,7 +175,7 @@
       </div>
     </div>
     <div class="modal-actions">
-      <button type="button" class="btn btn-cancel" onclick="closeClientModal()">CANCELAR</button>
+      <button type="button" class="btn btn-cancel" data-action="closeClientModal">CANCELAR</button>
       <button type="submit" class="btn btn-primary" id="client-save-btn">CRIAR</button>
     </div>
     </form>
@@ -188,7 +188,7 @@
     <h2>Usuarios Admin</h2>
     <span class="section-badge" id="badge-admin-users">--</span>
     <div style="margin-left:auto">
-      <button class="btn btn-primary" onclick="openAdminUserModal()" style="font-size:.75rem;padding:4px 14px">+ Novo Admin</button>
+      <button class="btn btn-primary" data-action="openAdminUserModal" style="font-size:.75rem;padding:4px 14px">+ Novo Admin</button>
     </div>
   </div>
   <div class="table-wrap">
@@ -212,7 +212,7 @@
 <!-- Modal de admin user (criar/editar) -->
 <div class="modal-backdrop" id="admin-user-modal">
   <div class="modal">
-    <form onsubmit="saveAdminUser(); return false;" autocomplete="off">
+    <form data-action-submit="saveAdminUserEv" autocomplete="off">
     <h3 id="admin-user-modal-title">Novo Admin User</h3>
     <div class="field">
       <label>Username</label>
@@ -244,7 +244,7 @@
       </div>
     </div>
     <div class="modal-actions">
-      <button type="button" class="btn btn-cancel" onclick="closeAdminUserModal()">CANCELAR</button>
+      <button type="button" class="btn btn-cancel" data-action="closeAdminUserModal">CANCELAR</button>
       <button type="submit" class="btn btn-primary" id="admin-user-save-btn">CRIAR</button>
     </div>
     </form>
@@ -281,8 +281,8 @@
       </div>
     </div>
     <div class="modal-actions">
-      <button class="btn btn-cancel" onclick="closeEditModal()">CANCELAR</button>
-      <button class="btn btn-primary" onclick="saveEdit()">SALVAR</button>
+      <button class="btn btn-cancel" data-action="closeEditModal">CANCELAR</button>
+      <button class="btn btn-primary" data-action="saveEdit">SALVAR</button>
     </div>
   </div>
 </div>
@@ -299,11 +299,11 @@
         <option value="unbound_validate">Unbound — Validação específica</option>
         <option value="dig_test">DIG — Teste de resolução DNS</option>
       </select>
-      <button class="btn btn-run" id="diag-run-btn" onclick="runDiagnostic()">▶ EXECUTAR</button>
+      <button class="btn btn-run" id="diag-run-btn" data-action="runDiagnostic">▶ EXECUTAR</button>
     </div>
     <div id="diag-result-area"></div>
     <div class="modal-actions">
-      <button class="btn btn-cancel" onclick="closeDiagModal()">FECHAR</button>
+      <button class="btn btn-cancel" data-action="closeDiagModal">FECHAR</button>
     </div>
   </div>
 </div>
@@ -334,27 +334,29 @@
         <label>IP do resolver</label>
         <input type="text" id="trace-custom-resolver" placeholder="ex: 192.168.1.1">
       </div>
-      <button class="btn btn-trace" id="trace-run-btn" onclick="runTrace()" style="padding:6px 16px;font-size:.78rem;margin-bottom:0;align-self:flex-end">▶ TRACE</button>
+      <button class="btn btn-trace" id="trace-run-btn" data-action="runTrace" style="padding:6px 16px;font-size:.78rem;margin-bottom:0;align-self:flex-end">▶ TRACE</button>
     </div>
     <div id="trace-area"></div>
     <div class="modal-actions">
-      <button class="btn btn-cancel" onclick="closeTraceModal()">FECHAR</button>
+      <button class="btn btn-cancel" data-action="closeTraceModal">FECHAR</button>
     </div>
   </div>
 </div>
 
 <div id="toast-container"></div>
 
+<!-- Event-bus dispatcher (CSP refactor B: substitui onclick inline) -->
+<script src="/static/event-bus.js?v=001"></script>
 <!-- Leaflet + AntPath plugin (mapa 2D) -->
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/leaflet-ant-path@1.3.0/dist/leaflet-ant-path.min.js"></script>
 <!-- Globe.gl (mapa 3D — Three.js bundled) -->
 <script src="https://cdn.jsdelivr.net/npm/globe.gl@2.34.4/dist/globe.gl.min.js"></script>
 <script src="/static/trace-map.js?v=003"></script>
-<script src="/static/app.js?v=100"></script>
-<script src="/static/admin-agents.js?v=002"></script>
-<script src="/static/admin-commands.js?v=004"></script>
-<script src="/static/admin-clients.js?v=002"></script>
+<script src="/static/app.js?v=101"></script>
+<script src="/static/admin-agents.js?v=003"></script>
+<script src="/static/admin-commands.js?v=005"></script>
+<script src="/static/admin-clients.js?v=003"></script>
 <script>
   // -- Init / agregador / WS / boot ---------------------------------------
   async function loadAll() {

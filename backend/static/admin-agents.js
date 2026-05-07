@@ -213,6 +213,14 @@ let _menuTrigger = null;
 function openAgentMenu(event, hostname, agentVersion, displayName) {
   event.stopPropagation();
   const trigger  = event.currentTarget;
+  // CSP refactor B: dispatcher chama com so 1 arg (event); demais vem do
+  // dataset. Callsite legacy passava 4 args — preservado pra compat.
+  if (hostname == null) {
+    const ds = trigger.dataset;
+    hostname     = ds.hostname;
+    agentVersion = ds.version;
+    displayName  = ds.displayname;
+  }
   const menu     = document.getElementById('agent-menu');
   const outdated = isOutdated(agentVersion);
   const label    = displayName || hostname;
@@ -230,6 +238,9 @@ function openAgentMenu(event, hostname, agentVersion, displayName) {
     ? `<span class="menu-badge" style="background:#2a1e0a;color:var(--yellow);border:1px solid #5a3d10">${esc(agentVersion||'?')} → ${esc(serverVersion||'?')}</span>`
     : '';
 
+  // CSP refactor B: data-action no lugar de onclick=. Wrappers menu*Ev
+  // ficam em window.* ja definidos abaixo dessa funcao.
+  const dh = `data-hostname="${esc(hostname)}"`;
   menu.innerHTML = `
     <div class="menu-header">
       <div class="menu-header-hostname">${esc(label)}</div>
@@ -237,35 +248,35 @@ function openAgentMenu(event, hostname, agentVersion, displayName) {
     </div>
 
     <div class="menu-group-label">Serviço DNS</div>
-    <div class="menu-item mi-restart" onclick="_menuAction(()=>sendCommand('${esc(hostname)}','restart',null))">
+    <div class="menu-item mi-restart" data-action="menuRestartEv" ${dh}>
       <span class="menu-icon">↺</span><span class="menu-label">Restart</span>
     </div>
-    <div class="menu-item mi-enable"  onclick="_menuAction(()=>sendCommand('${esc(hostname)}','enable',null))">
+    <div class="menu-item mi-enable"  data-action="menuEnableEv" ${dh}>
       <span class="menu-icon">◉</span><span class="menu-label">Enable</span>
     </div>
-    <div class="menu-item mi-disable" onclick="_menuAction(()=>sendCommand('${esc(hostname)}','disable',null))">
+    <div class="menu-item mi-disable" data-action="menuDisableEv" ${dh}>
       <span class="menu-icon">○</span><span class="menu-label">Disable</span>
     </div>
 
     <div class="menu-divider"></div>
     <div class="menu-group-label">Diagnóstico</div>
-    <div class="menu-item mi-diag"  onclick="_menuAction(()=>openDiagModal('${esc(hostname)}'))">
+    <div class="menu-item mi-diag"  data-action="menuDiagEv" ${dh}>
       <span class="menu-icon">⬡</span><span class="menu-label">Validar serviço</span>
     </div>
-    <div class="menu-item mi-trace" onclick="_menuAction(()=>openTraceModal('${esc(hostname)}'))">
+    <div class="menu-item mi-trace" data-action="menuTraceEv" ${dh}>
       <span class="menu-icon">⊕</span><span class="menu-label">DNS Trace</span>
     </div>
 
     <div class="menu-divider"></div>
     <div class="menu-group-label">Agente</div>
     ${outdated ? `
-    <div class="menu-item mi-update" onclick="_menuAction(()=>sendUpdate('${esc(hostname)}',null))">
+    <div class="menu-item mi-update" data-action="menuUpdateEv" ${dh}>
       <span class="menu-icon">↑</span><span class="menu-label">Atualizar</span>${updateBadge}
     </div>` : ''}
-    <div class="menu-item mi-edit"   onclick="_menuAction(()=>openEditModal('${esc(hostname)}'))">
+    <div class="menu-item mi-edit"   data-action="menuEditEv" ${dh}>
       <span class="menu-icon">✎</span><span class="menu-label">Editar</span>
     </div>
-    <div class="menu-item mi-delete" onclick="_menuAction(()=>deleteAgent('${esc(hostname)}',null))">
+    <div class="menu-item mi-delete" data-action="menuDeleteEv" ${dh}>
       <span class="menu-icon">⊗</span><span class="menu-label">Deletar</span>
     </div>
   `;
@@ -385,7 +396,14 @@ async function loadAgents() {
 }
 
 let _sortField = 'hostname', _sortAsc = true;
-function sortAgents(field) {
+function sortAgents(fieldOrEvent) {
+  // Aceita string direta (callsites legados) OU event do dispatcher
+  // (event-bus.js le data-field do <th> clicado e passa o event).
+  let field = fieldOrEvent;
+  if (fieldOrEvent && typeof fieldOrEvent === 'object' && fieldOrEvent.currentTarget) {
+    field = fieldOrEvent.currentTarget.dataset.field;
+  }
+  if (!field) return;
   if (_sortField === field) _sortAsc = !_sortAsc;
   else { _sortField = field; _sortAsc = true; }
   renderAgentRows(agentsCache);
@@ -429,7 +447,7 @@ function renderAgentRows(agents) {
 
       return `
       <tr style="border-left:3px solid ${statusBorder}${isActive ? '' : ';opacity:.55'}">
-        <td><input type="checkbox" class="bulk-cb" data-hostname="${esc(a.hostname)}" onchange="bulkUpdateCount()"></td>
+        <td><input type="checkbox" class="bulk-cb" data-hostname="${esc(a.hostname)}" data-action-change="bulkUpdateCount"></td>
         <td>
           <strong>${esc(a.hostname)}</strong>
           ${a.display_name && a.display_name !== a.hostname ? `<br><span class="dim">${esc(a.display_name)}</span>` : ''}
@@ -444,8 +462,10 @@ function renderAgentRows(agents) {
         <td>${versionCell(a.agent_version)}</td>
         <td><span class="dim">${fmtDate(a.last_seen)}</span></td>
         <td>
-          <button class="agent-menu-trigger"
-            onclick="openAgentMenu(event,'${esc(a.hostname)}','${esc(a.agent_version||'')}','${esc(a.display_name||'')}')">
+          <button class="agent-menu-trigger" data-action="openAgentMenu"
+            data-hostname="${esc(a.hostname)}"
+            data-version="${esc(a.agent_version||'')}"
+            data-displayname="${esc(a.display_name||'')}">
             ⋯
           </button>
         </td>
@@ -498,6 +518,17 @@ function bulkSelectOutdated() {
   else toast.ok(`${outdatedHosts.length} agente(s) desatualizado(s) selecionado(s). Clique "Update" pra disparar.`);
 }
 
+// Event-bus wrapper: <button data-action="bulkAction" data-cmd="restart">
+function bulkActionEv(e) {
+  return bulkAction(e.currentTarget.dataset.cmd);
+}
+
+// Event-bus wrapper pro checkbox "select all": dispatcher chama com event;
+// bulkToggleAll original recebe `checked` direto (string|bool).
+function bulkToggleAllEv(e) {
+  return bulkToggleAll(e.currentTarget.checked);
+}
+
 async function bulkAction(command) {
   const hostnames = getSelectedHostnames();
   if (!hostnames.length) { toast.warn('Selecione ao menos um agente.'); return; }
@@ -520,3 +551,26 @@ async function bulkAction(command) {
   bulkToggleAll(false);
   await loadHistory();
 }
+
+// ===========================================================================
+// Event-bus wrappers (CSP refactor B 2026-05-06)
+// ===========================================================================
+// Templates innerHTML usam data-action="menuRestartEv" + data-hostname="...";
+// dispatcher do event-bus.js chama window.<name>(event), que le hostname
+// do dataset e delega pro callsite real via _menuAction (fecha menu antes
+// de executar).
+
+function _menuActionFromHost(e, fn) {
+  const host = e.currentTarget.dataset.hostname;
+  if (!host) return;
+  _menuAction(() => fn(host));
+}
+
+function menuRestartEv(e) { _menuActionFromHost(e, h => sendCommand(h, 'restart', null)); }
+function menuEnableEv(e)  { _menuActionFromHost(e, h => sendCommand(h, 'enable',  null)); }
+function menuDisableEv(e) { _menuActionFromHost(e, h => sendCommand(h, 'disable', null)); }
+function menuDiagEv(e)    { _menuActionFromHost(e, h => openDiagModal(h)); }
+function menuTraceEv(e)   { _menuActionFromHost(e, h => openTraceModal(h)); }
+function menuUpdateEv(e)  { _menuActionFromHost(e, h => sendUpdate(h, null)); }
+function menuEditEv(e)    { _menuActionFromHost(e, h => openEditModal(h)); }
+function menuDeleteEv(e)  { _menuActionFromHost(e, h => deleteAgent(h, null)); }
