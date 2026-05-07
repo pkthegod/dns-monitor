@@ -269,19 +269,58 @@ function sslPill(d) {
 }
 
 function renderKPIs(scan) {
-  document.getElementById('kpiTotal').textContent = scan.total_domains || '--';
-  document.getElementById('kpiReachable').textContent = scan.reachable || '0';
-  document.getElementById('kpiSslValid').textContent = scan.ssl_valid || '0';
-  document.getElementById('kpiExpired').textContent = scan.ssl_expired || '0';
-  document.getElementById('kpiExpiring').textContent = scan.expiring_soon || '0';
-  document.getElementById('kpiAvgTime').textContent = scan.avg_response_ms != null ? scan.avg_response_ms + 'ms' : '--';
+  // Bug 2026-05-07: KPIs apareciam 0 enquanto graficos mostravam dados certos.
+  // Causa: scan.<reachable|ssl_valid|expiring_soon|...> sao colunas agregadas
+  // de speedtest_scans, populadas pelo db.insert_speedtest_scan a partir
+  // de metadata.<reachable_domains|valid_certificates|...>. Quando o
+  // domain_checker.py envia metadata com chaves diferentes (ou ausentes),
+  // os agregados ficam zerados no DB embora a lista de domains[] esteja
+  // correta.
+  //
+  // Fix: calcula KPIs CLIENT-SIDE do mesmo dataset que o renderCharts usa
+  // (scan.domains[]). So cai pro scan.<col> se domains[] vazio (cenario
+  // legado tipo dump SQL antigo sem rows individuais).
+  const ds = scan.domains || [];
+  const hasDomains = ds.length > 0;
 
-  document.getElementById('sbOk').textContent = scan.ssl_valid || 0;
-  document.getElementById('sbWarn').textContent = scan.expiring_soon || 0;
-  document.getElementById('sbErr').textContent = scan.unreachable || 0;
-  document.getElementById('sbTotal').textContent = scan.total_domains || 0;
-  document.getElementById('sbUpdated').textContent = fmtDate(scan.ts);
-  document.getElementById('lastScan').textContent = fmtDate(scan.ts);
+  const total        = hasDomains ? ds.length : (scan.total_domains || 0);
+  const reachable    = hasDomains ? ds.filter(d => d.reachable).length             : (scan.reachable || 0);
+  const unreachable  = hasDomains ? ds.filter(d => !d.reachable).length            : (scan.unreachable || 0);
+  const sslValid     = hasDomains ? ds.filter(d => d.certificate_valid).length     : (scan.ssl_valid || 0);
+  const sslExpired   = hasDomains ? ds.filter(d => d.certificate_expired).length   : (scan.ssl_expired || 0);
+  const expiringSoon = hasDomains
+    ? ds.filter(d =>
+        d.days_until_expiry != null
+        && d.days_until_expiry > 0
+        && d.days_until_expiry < 30
+        && !d.certificate_expired
+      ).length
+    : (scan.expiring_soon || 0);
+
+  // Avg response time: media dos reachable com response_time_ms != null
+  let avgRt = null;
+  if (hasDomains) {
+    const rt = ds
+      .filter(d => d.reachable && d.response_time_ms != null)
+      .map(d => Number(d.response_time_ms));
+    if (rt.length) avgRt = Math.round(rt.reduce((a, b) => a + b, 0) / rt.length);
+  } else if (scan.avg_response_ms != null) {
+    avgRt = Math.round(Number(scan.avg_response_ms));
+  }
+
+  document.getElementById('kpiTotal').textContent     = total || '--';
+  document.getElementById('kpiReachable').textContent = reachable;
+  document.getElementById('kpiSslValid').textContent  = sslValid;
+  document.getElementById('kpiExpired').textContent   = sslExpired;
+  document.getElementById('kpiExpiring').textContent  = expiringSoon;
+  document.getElementById('kpiAvgTime').textContent   = avgRt != null ? avgRt + 'ms' : '--';
+
+  document.getElementById('sbOk').textContent    = sslValid;
+  document.getElementById('sbWarn').textContent  = expiringSoon;
+  document.getElementById('sbErr').textContent   = unreachable;
+  document.getElementById('sbTotal').textContent = total;
+  document.getElementById('sbUpdated').textContent  = fmtDate(scan.ts);
+  document.getElementById('lastScan').textContent   = fmtDate(scan.ts);
   document.getElementById('scanDuration').textContent = scan.scan_duration_s || '--';
 }
 
